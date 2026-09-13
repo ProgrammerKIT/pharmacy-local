@@ -1,0 +1,78 @@
+name: Signed program release
+on:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: pharmacy-release-${{ github.event_name == 'pull_request' && github.ref || 'publisher' }}
+  cancel-in-progress: false
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Test without publisher secrets
+        run: node --test test/*.test.mjs
+  release:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Check publisher configuration
+        id: publisher
+        env:
+          PHARMACY_SIGNING_KEY: ${{ secrets.PHARMACY_SIGNING_KEY }}
+        run: |
+          if [ -n "${PHARMACY_SIGNING_KEY:-}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "Tests passed. Publication is waiting for the PHARMACY_SIGNING_KEY secret created by 08-Configure-Updates on the owner's Mac. No update was published." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        if: steps.publisher.outputs.configured == 'true'
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        if: steps.publisher.outputs.configured == 'true'
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Check version and existing releases
+        if: steps.publisher.outputs.configured == 'true'
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          node --input-type=module -e "import fs from 'node:fs'; import {versionOK} from './update/package.mjs'; const v=JSON.parse(fs.readFileSync('package.json')).version; if(!versionOK(v)) throw new Error('Invalid version'); if(process.env.GITHUB_REF_TYPE==='tag' && process.env.GITHUB_REF_NAME!=='v'+v) throw new Error('Tag and version disagree'); fs.appendFileSync(process.env.GITHUB_OUTPUT,'version='+v+'\n')"
+          gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq '.[].tag_name' > "$RUNNER_TEMP/pharmacy-release-tags.txt"
+          node --input-type=module -e "import fs from 'node:fs'; import path from 'node:path'; const v=JSON.parse(fs.readFileSync('package.json')).version; const exists=fs.readFileSync(path.join(process.env.RUNNER_TEMP,'pharmacy-release-tags.txt'),'utf8').split(/\r?\n/).includes('v'+v); fs.appendFileSync(process.env.GITHUB_OUTPUT,'exists='+exists+'\n'); if(exists) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,'This version already has a release. It was not replaced. Bump the application version before publishing changed runtime code.\n')"
+      - name: Create signed code-only package
+        if: steps.publisher.outputs.configured == 'true' && steps.version.outputs.exists == 'false'
+        env:
+          PHARMACY_SIGNING_KEY: ${{ secrets.PHARMACY_SIGNING_KEY }}
+          PHARMACY_RELEASE_SEQUENCE: ${{ github.run_number }}
+        run: node scripts/release.mjs
+      - name: Publish versioned release
+        if: steps.publisher.outputs.configured == 'true' && steps.version.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: gh release create "v$RELEASE_VERSION" PharmacyLocal.pharmaupdate --target "$GITHUB_SHA" --title "PharmacyLocal v$RELEASE_VERSION" --notes "Signed code only. Customer data stays on your devices." --latest

@@ -1,0 +1,113 @@
+藥局關係筆記 v1.4.3｜主畫面圖示與同步時間更新
+
+這次修改
+加入主畫面時使用你提供的藍紫色連結圖案。原 PNG 圖形及色彩完整保留。
+此包包含 v1.4.2 的同步時間修正，可從 v1.4.1 或 v1.4.2 直接升級。
+成功同步就顯示這次完成的時間，即使沒有新資料也一樣。
+失敗時顯示「同步未完成」與最近一次成功時間，不把失敗當成成功。
+Mac 與 iPhone 各自記錄它們與本機服務確認成功的時間。
+時間依各裝置的時鐘顯示，不會新增客戶備註或單為時間增加 Mac 快照。
+
+此儲存庫是 ProgrammerKIT/pharmacy-local。若你的 Mac 更新來源尚未設定，先完成下方第二部分；也可沿用第一部分的手動升級。
+原本的 iPhone App 可沿用，不需要為了程式升級重新加入主畫面、匯入 CSV 或重建配對。
+若原有圖示仍是舊外觀，請看下方「iPhone 新圖示」；既有圖示不保證立即刷新。
+本 ZIP 只有程式與合成測試，不含客戶 CSV、客戶資料庫、備份、憑證或私鑰。
+
+第一部分：你現在要做的操作
+1. 先在手機與 Mac 儲存內容並完成同步；到「同步與備份」匯出加密備份。
+   備份放「我的 iPhone」、未同步雲端的本機資料夾或外接碟，保留原備份密碼。
+2. 將 ZIP 解壓縮。可以把這個純程式資料夾放在 Mac 桌面。
+3. 關閉 iPhone 的藥局 App，以及 Mac／iPhone 瀏覽器裡的藥局 App 分頁。
+   保留圖示和網站資料。不要執行 01-Setup，也不要重跑憑證修補工具。
+4. 在新解壓縮的 PharmacyLocal-v1.4.3 資料夾，執行 07-Upgrade-v1.4.command。
+   檔名裡的 v1.4 是升級工具名稱，這次安裝的程式版號為 1.4.3。
+   若雙擊無法執行：開啟 Mac 終端機，輸入 bash 加一個空格，
+   再把 07-Upgrade-v1.4.command 拖進終端機，按 Enter。
+   依提示輸入 YES，再按 Enter。
+   如果你仍有手動執行 02-Start 的終端機視窗，先在該視窗按 Control+C。
+   已設定自動啟動的服務由升級工具處理，不需重複執行 02-Start。
+5. 工具將新程式放進你的個人 Applications 資料夾，名稱為 PharmacyLocal-v1.4.3。
+   完成後會在 Finder 選取其中的 03-Manage.command，開啟它確認 Mac 程式顯示 v1.4.3。
+   舊程式資料夾保留；客戶資料、原網址與埠號、配對及已修補的 TLS 憑證沿用。
+6. Mac 使用原 App 網址，iPhone 使用原本存有資料的主畫面圖示。
+   兩台保持能連到 Mac，讓 App 取得新版介面。若第一次仍顯示舊版，
+   待下載完成後關閉相關 App／分頁再開一次；不要清除網站資料。
+7. 在 App 確認程式版本為 v1.4.3，按「立即同步」。
+   成功後應顯示「最近成功同步：當下日期時間」。即使没有新變更，時間也會刷新。
+
+iPhone 新圖示
+1. 先完成上面的 Mac 升級，確認 iPhone 與 Mac 都可成功同步。
+   保留原主畫面 App 和加密備份。先不要刪除原圖示，也不要清除 Safari 網站資料。
+2. 若原圖示自動變成新圖案，直接繼續使用即可。
+3. 若仍是舊圖案，可在 iPhone Safari 打開 Mac 管理頁提供的「開啟 App」原網址。
+   沿用你目前的完整 https 網址、.local 主機名與埠號；不要改成 localhost 或 IP。
+4. 確認網頁程式版本為 v1.4.3。開啟分享選單：依 Safari 佈局，直接按分享，
+   或按「更多」再按「分享」。選「加入主畫面」，確認預覽為藍紫色新圖案。
+   保持「打開為網頁 App」開啟，再按「加入」。可暫命名「藥局筆記・新圖示」，方便辨識。
+   若預覽仍是舊圖，不要刪除舊 App；先回報畫面。
+5. 新圖示可能是獨立的本機儲存空間，未必沿用舊圖示的登入／配對資料。
+   若要求配對，先確定原 App 已同步且備份可用，再從 Mac 管理頁產生一次性配對碼，
+   使用原資料庫密碼完成新 App 配對。不要建立空白資料庫來取代既有資料。
+6. 在新圖示中確認客戶筆數、最近備註與成功同步狀態，確認後再決定保留哪個入口。
+   換圖示不需要重新匯入 CSV。尚未確認新入口資料完整前，繼續保留原圖示。
+
+Apple 主畫面操作說明：
+https://support.apple.com/zh-tw/guide/iphone/iph42ab2f3a7/ios
+Apple 網頁圖示設定說明：
+https://developer.apple.com/library/archive/documentation/AppleApplications/Reference/SafariWebContent/ConfiguringWebApplications/ConfiguringWebApplications.html
+
+若沒有成功
+請回報終端機訊息或 Mac 管理頁／App 的版號與提示。
+若工具說目標資料夾已存在，不要自行刪除資料夾或資料庫；先回報畫面。
+此包尚未在你的 Mac 執行，因此下載完成不代表你的 Mac／iPhone 已更新。
+
+第二部分：接通程式發布來源（一次設定）
+1. 本專案使用公開純程式儲存庫 ProgrammerKIT/pharmacy-local；不開 GitHub Pages，不放客戶 CSV、備份、唯讀客戶圖或整個舊工作資料夾。
+2. 程式與 Actions 發布流程存放於此儲存庫。你的 Mac 仍需完成下面的簽章來源設定；沒有正式 Release 時，尚無可供更新器下載的版本。
+3. Mac 安裝免費 GitHub CLI，依官方安裝方式 https://cli.github.com/ 操作；Terminal 執行 gh auth login，自己完成登入，不要把 token 傳給我。
+4. 在新程式資料夾執行 08-Configure-Updates.command，輸入 ProgrammerKIT/pharmacy-local。
+5. 工具在你的 Mac 產生程式發布私鑰，顯示對應公鑰指紋。它不是客戶資料庫密碼，也不能解密客戶資料。
+6. 若同意 GitHub Actions 自動簽署程式，在工具確認問題輸入 YES；工具透過已登入的 gh，把這把程式私鑰存入該庫的 PHARMACY_SIGNING_KEY Secret。私鑰不會輸出到畫面或加入程式碼。
+   不同意則不啟用線上更新。需要「簽章私鑰也永不上雲」時，應另改成在你 Mac 人工簽署發布的路線。
+7. 從新資料夾執行 05-Enable-Autostart.command，重啟受管理服務並載入信任設定。若你本來手動執行 02-Start，先在那個 Terminal 按 Control+C。
+8. GitHub 程式與 Secret 就緒後，在儲存庫 Actions → Signed program release → Run workflow（main）發布第一個版本。後續 main 提交或版本標籤會自動觸發；Pull request 只測試不發布。已有相同版本時不覆蓋。
+9. 管理頁按「立即檢查更新」。相同版本會顯示沒有較新版；測試更高版號的簽署發布，才會實際觸發切換。
+
+後續日常操作
+你打開 App／回到前景且連得到 Mac 時，App 會請 Mac 檢查程式更新（同一分鐘的重複請求合併）。Mac 啟動時及每 24 小時也會檢查。
+下載與驗證需要時間；不是每次開啟都能在第一秒看到新版本。離線、Mac 睡眠或更新暫停時繼續使用已安裝版本。
+有新版：下載 → 簽章與檔案檢查 → 等待編輯完成 → 保存加密檢查點 → 試啟動 → 切換。手機下次連回 Mac，下載完整新版介面，沒有未儲存內容時自動重新載入。
+打開多個分頁時，全部都要沒有未儲存內容；舊版無法回應安全確認時，先關閉該舊分頁。背景或離線手機不會永遠卡住 Mac 更新，回來仍可合併相容資料。
+CSV 預覽若不打算匯入，按「取消本次匯入」清掉預覽，才會讓更新繼續；這不會刪掉已匯入的資料。
+你不必每次重新配對、輸入密碼、下載 ZIP、替換資料夾或重新匯入 CSV。
+我不會在對話結束後自行持續寫新版；必須實際完成新版程式並發布，這套流程才會傳遞更新。
+
+失敗與退版
+下載失敗／簽章不符：保留現行程式，顯示原因。
+新版無法啟動或本機 HTTPS 健康檢查失敗：退回原程式，暫停更新，保留客戶資料現況。
+切換途中斷電：下次啟動看到未完成交易，回到原版並暫停更新。
+已啟動但功能有問題：管理頁按「退回上一版程式」。它只回復程式版本，不把客戶紀錄倒退成舊資料。
+首次安裝 1.4 更新器以前的 1.3 不在這個自動退版管理範圍。舊資料夾仍保留，如需回到 1.3，先停止 1.4 服務，再由原資料夾啟動，勿同時啟動。
+啟動檢查不是完整使用者功能驗收；無法自動知道所有介面或業務邏輯問題。
+
+不要改的項目
+不要刪除 Library/Application Support/PharmacyLocal-CS。
+不要更改 Mac .local 名稱、埠號、瀏覽器或隨意撤銷配對。
+不要公開 tls、config.json、snapshot.json、updates 的加密檢查點、發布私鑰或客戶資料包。
+不要把同步一致當成獨立備份；另做加密離線外接備份並確認可還原。
+
+發布者操作摘要
+純程式匯出：node scripts/release.mjs --code-only /一個全新本機資料夾
+簽署包：由 GitHub workflow 設定 GITHUB_REPOSITORY、PHARMACY_RELEASE_SEQUENCE、PHARMACY_SIGNING_KEY 執行 node scripts/release.mjs。
+新版本必須同時更新 package.json、public/version.js、public/sw.js 的版本及介面標示，通過全部測試，再提交 main 或推送對應 vX.Y.Z 標籤。沒有簽章 Secret 時只執行測試，不產生 Release。
+版本與已見發布序號都必須增加。同一版本不覆蓋原 Release；修正問題請發布新 patch 版本。
+只有 bootstrap 1／protocol 1／schema 2 的相容更新允許自動安裝。更新器本體、根信任、Node 或資料格式遷移仍需人工升級。
+
+費用與官方參考
+此設計不租主機、不買網域、不用 Apple 開發者會員或付費 API。公開儲存庫使用 GitHub 的標準 Actions runner；不要開付費大型 runner 或其他計費服務。
+GitHub 標準公開 runner 說明：https://docs.github.com/en/actions/reference/runners/github-hosted-runners
+GitHub Release 固定下載連結：https://docs.github.com/en/repositories/releasing-projects-on-github/linking-to-releases
+GitHub CLI 發布：https://cli.github.com/manual/gh_release_create
+Service Worker 更新生命週期：https://web.dev/articles/service-worker-lifecycle
+Node 簽章 API：https://nodejs.org/api/crypto.html
+上述外部政策與平台行為仍可能改變，不能承諾永久免維護。

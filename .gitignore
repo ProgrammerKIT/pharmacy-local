@@ -1,0 +1,22 @@
+# Positive-allowlist exporter is the primary protection; this is supplemental.
+customer-data/
+preview/
+runtime/
+dist/
+node_modules/
+CS-Customer-Graph.html
+IMPORT-RESULTS.md
+START-HERE.html
+*.csv
+*.pharmabackup
+*.pharmaupdate
+*.key
+*.pem
+*.mobileconfig
+*.cer
+*.zip
+config.json
+snapshot.json
+trust.json
+.env*
+.DS_Store

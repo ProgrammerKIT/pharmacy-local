@@ -1,0 +1,417 @@
+import { newMeta, derive, seal, unseal, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES } from './core.js';
+import { readLocal, writeLocal } from './db.js';
+import { createCSVImport } from './csv-ui.js';
+import { entityRule, evidenceKind, sourceTags } from './relations.js';
+import { APP_VERSION } from './version.js';
+import { startUpdates } from './update-client.js';
+
+const $ = id => document.getElementById(id);
+const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const titles = { explore: '關聯探索', visits: '拜訪紀錄', stores: '客戶門市', entities: '人物與主題', csv: '匯入 CSV', sync: '同步與備份', trash: '回收桶' };
+const kinds = { store: '門市', visit: '拜訪', person: '人物', topic: '主題' };
+let key = null, meta = null, payload = null, slot = null, localRevision = 0, busy = false, pendingLock = false, activeView = 'explore';
+let focus = { type: 'topic', id: '' }, graphPage = 0, trail = [], records = [], editorContext = null, toastTimer, autoTimer, objectURLs = [];
+let lastError = '', offlineReady = false, storagePersistent = false, autoFetching = false, gateOpening = false;
+let updateHolding = false;
+const csvImport = createCSVImport({ host: $('csv-view'), getState: () => payload, run, saveBundle: async bundle => { await persist({ ...payload, bundle, dirty: true }); render(); }, notify: toast });
+const all = type => records.filter(r => r.type === type && (!r.deleted || r.conflict));
+const by = (type, id) => records.find(r => r.type === type && r.id === id);
+const name = (type, id) => by(type, id)?.name || (type === 'store' ? '已刪除／未命名門市' : '已刪除節點');
+const dateText = at => at ? new Date(at).toLocaleString('zh-TW', { hour12: false }) : '尚未同步';
+function toast(message) { $('toast').textContent = message; $('toast').classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').classList.remove('show'), 6500); }
+function buttons(disabled) { document.querySelectorAll('button').forEach(b => { if (!b.dataset.close) b.disabled = disabled; }); document.querySelectorAll('#csv-view input, #csv-view select').forEach(el => el.disabled = disabled); }
+async function run(fn, errorTarget) {
+  if (busy || updateHolding) return;
+  busy = true; buttons(true);
+  try { if (errorTarget) $(errorTarget).textContent = ''; await fn(); }
+  catch (e) { if (errorTarget) $(errorTarget).textContent = e.message; else toast(e.message); }
+  finally { busy = false; buttons(false); if (pendingLock) lockNow(!document.hidden); }
+}
+async function api(path, { method = 'GET', body, token = payload?.token } = {}) {
+  const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 12000);
+  try {
+    const res = await fetch(path, { method, cache: 'no-store', redirect: 'error', credentials: 'omit', signal: controller.signal, headers: { 'Content-Type': 'application/json', 'X-Pharmacy-Client': '1', 'X-Pharmacy-App': APP_VERSION, ...(token ? { Authorization: `Bearer ${token}` } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
+    const data = await res.json();
+    if (!res.ok) throw Object.assign(new Error(data.error || '同步未完成。'), { status: res.status });
+    return data;
+  } catch (e) { if (!e.status) throw new Error('連不到 Mac。本機資料仍保留；請確認同一 Wi-Fi、Mac 服務及憑證。'); throw e; }
+  finally { clearTimeout(timer); }
+}
+async function persist(next) {
+  const envelope = await seal(next, key, meta, 'device');
+  const rev = await writeLocal(envelope, localRevision, key);
+  localRevision = rev; slot = { envelope, revision: rev, unlockKey: key }; payload = next;
+  $('save-state').textContent = '已加密儲存於本機';
+}
+async function initializeOrUnlock(event) {
+  event.preventDefault(); await run(async () => {
+    const password = $('password').value;
+    slot = await readLocal(); localRevision = slot?.revision || 0;
+    if (slot) {
+      meta = slot.envelope; key = await derive(password, meta);
+      const decrypted = await unseal(slot.envelope, key, 'device'); validateBundle(decrypted.bundle);
+      if (decrypted.bundle.vaultId !== meta.vaultId) throw new Error('資料庫身分不符。');
+      payload = decrypted; await persist(decrypted);
+    } else {
+      if (password.length < 12) throw new Error('請使用至少 12 個字元的密碼。');
+      if ($('password-again').value && $('password-again').value !== password) throw new Error('兩次密碼不同。');
+      const label = $('device-name').value.trim(), code = $('pair-code').value.trim();
+      if (!label || !code) throw new Error('請填寫裝置名稱及 Mac 的配對碼。');
+      const paired = await api('/api/pair', { method: 'POST', body: { code, label }, token: null });
+      let bundle;
+      if (paired.snapshot.envelope) {
+        meta = paired.snapshot.envelope; key = await derive(password, meta);
+        bundle = validateBundle(await unseal(meta, key));
+        if (bundle.vaultId !== meta.vaultId) throw new Error('資料庫身分不符。');
+      } else {
+        if ($('password-again').value !== password) throw new Error('首次建立需要再輸入密碼。配對碼已使用，請在 Mac 重新產生。');
+        meta = newMeta(); key = await derive(password, meta); bundle = emptyBundle(meta.vaultId);
+      }
+      await persist({ schema: 1, device: paired.id, deviceName: label, token: paired.token, bundle, dirty: !paired.snapshot.envelope, serverVersion: paired.snapshot.version, lastSync: paired.snapshot.envelope ? new Date().toISOString() : null });
+    }
+    $('password').value = ''; $('password-again').value = ''; $('pair-code').value = '';
+    await openWorkspace();
+    setTimeout(autoSync, 0);
+  }, 'gate-error');
+}
+async function openWorkspace() {
+  pendingLock = document.hidden; lastError = '';
+  $('gate').hidden = true; $('workspace').hidden = false;
+  document.body.classList.toggle('privacy-veil', pendingLock);
+  try { storagePersistent = await navigator.storage?.persist?.() || false; } catch {}
+  render(); clearInterval(autoTimer);
+  autoTimer = setInterval(autoSync, 15000);
+}
+async function autoSync() {
+  if (updateHolding || autoFetching || !payload?.token || document.hidden || busy || editorContext || $('review').open || csvImport.hasPending()) return;
+  const sessionKey = key;
+  autoFetching = true;
+  try {
+    // Offline probes never block editing or take the write lock, and carry no customer content.
+    const remote = await api('/api/version');
+    if (updateHolding || !payload || key !== sessionKey || document.hidden || busy || editorContext || $('review').open || csvImport.hasPending()) return;
+    await run(async () => {
+      try {
+        if (payload.dirty || remote.version !== payload.serverVersion) await synchronize();
+        else await recordUnchangedSync();
+      } catch (e) { lastError = e.message; status(); }
+    });
+  } catch (e) { if (payload && key === sessionKey) { lastError = e.message; status(); } }
+  finally { autoFetching = false; }
+}
+function lockNow(reopen = !document.hidden) {
+  if (busy || editorContext || csvImport.hasPending()) { pendingLock = true; document.body.classList.add('privacy-veil'); return; }
+  pendingLock = false; clearInterval(autoTimer); key = null; meta = null; payload = null; records = []; trail = []; editorContext = null; lastError = '';
+  csvImport.reset();
+  for (const u of objectURLs) URL.revokeObjectURL(u); objectURLs = [];
+  document.querySelectorAll('dialog').forEach(d => d.close());
+  for (const id of ['focus-header', 'graph', 'graph-pager', 'focus-detail', 'evidence-list', 'store-list', 'visit-list', 'customer-list', 'entity-list', 'trash-list', 'review-body', 'editor-fields', 'conflict-list', 'connection-detail', 'device-label', 'sync-result', 'storage-detail']) $(id).replaceChildren();
+  $('editor-form').reset(); $('gate-form').reset(); $('password').value = ''; $('backup-file').value = '';
+  $('workspace').hidden = true; $('gate').hidden = false;
+  if (reopen) { document.body.classList.remove('privacy-veil'); showGate(); }
+  $('toast').classList.remove('show'); $('toast').textContent = '';
+}
+async function showGate() {
+  if (gateOpening || payload) return; gateOpening = true;
+  try {
+    $('gate-error').textContent = '';
+    slot = await readLocal(); localRevision = slot?.revision || 0;
+    if (slot?.unlockKey) {
+      $('gate-title').textContent = '正在開啟本機筆記'; $('gate-hint').textContent = '使用這台裝置保存的金鑰解密，不需輸入密碼。'; $('gate-form').hidden = true; $('gate-restore').hidden = true;
+      try {
+        meta = slot.envelope; key = slot.unlockKey; const decrypted = await unseal(slot.envelope, key, 'device'); validateBundle(decrypted.bundle);
+        if (decrypted.bundle.vaultId !== meta.vaultId) throw new Error('資料庫身分不符。');
+        payload = decrypted; await openWorkspace(); setTimeout(autoSync, 0); return;
+      } catch { key = null; meta = null; payload = null; $('gate-error').textContent = '裝置保存的金鑰無法使用。請輸入一次原資料庫密碼，重新建立自動開啟金鑰。'; }
+    }
+    $('gate-form').hidden = false;
+    $('gate-title').textContent = slot ? '輸入一次資料庫密碼' : '連接你的 Mac';
+    $('gate-hint').textContent = slot ? '這是舊版升級或裝置金鑰修復。成功後，日常開啟不再要求密碼。' : '先在 Mac 管理頁產生配對碼。首次配對輸入一次資料庫密碼，之後自動開啟。';
+    $('pair-fields').hidden = !!slot; $('new-options').hidden = !!slot; $('gate-restore').hidden = !!slot;
+    $('gate-submit').textContent = slot ? '驗證並啟用自動開啟' : '配對並開啟';
+    $('device-name').value = /iPhone|iPad/.test(navigator.userAgent) ? '我的 iPhone' : '我的 Mac';
+  } catch (e) { $('gate-error').textContent = `無法使用本機儲存：${e.message}`; }
+  finally { gateOpening = false; }
+}
+async function recordUnchangedSync() {
+  // A successful confirmation is still a sync, even when no customer revisions change.
+  // Save only after the Mac responds; persist() must succeed before showing a new time.
+  await persist({ ...payload, lastSync: new Date().toISOString() });
+  lastError = ''; status();
+  $('sync-result').textContent = `最近成功同步：${dateText(payload.lastSync)}\n已確認與 Mac 的資料版本一致，沒有新變更。`;
+}
+async function synchronize() {
+  if (!payload?.token) throw new Error('請先在「同步與備份」重新配對；本機資料仍保留。');
+  $('sync-state').textContent = '正在與 Mac 交換…';
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const remote = await api('/api/snapshot');
+    if (remote.version < (payload.serverVersion || 0)) throw new Error('Mac 版本比上次舊，可能已回復備份。請先匯出本機備份，再重新配對確認。');
+    if (remote.envelope && !payload.dirty && remote.version === payload.serverVersion) { await recordUnchangedSync(); return; }
+    let combined = payload.bundle, other = null;
+    if (remote.envelope) {
+      if (remote.envelope.vaultId !== meta.vaultId || remote.envelope.salt !== meta.salt) throw new Error('Mac 是另一個資料庫，已停止同步以保護本機資料。');
+      other = validateBundle(await unseal(remote.envelope, key)); combined = merge(combined, other);
+    }
+    // Persist received revisions before sending: interrupted transfers never erase local edits.
+    await persist({ ...payload, bundle: combined, dirty: true });
+    const same = other && combined.ops.length === other.ops.length;
+    let version = remote.version, backupOK = true;
+    if (!same) {
+      try { const result = await api('/api/snapshot', { method: 'PUT', body: { expectedVersion: remote.version, envelope: await seal(combined, key, meta) } }); version = result.version; backupOK = result.backupOK; }
+      catch (e) { if (e.status === 409) continue; throw e; }
+    }
+    await persist({ ...payload, dirty: false, serverVersion: version, lastSync: new Date().toISOString() });
+    lastError = backupOK ? '' : '資料已同步，但 Mac 自動快照失敗。請檢查磁碟空間並手動匯出備份。';
+    render(); $('sync-result').textContent = `最近成功同步：${dateText(payload.lastSync)}\n已與 Mac 交換至資料版本 ${version}。${records.some(r => r.conflict) ? '有衝突需確認。' : '目前沒有內容衝突。'}${lastError ? '\n' + lastError : ''}`;
+    return;
+  }
+  throw new Error('其他裝置持續更新，尚未完成同步。請稍後再按一次。');
+}
+function status() {
+  if (!payload) return;
+  const conflicts = records.filter(r => r.conflict).length;
+  const lastSuccess = payload.lastSync ? `最近成功同步：${dateText(payload.lastSync)}` : '尚未成功同步';
+  $('sync-state').textContent = lastError ? `同步未完成：${lastError} ${lastSuccess}` : payload.dirty ? `本機有變更，等待同步。${lastSuccess}` : lastSuccess;
+  $('conflict-link').hidden = !conflicts; $('conflict-link').textContent = `${conflicts} 筆衝突待確認`;
+  $('device-label').textContent = payload.deviceName;
+  $('connection-detail').textContent = `${payload.deviceName} · ${location.hostname} · Mac 版本 ${payload.serverVersion || 0}`;
+  $('storage-detail').textContent = `離線介面：${offlineReady ? '已備妥' : '尚待確認，請先保持連線'}。持久儲存：${storagePersistent ? '已獲允許' : '瀏覽器尚未允許，請定期同步及備份'}。資料 ${(new TextEncoder().encode(JSON.stringify(payload.bundle)).length / 1048576).toFixed(2)} / 24 MB（包含歷史與附件）。`;
+}
+function switchView(view) {
+  activeView = view; Object.keys(titles).forEach(v => $(`${v}-view`).hidden = v !== view);
+  document.querySelectorAll('[data-view]').forEach(b => b.classList.toggle('active', b.dataset.view === view));
+  $('page-title').textContent = titles[view]; render();
+}
+function navigate(type, id, remember = true) {
+  const r = by(type, id); if (!r) return;
+  if (remember && (focus.id !== id || focus.type !== type)) trail.push({ ...focus });
+  focus = { type, id }; graphPage = 0; switchView('explore');
+}
+function canonicalPerson(id) { const seen = new Set(); let r = by('person', id); while (r?.sameAs && !r.conflict && !seen.has(r.id)) { seen.add(r.id); r = by('person', r.sameAs); } return r?.id || id; }
+function related(f = focus) {
+  const tag = by(f.type, f.id)?.csvTag;
+  const tagged = tag ? all('store').filter(s => sourceTags(s).includes(tag)).map(s => s.id) : [];
+  return all('visit').filter(v => f.type === 'store' ? v.store === f.id : f.type === 'topic' ? tag ? tagged.includes(v.store) : v.topics.includes(f.id) : v.people.some(p => canonicalPerson(p) === canonicalPerson(f.id))).sort((a, b) => b.date.localeCompare(a.date));
+}
+function chip(type, id) { const r = by(type, id); return r ? `<button class="chip ${type}" data-node-type="${type}" data-node-id="${esc(id)}">${type === 'topic' ? '# ' : ''}${esc(r.name)}${r.conflict ? ' ⚠' : ''}</button>` : ''; }
+function noteHTML(v) {
+  const rule = activeView === 'explore' ? entityRule(by(focus.type, focus.id)) : null;
+  const evidence = rule ? evidenceKind(v.text, rule) : null;
+  const hint = evidence?.lines.length ? `<div class="evidence-hint ${evidence.kind}"><strong>${esc(evidence.label)} · 字詞線索</strong>${evidence.lines.map(line => `<blockquote>${esc(line)}</blockquote>`).join('')}</div>` : '';
+  const sourceState = v.sourceMissing ? '<div class="conflict-card">Google 最新匯出已沒有這段備註；程式保留最後內容，未刪除。</div>' : v.googleUpdatePending ? `<div class="conflict-card">Google 備註已有新版；你曾在 App 修改原文，因此先保留 App 文字。<details><summary>查看 Google 最新文字</summary><p>${esc(v.googleText)}</p></details></div>` : '';
+  return `<article class="note"><div class="note-head"><time>${esc(v.date || '原始日期未提供')}</time><span class="pill">${esc(v.source)}</span></div><button class="text-button store-link" data-node-type="store" data-node-id="${esc(v.store)}">${esc(name('store', v.store))}</button>${v.conflict ? `<div class="conflict-card">這筆有 ${v.heads.length} 個版本。以下僅顯示其中一個，請先核對。 <button class="text-button" data-review="visit:${esc(v.id)}">處理衝突</button></div>` : ''}${sourceState}${hint}<p>${esc(v.text)}</p><div class="chips">${v.topics.map(id => chip('topic', id)).join('')}${v.people.map(id => chip('person', id)).join('')}</div>${v.next ? `<p class="next"><strong>下次跟進</strong>${esc(v.next)}</p>` : ''}<div class="attachments">${(v.attachments || []).map((a, i) => `<button data-attachment="${esc(v.id)}" data-index="${i}">↧ ${esc(a.name)}</button>`).join('')}</div><div class="note-actions">${sourceButton(v)}<button class="text-button" data-edit="visit:${esc(v.id)}">編輯</button><button class="text-button" data-history="visit:${esc(v.id)}">歷史 ${v.versions.length}</button><button class="text-button danger" data-delete="visit:${esc(v.id)}">移到回收桶</button></div></article>`;
+}
+function render() {
+  if (!payload) return;
+  records = project(payload.bundle); status();
+  const previous = $('district').value;
+  $('district').innerHTML = '<option value="">所有地區</option>' + [...new Set(all('store').map(s => s.district).filter(Boolean))].sort().map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join(''); $('district').value = previous;
+  if (!by(focus.type, focus.id) || by(focus.type, focus.id).deleted) { const first = all('topic').find(t => t.ruleKey === 'ortho') || all('store')[0] || all('topic')[0] || all('person')[0]; focus = first ? { type: first.type, id: first.id } : { type: 'store', id: '' }; }
+  if (activeView === 'explore') { renderStores(); renderFocus(); }
+  if (activeView === 'visits') renderVisits();
+  if (activeView === 'stores') $('customer-list').innerHTML = all('store').map(s => entityCard(s)).join('') || '<p class="empty">先新增第一間門市。</p>';
+  if (activeView === 'entities') $('entity-list').innerHTML = [...all('person'), ...all('topic')].map(entityCard).join('') || '<p class="empty">新增人物與主題，讓拜訪紀錄產生連結。</p>';
+  $('conflict-list').innerHTML = records.filter(r => r.conflict).map(r => `<div class="conflict-card"><strong>${esc(r.name || name('store', r.store) + ' · ' + r.date)}</strong><p>${r.heads.length} 個版本待確認</p><button data-review="${r.type}:${esc(r.id)}">比較並處理</button></div>`).join('') || '<p class="muted">目前沒有衝突。</p>';
+  if (activeView === 'trash') $('trash-list').innerHTML = records.filter(r => r.deleted && !r.conflict).map(r => `<article class="panel"><span class="pill">${kinds[r.type]}</span><h3>${esc(r.name || name('store', r.store) + ' · ' + r.date)}</h3><p>${esc(r.text || r.desc || r.contact || '')}</p><button data-restore="${r.type}:${esc(r.id)}">還原</button> <button data-history="${r.type}:${esc(r.id)}">查看歷史</button></article>`).join('') || '<p class="empty">回收桶是空的。</p>';
+}
+function entityCard(r) { return `<article class="panel"><span class="pill ${r.conflict ? 'warn' : ''}">${kinds[r.type]}${r.conflict ? ' · 有衝突' : ''}</span><h3>${esc(r.name)}</h3><p>${esc(r.type === 'store' ? `${r.city} ${r.district} · ${r.channel}\n${r.attr}\n${r.contact}` : r.type === 'person' ? `${r.confirmed ? '身分已核對' : '身分待確認'} · ${r.role}${r.sameAs ? '\n連到：' + name('person', r.sameAs) : ''}` : r.desc)}</p><div class="note-actions">${sourceButton(r)}<button class="text-button" data-node-type="${r.type}" data-node-id="${esc(r.id)}">探索關聯</button><button class="text-button" data-edit="${r.type}:${esc(r.id)}">編輯</button><button class="text-button" data-history="${r.type}:${esc(r.id)}">歷史</button><button class="text-button danger" data-delete="${r.type}:${esc(r.id)}">刪除</button></div></article>`; }
+function renderStores() {
+  const q = $('search').value.trim().toLowerCase(), district = $('district').value, channel = $('channel').value;
+  const stores = all('store').filter(s => (!district || s.district === district) && (!channel || s.channel === channel) && (!q || `${s.name}${s.attr}${s.contact}${s.address || ""}${(s.lists || []).join()}${sourceTags(s).join()}`.toLowerCase().includes(q) || all('visit').some(v => v.store === s.id && v.text.toLowerCase().includes(q))));
+  $('store-list').innerHTML = stores.map(s => `<button class="store-card ${focus.type === 'store' && focus.id === s.id ? 'active' : ''}" data-node-type="store" data-node-id="${esc(s.id)}"><strong>${esc(s.name)}</strong><small>${esc(s.district || '地區未提供')} · ${esc(s.channel || '屬性待整理')} · ${related({ type: 'store', id: s.id }).length} 筆</small>${s.conflict ? '<span class="pill warn">有衝突</span>' : ''}</button>`).join('') || '<p class="empty">沒有符合的門市。可新增門市或調整篩選。</p>';
+}
+function renderFocus() {
+  const r = by(focus.type, focus.id);
+  if (!r) { $('focus-header').innerHTML = '<h2>建立第一個探索起點</h2><p>先新增門市，再記錄拜訪。</p>'; $('focus-detail').innerHTML = ''; $('graph').innerHTML = ''; $('evidence-list').innerHTML = ''; $('evidence-count').textContent = '0'; return; }
+  const vv = related(), storeIDs = r.csvTag ? all('store').filter(s => sourceTags(s).includes(r.csvTag)).map(s => s.id) : [...new Set(vv.map(v => v.store))];
+  $('focus-header').innerHTML = `<div class="focus-top"><span class="pill ${r.type === 'person' && !r.confirmed ? 'warn' : ''}">${kinds[r.type]}${r.type === 'person' ? r.confirmed ? ' · 已核對' : ' · 待確認' : ''}</span>${trail.length ? '<button id="back-node" class="text-button">← 上一個節點</button>' : ''}</div><h2>${esc(r.name)}</h2><p class="muted">${esc(r.type === 'store' ? `${r.city} ${r.district} · ${r.channel}` : r.type === 'person' ? r.role : r.desc)}</p>${r.conflict ? `<button class="danger" data-review="${r.type}:${esc(r.id)}">先處理這個節點的衝突</button>` : ''}`;
+  const topics = [...new Set(vv.flatMap(v => v.topics))], people = [...new Set(vv.flatMap(v => v.people))];
+  if (r.type === 'store') topics.push(...all('topic').filter(t => t.csvTag && sourceTags(r).includes(t.csvTag)).map(t => t.id));
+  $('focus-detail').innerHTML = `<div class="metrics"><div><strong>${storeIDs.length}</strong><span>相關門市</span></div><div><strong>${vv.length}</strong><span>相關原文</span></div><div><strong>${vv.filter(v => v.csvSources?.length).length}</strong><span>可追溯 CSV</span></div></div>${r.type === 'store' ? `<h3>門市窗口</h3><p>${esc(r.contact)}</p><p class="muted">${esc(r.attr)}</p><p>${esc(r.address || '')}</p><p class="muted">${esc((r.lists || []).join('、'))}</p><p>${sourceTags(r).map(t => `<span class="pill">${esc(t)}</span>`).join(' ')}</p>${sourceButton(r)}` : ''}${r.type === 'person' ? `<p>${esc(r.desc)}</p>${r.sameAs ? `<p>已確認連到 ${chip('person', r.sameAs)}</p>` : ''}` : ''}<h3>相關主題</h3><div class="chips">${topics.map(id => chip('topic', id)).join('') || '<span class="muted">尚未標記主題</span>'}</div><h3>提及人物</h3><div class="chips">${people.map(id => chip('person', id)).join('') || '<span class="muted">尚未標記人物</span>'}</div><div class="insight"><h3>從證據判斷</h3><p>共同主題代表值得追問的線索。對照原文、日期及提問方式，再判斷是否為市場需求；同名人物請先核對身分。</p></div>`;
+  $('evidence-list').innerHTML = vv.map(noteHTML).join('') || '<p class="empty">尚無相關拜訪紀錄。</p>'; $('evidence-count').textContent = vv.length;
+  drawGraph();
+}
+function drawGraph() {
+  if (!payload || activeView !== 'explore') return;
+  const r = by(focus.type, focus.id); if (!r) return;
+  const visits = related(), links = [];
+  function add(type, id) { if ((type === focus.type && id === focus.id) || links.some(x => x.type === type && x.id === id) || !by(type, id)) return; links.push({ type, id }); }
+  if (focus.type === 'store') { visits.forEach(v => v.topics.forEach(id => add('topic', id))); visits.forEach(v => v.people.forEach(id => add('person', id))); all('topic').filter(t => t.csvTag && sourceTags(r).includes(t.csvTag)).forEach(t => add('topic', t.id)); }
+  else if (r.csvTag) all('store').filter(s => sourceTags(s).includes(r.csvTag)).forEach(s => add('store', s.id));
+  else visits.forEach(v => add('store', v.store));
+  if (focus.type === 'person') all('person').filter(p => p.id !== focus.id && (p.name.includes(r.name.replace('（待確認）', '')) || r.name.includes(p.name.replace('（待確認）', '')))).forEach(p => add('person', p.id));
+  graphPage = Math.min(graphPage, Math.max(0, Math.ceil(links.length / 8) - 1));
+  $('graph-pager').innerHTML = links.length > 8 ? `<button data-graph-page="-1" ${graphPage === 0 ? 'disabled' : ''}>上一頁</button><span>節點 ${graphPage * 8 + 1}–${Math.min(links.length, (graphPage + 1) * 8)}／${links.length}</span><button data-graph-page="1" ${graphPage === Math.ceil(links.length / 8) - 1 ? 'disabled' : ''}>下一頁</button>` : `<span>全部 ${links.length} 個關聯節點</span>`;
+  const nodes = links.slice(graphPage * 8, graphPage * 8 + 8), w = Math.max(280, $('graph-wrap').clientWidth), h = 420, cx = w / 2, cy = h / 2, nw = Math.min(152, w * .44);
+  $('graph').setAttribute('viewBox', `0 0 ${w} ${h}`); $('graph-wrap').style.height = `${h}px`;
+  const positions = [[w * .25, 43], [w * .75, 43], [w * .25, 121], [w * .75, 121], [w * .25, 299], [w * .75, 299], [w * .25, 377], [w * .75, 377]];
+  let edges = '', shapes = '';
+  nodes.forEach((n, i) => { const e = by(n.type, n.id), [x, y] = positions[i], pending = n.type === 'person' && !e.confirmed || r.type === 'person' && !r.confirmed;
+    edges += `<path class="edge ${pending ? 'pending' : ''}" d="M${cx} ${cy} Q${cx} ${y} ${x} ${y}"/>`;
+    const label = e.name.length > 10 ? e.name.slice(0, 9) + '…' : e.name;
+    shapes += `<g class="node ${pending ? 'pending' : ''}" role="button" tabindex="0" aria-label="探索${esc(e.name)}" data-node-type="${n.type}" data-node-id="${esc(n.id)}"><title>${esc(e.name)}</title><rect x="${x - nw / 2}" y="${y - 27}" width="${nw}" height="54" rx="9"/><text x="${x}" y="${y - 2}" text-anchor="middle">${esc(label)}</text><text class="sub" x="${x}" y="${y + 16}" text-anchor="middle">${pending ? '同名待核對' : r.csvTag ? '原始標籤相同' : focus.type === 'topic' ? esc(evidenceKind(visits.filter(v => v.store === n.id).map(v => v.text).join('\n'), entityRule(r)).label) : kinds[n.type]}</text></g>`;
+  });
+  $('graph').innerHTML = `<title>${esc(r.name)}的相關節點</title>${edges}${shapes}<g class="node center"><rect x="${cx - 82}" y="${cy - 30}" width="164" height="60" rx="10"/><text class="sub" x="${cx}" y="${cy - 8}" text-anchor="middle">目前中心 · ${kinds[r.type]}</text><text x="${cx}" y="${cy + 13}" text-anchor="middle">${esc(r.name.slice(0, 11))}</text></g>`;
+}
+function renderVisits() { const q = $('visit-search').value.trim().toLowerCase(); $('visit-list').innerHTML = all('visit').sort((a, b) => b.date.localeCompare(a.date)).filter(v => !q || `${v.text}${v.next}${name('store', v.store)}${v.topics.map(id => name('topic', id)).join()}${v.people.map(id => name('person', id)).join()}`.toLowerCase().includes(q)).map(noteHTML).join('') || '<p class="empty">沒有符合的拜訪紀錄。</p>'; }
+function sourceButton(r) { return (r.csvSources?.length || r.versions?.some(v => v.data.csvSources?.length)) ? `<button class="text-button" data-csv-source="${r.type}:${esc(r.id)}">查看匯入原始來源</button>` : ''; }
+function openSources(type, id) {
+  const r = by(type, id); if (!r) return;
+  const seen = new Set(), sources = r.versions.flatMap(v => v.data.csvSources || []).filter(s => { const k = `${s.blob}:${s.fingerprint}:${s.list}`; if (seen.has(k)) return false; seen.add(k); return true; });
+  $('review-title').textContent = 'CSV 原始來源';
+  $('review-body').innerHTML = `<p class="muted">以下是匯入時的原始欄位；包含歷史版本的來源。匯入時間不是拜訪日期。地圖網址只顯示，不會自動連線。</p>${sources.map(s => `<article class="version"><strong>${esc(s.file)} · 第 ${s.line} 行</strong><p class="muted">清單：${esc(s.list)} · 匯入：${dateText(s.at)}</p><details><summary>展開原始欄位</summary><div class="csv-raw">${s.headers.map((h, i) => `<p><strong>第 ${i + 1} 欄 · ${esc(h)}</strong><span>${esc(s.cells[i])}</span></p>`).join('')}</div></details><button class="text-button" data-csv-download="${esc(s.blob)}" data-csv-filename="${esc(s.file)}">下載原始 CSV（明文）</button></article>`).join('')}`;
+  $('review').showModal();
+}
+const input = (id, label, value = '', max = 500, required = false) => `<label>${label}<input id="${id}" maxlength="${max}" value="${esc(value)}" ${required ? 'required' : ''} autocomplete="off"></label>`;
+const textarea = (id, label, value = '') => `<label>${label}<textarea id="${id}" maxlength="20000">${esc(value)}</textarea></label>`;
+function openEditor(type, id = null) {
+  const old = id ? by(type, id) : null; if (old?.conflict) { openReview(type, id, true); return; }
+  if (type === 'visit' && !all('store').length) { toast('請先新增一間門市。'); openEditor('store'); return; }
+  editorContext = { type, id: id || uuid(), parents: old?.heads.map(h => h.id) || [], oldData: old ? structuredClone(old.heads[0].data) : null };
+  const d = editorContext.oldData || {};
+  $('editor-title').textContent = `${old ? '編輯' : '新增'}${kinds[type]}`; $('editor-error').textContent = '';
+  if (type === 'visit') {
+    const selectedStore = d.store || (focus.type === 'store' ? focus.id : all('store')[0]?.id);
+    const pick = (kind, selected) => all(kind).map(r => `<label class="check"><input type="checkbox" name="${kind}" value="${esc(r.id)}" ${selected?.includes(r.id) ? 'checked' : ''}>${esc(r.name)}</label>`).join('') || '<p class="muted">先到「人物與主題」新增。</p>';
+    $('editor-fields').innerHTML = `<div class="field-grid"><label>門市<select id="f-store">${all('store').concat(d.store && by('store', d.store)?.deleted ? [by('store', d.store)] : []).map(s => `<option value="${esc(s.id)}" ${selectedStore === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select></label><label>拜訪日期（未知可留空）<input type="date" id="f-date" value="${esc(d.date ?? new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10))}"></label></div><label>資訊來源<select id="f-source">${[...new Set(['藥師主動提及', '詢問後回覆', '現場觀察', '其他', ...(d.source ? [d.source] : [])])].map(x => `<option ${x === d.source ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></label>${textarea('f-text', '原始拜訪內容', d.text)}${textarea('f-next', '下次跟進', d.next)}<label>相關主題</label><div class="check-grid">${pick('topic', d.topics)}</div><label>提及人物</label><div class="check-grid">${pick('person', d.people)}</div><label>附件（每個上限 3 MB）<input type="file" id="f-files" multiple accept="image/jpeg,image/png,image/webp,image/heic,application/pdf"></label><p class="muted">支援圖片與 PDF。選擇已在雲端相簿的照片，無法讓既有雲端副本消失。舊附件取消勾選可從此版本移除，歷史仍保留。</p><div class="check-grid">${(d.attachments || []).map((a, i) => `<label class="check"><input type="checkbox" name="keep-attachment" value="${i}" checked>${esc(a.name)}</label>`).join('')}</div>`;
+  } else {
+    let fields = input('f-name', `${kinds[type]}名稱`, d.name, 200, true);
+    if (type === 'store') fields += `<div class="field-grid">${input('f-city', '縣市', d.city)}${input('f-district', '地區', d.district)}</div><label>通路<select id="f-channel">${[...new Set(['', '連鎖', '獨立', '加盟', '診所', '其他', ...(d.channel ? [d.channel] : [])])].map(c => `<option value="${esc(c)}" ${c === d.channel ? 'selected' : ''}>${esc(c || '未分類')}</option>`).join('')}</select></label>${input('f-address', '地址', d.address, 2000)}${input('f-map-url', 'Google Maps 網址（只保存，不自動開啟）', d.mapUrl, 2000)}${input('f-attr', '門市屬性／客群', d.attr)}${input('f-contact', '拜訪窗口', d.contact)}`;
+    if (type === 'person') fields += `${input('f-role', '職務／與門市的關係', d.role)}${textarea('f-desc', '身分證據與備註', d.desc)}<label class="check"><input type="checkbox" id="f-confirmed" ${d.confirmed ? 'checked' : ''}> 我已核對此人物的身分</label><label>已確認是同一人時，連到<select id="f-same"><option value="">保持獨立人物</option>${all('person').filter(p => p.id !== id && !p.sameAs).map(p => `<option value="${esc(p.id)}" ${d.sameAs === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label><p class="muted">須先勾選已核對身分。此設定只合併探索路徑，不改寫原始拜訪文字。</p>`;
+    if (type === 'topic') fields += textarea('f-desc', '主題定義與備註', d.desc);
+    $('editor-fields').innerHTML = fields;
+  }
+  $('editor').showModal();
+}
+async function commitRevision(type, id, data, parents, deleted = false, blobs = {}) {
+  const bundle = structuredClone(payload.bundle); bundle.schema = 2; bundle.ops.push(revision(type, id, data, parents, payload.device, deleted)); Object.assign(bundle.blobs, blobs); validateBundle(bundle);
+  await persist({ ...payload, bundle, dirty: true }); render();
+}
+async function saveEditor(event) {
+  event.preventDefault(); await run(async () => {
+    const ctx = editorContext; if (!ctx) return; const value = id => $(id).value.trim(); let d, blobs = {};
+    if (ctx.type === 'visit') {
+      if (!value('f-text')) throw new Error('請填寫拜訪內容。');
+      const checked = n => [...document.querySelectorAll(`#editor [name="${n}"]:checked`)].map(c => c.value);
+      d = { store: value('f-store'), date: value('f-date'), source: value('f-source'), text: $('f-text').value, next: $('f-next').value, topics: checked('topic'), people: checked('person'), attachments: checked('keep-attachment').map(i => ctx.oldData.attachments[Number(i)]) };
+      // Keep unresolved references in old notes, even if the referenced entity is now in the trash.
+      for (const [field, type] of [['topics', 'topic'], ['people', 'person']]) for (const old of ctx.oldData?.[field] || []) if (!all(type).some(r => r.id === old) && !d[field].includes(old)) d[field].push(old);
+      for (const f of $('f-files').files) {
+        if (f.size > 3 * 1024 * 1024) throw new Error(`${f.name} 超過 3 MB。`);
+        if (!['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'application/pdf'].includes(f.type) && !/\.heic$/i.test(f.name)) throw new Error('附件只支援 JPEG、PNG、WebP、HEIC 與 PDF。');
+        const bytes = new Uint8Array(await f.arrayBuffer()), id = await hashBytes(bytes); blobs[id] = b64(bytes); d.attachments.push({ blob: id, name: f.name.slice(0, 200), mime: f.type || 'application/octet-stream' });
+      }
+    } else if (ctx.type === 'store') d = { name: value('f-name'), city: value('f-city'), district: value('f-district'), channel: value('f-channel'), attr: value('f-attr'), contact: value('f-contact'), address: value('f-address'), mapUrl: value('f-map-url') };
+    else if (ctx.type === 'topic') d = { name: value('f-name'), desc: value('f-desc') };
+    else {
+      d = { name: value('f-name'), role: value('f-role'), desc: value('f-desc'), confirmed: $('f-confirmed').checked, sameAs: value('f-same') };
+      if (d.sameAs && !d.confirmed) throw new Error('請先核對人物身分，再建立同一人連結。');
+      const seen = new Set([ctx.id]); let target = d.sameAs;
+      while (target) { if (seen.has(target)) throw new Error('人物連結不能形成循環。'); seen.add(target); target = by('person', target)?.sameAs; }
+    }
+    d = { ...(ctx.oldData || {}), ...d };
+    if (ctx.type === 'visit' && d.googleUpdatePending && d.text === d.googleText) d.googleUpdatePending = false;
+    await commitRevision(ctx.type, ctx.id, d, ctx.parents, false, blobs); $('editor').close(); editorContext = null; toast('已加密儲存。Mac 可連線時會自動交換。');
+  }, 'editor-error');
+}
+function describeData(type, data) {
+  if (type === 'visit') return `${name('store', data.store)} · ${data.date || '原始日期未提供'}\n${data.source}\n${data.sourceMissing ? 'Google 最新匯出：備註缺少（舊文保留）\n' : ''}${data.googleUpdatePending ? `Google 最新文字：${data.googleText}\nApp 文字待人工核對\n` : ''}\n${data.text}\n\n下次跟進：${data.next}\n主題：${data.topics.map(id => name('topic', id)).join('、')}\n人物：${data.people.map(id => name('person', id)).join('、')}\n附件：${data.attachments.map(a => a.name).join('、')}`;
+  const labels = { address: '地址', mapUrl: '地圖網址', lists: '來源清單', name: '名稱', city: '縣市', district: '地區', channel: '通路', attr: '屬性', contact: '窗口', desc: '備註', role: '職務', confirmed: '身分已核對', sameAs: '同一人連結' };
+  return Object.entries(data).filter(([k]) => k !== 'csvSources').map(([k, v]) => `${labels[k] || k}：${k === 'sameAs' && v ? name('person', v) : v}`).join('\n');
+}
+function openReview(type, id, conflict) {
+  const r = by(type, id); if (!r) return;
+  $('review-title').textContent = conflict ? '比較衝突版本' : '歷史版本';
+  const versions = conflict ? r.heads : [...r.versions].sort((a, b) => b.at.localeCompare(a.at));
+  $('review-body').innerHTML = `<p class="muted">${conflict ? '選擇保留的版本會解決目前全部衝突，其他版本仍留在歷史中。需要整合文字時，可選擇「編輯合併」。' : '還原會新增版本；不會抹除後續歷史。'}</p>${versions.map(o => `<article class="version"><p class="muted">${dateText(o.at)} · 裝置 ${esc(o.device.slice(0, 8))}${o.deleted ? ' · 已刪除' : ''}</p><pre>${esc(describeData(type, o.data))}</pre><button class="secondary" data-use-version="${esc(o.id)}">${conflict ? o.deleted ? '採用刪除' : '採用這個版本' : '還原這個內容'}</button> ${conflict && !o.deleted ? `<button data-merge-version="${esc(o.id)}">以此內容編輯合併</button>` : ''}</article>`).join('')}`;
+  $('review').showModal();
+}
+async function useVersion(id) {
+  const o = payload.bundle.ops.find(o => o.id === id), r = by(o.type, o.entity);
+  if (!confirm('確認採用此版本？其他版本仍保留在歷史中。')) return;
+  await commitRevision(o.type, o.entity, o.data, r.heads.map(h => h.id), o.deleted); $('review').close(); toast('已建立新的確認版本，等待同步。');
+}
+function editMerge(id) {
+  const o = payload.bundle.ops.find(o => o.id === id), r = by(o.type, o.entity), heads = r.heads.map(h => h.id);
+  // Open an editable copy while retaining all conflict parent IDs for explicit resolution.
+  const temporary = { ...r, ...o.data, conflict: false, heads: [o] }, i = records.indexOf(r); records[i] = temporary;
+  $('review').close(); openEditor(o.type, o.entity); records[i] = r; editorContext.parents = heads;
+}
+async function removeEntity(type, id) {
+  const r = by(type, id); if (r.conflict) return openReview(type, id, true);
+  if (!confirm(`將此${kinds[type]}移到回收桶？既有拜訪原文與歷史會保留。`)) return;
+  await commitRevision(type, id, r.heads[0].data, r.heads.map(h => h.id), true); toast('已移到回收桶。');
+}
+function download(bytes, filename, type) { const url = URL.createObjectURL(new Blob([bytes], { type })); objectURLs.push(url); const a = document.createElement('a'); a.href = url; a.download = filename; document.body.append(a); a.click(); a.remove(); setTimeout(() => { URL.revokeObjectURL(url); objectURLs = objectURLs.filter(u => u !== url); }, 60000); }
+async function exportBackup() { const envelope = await seal(payload.bundle, key, meta); download(JSON.stringify({ format: 'pharmacy-backup-1', envelope }), `pharmacy-${new Date().toISOString().slice(0, 10)}.pharmabackup`, 'application/octet-stream'); toast('已產生加密備份，請儲存到本機或外接碟。'); }
+async function importBackup(file) {
+  if (file.size > 36 * 1024 * 1024) throw new Error('備份檔案太大。');
+  const data = JSON.parse(await file.text()); if (data.format !== 'pharmacy-backup-1') throw new Error('不是此版本的加密備份。');
+  if (!payload) {
+    if (await readLocal()) throw new Error('本機已有資料，請先解鎖後合併。');
+    const password = $('password').value; if (!password) throw new Error('請先在密碼欄填寫備份密碼，再選取備份。');
+    const restoredKey = await derive(password, data.envelope), bundle = validateBundle(await unseal(data.envelope, restoredKey));
+    if (bundle.vaultId !== data.envelope.vaultId) throw new Error('備份身分不符。');
+    meta = data.envelope; key = restoredKey; localRevision = 0;
+    await persist({ schema: 1, device: uuid(), deviceName: '還原的裝置', token: null, bundle, dirty: true, serverVersion: 0, lastSync: null }); $('password').value = ''; await openWorkspace(); switchView('sync'); toast('已在本機還原，請重新配對 Mac。');
+  } else {
+    if (data.envelope.vaultId !== meta.vaultId || data.envelope.salt !== meta.salt) throw new Error('這份備份屬於另一個資料庫，已停止合併。');
+    const incoming = validateBundle(await unseal(data.envelope, key)), bundle = merge(payload.bundle, incoming);
+    await persist({ ...payload, bundle, dirty: true }); render(); toast('備份已合併。舊版本不會蓋掉較新的修改；可到歷史版本還原。');
+  }
+}
+async function repairPair() {
+  const code = prompt('請輸入 Mac 管理頁新產生的配對碼：'); if (!code?.trim()) return;
+  const paired = await api('/api/pair', { method: 'POST', token: null, body: { code: code.trim(), label: payload.deviceName } });
+  if (paired.snapshot.envelope && (paired.snapshot.envelope.vaultId !== meta.vaultId || paired.snapshot.envelope.salt !== meta.salt)) throw new Error('此 Mac 是另一個資料庫，本機資料未修改。');
+  await persist({ ...payload, device: paired.id, token: paired.token, serverVersion: 0, dirty: true }); await synchronize(); toast('重新配對完成。');
+}
+document.addEventListener('click', event => {
+  const b = event.target.closest('button');
+  const node = event.target.closest('[data-node-type]'); if (node && !busy) return navigate(node.dataset.nodeType, node.dataset.nodeId);
+  if (!b) return;
+  if (b.dataset.close) { $(b.dataset.close).close(); if (b.dataset.close === 'editor') editorContext = null; return; }
+  if (updateHolding || busy || !payload) return;
+  if (b.dataset.view) return switchView(b.dataset.view);
+  if (b.dataset.add) return openEditor(b.dataset.add);
+  if (b.dataset.edit) return openEditor(...b.dataset.edit.split(':'));
+  if (b.dataset.review) return openReview(...b.dataset.review.split(':'), true);
+  if (b.dataset.csvSource) return openSources(...b.dataset.csvSource.split(':'));
+  if (b.dataset.csvDownload) { if (confirm('原始 CSV 是明文檔案。請確認下載到自己的本機資料夾，避開 iCloud Drive。')) download(unb64(payload.bundle.blobs[b.dataset.csvDownload]), b.dataset.csvFilename.replace(/[\/\\]/g, '_'), 'application/octet-stream'); return; }
+  if (b.dataset.history) return openReview(...b.dataset.history.split(':'), false);
+  if (b.dataset.delete) return run(() => removeEntity(...b.dataset.delete.split(':')));
+  if (b.dataset.restore) return run(async () => { const [type, id] = b.dataset.restore.split(':'), r = by(type, id); await commitRevision(type, id, r.heads[0].data, r.heads.map(h => h.id)); toast('已還原。'); });
+  if (b.dataset.useVersion) return run(() => useVersion(b.dataset.useVersion));
+  if (b.dataset.mergeVersion) return editMerge(b.dataset.mergeVersion);
+  if (b.dataset.attachment) { const v = by('visit', b.dataset.attachment), a = v.attachments[Number(b.dataset.index)]; download(unb64(payload.bundle.blobs[a.blob]), a.name.replace(/[\/\\]/g, '_'), 'application/octet-stream'); return; }
+  if (b.dataset.graphPage) { graphPage = Math.max(0, graphPage + Number(b.dataset.graphPage)); drawGraph(); return; }
+  if (b.id === 'new-note') return openEditor('visit');
+  if (b.id === 'back-node') { const previous = trail.pop(); if (previous) navigate(previous.type, previous.id, false); return; }
+  if (b.id === 'conflict-link') return switchView('sync');
+  if (['sync-button', 'sync-now'].includes(b.id)) return run(async () => { try { await synchronize(); toast(`同步成功：${dateText(payload.lastSync)}。另一台裝置連線同步後會接收更新。`); } catch (e) { lastError = e.message; status(); throw e; } });
+  if (b.id === 'export-backup') return run(exportBackup);
+  if (b.id === 'import-backup') return $('backup-file').click();
+  if (b.id === 'repair-pair') return run(repairPair);
+});
+document.addEventListener('keydown', e => { const n = e.target.closest('.node[role="button"]'); if (n && ['Enter', ' '].includes(e.key) && !busy) { e.preventDefault(); navigate(n.dataset.nodeType, n.dataset.nodeId); } });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { document.body.classList.add('privacy-veil'); if (payload || busy) lockNow(false); }
+  else if (pendingLock || !payload) { pendingLock = false; document.body.classList.remove('privacy-veil'); showGate(); }
+  else document.body.classList.remove('privacy-veil');
+});
+window.addEventListener('pagehide', () => { if (payload || busy) lockNow(false); });
+window.addEventListener('pageshow', () => { if (!payload && !document.hidden) { document.body.classList.remove('privacy-veil'); showGate(); } });
+$('gate-form').addEventListener('submit', initializeOrUnlock); $('editor-form').addEventListener('submit', saveEditor);
+$('editor').addEventListener('close', () => editorContext = null);
+$('gate-restore').addEventListener('click', () => { if (!$('password').value) { $('gate-error').textContent = '請先在密碼欄填寫備份密碼。'; return; } $('backup-file').click(); });
+$('backup-file').addEventListener('change', () => { const f = $('backup-file').files[0]; if (f) run(() => importBackup(f), payload ? null : 'gate-error'); $('backup-file').value = ''; });
+['search', 'district', 'channel'].forEach(id => $(id).addEventListener(id === 'search' ? 'input' : 'change', renderStores)); $('visit-search').addEventListener('input', renderVisits);
+new ResizeObserver(drawGraph).observe($('graph-wrap'));
+if (!isSecureContext || !crypto.subtle) { $('gate-error').textContent = '需要受信任的 HTTPS 連線。請完成 Mac 與 iPhone 憑證設定，不要略過憑證警告。'; $('gate-submit').disabled = true; }
+else {
+  showGate();
+  const draftBusy = () => busy || gateOpening || !!editorContext || $('review').open || csvImport.hasPending() || (!$('gate').hidden && [...$('gate-form').querySelectorAll('input')].some(el => el.value && !['device-name'].includes(el.id)));
+  for (const name of ['click', 'submit', 'keydown', 'beforeinput']) document.addEventListener(name, event => { if (updateHolding && event.target.closest('button,input,select,textarea,form,a')) { event.preventDefault(); event.stopImmediatePropagation(); } }, true);
+  startUpdates({ api, hasToken: () => !!payload?.token, isBusy: draftBusy, setHold: held => { updateHolding = held; document.body.classList.toggle('update-holding', held); }, notify: toast, onOfflineReady: () => { offlineReady = true; $('secure-state').textContent = '離線介面已備妥。iPhone 請先加入主畫面，再從主畫面進行配對。'; status(); } });
+  if (location.hostname === 'localhost') $('secure-state').textContent = '請使用 Mac 顯示的 .local 網址開啟 App，管理頁才使用 localhost。';
+}

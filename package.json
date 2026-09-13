@@ -1,0 +1,9 @@
+{
+  "name": "pharmacy-local",
+  "version": "1.4.3",
+  "private": true,
+  "type": "module",
+  "description": "Local-only pharmacy relationship notes. No npm dependencies.",
+  "engines": { "node": ">=22" },
+  "scripts": { "start": "node supervisor.mjs", "setup": "node scripts/setup.mjs", "test": "node --test test/*.test.mjs", "release": "node scripts/release.mjs" }
+}

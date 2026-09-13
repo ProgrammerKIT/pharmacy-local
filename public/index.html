@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="#152d41"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default"><title>藥局關係筆記</title><link rel="icon" href="/icon.svg" type="image/svg+xml"><link rel="apple-touch-icon" sizes="1200x1200" href="/icon-192.png?v=1.4.3"><link rel="manifest" href="/manifest.webmanifest"><link rel="stylesheet" href="/style.css"><script type="module" src="/app.js"></script></head>
+<body>
+<section id="gate" class="gate">
+  <div class="welcome"><img src="/icon.svg" width="64" height="64" alt=""><p class="eyebrow">PHARMACY · LOCAL</p><h1>藥局關係筆記</h1><p>每次拜訪，留下可追溯的線索。</p><div class="local-label">本機加密 · 碰面同步</div></div>
+  <div class="gate-card"><h2 id="gate-title">連接你的 Mac</h2><p id="gate-hint">首次配對輸入一次資料庫密碼，之後由這台裝置自動開啟。</p>
+  <form id="gate-form">
+    <div id="pair-fields"><label>這台裝置的名稱<input id="device-name" maxlength="60" placeholder="例如：我的 iPhone" autocomplete="off"></label><label>Mac 顯示的配對碼<input id="pair-code" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="一次有效，五分鐘內使用"></label></div>
+    <label>一次性資料庫密碼<input type="password" id="password" required autocomplete="off" placeholder="首次配對或修復時使用"></label>
+    <div id="new-options"><label>建立新資料庫時，再輸入密碼<input type="password" id="password-again" autocomplete="off"></label><p class="muted">本次客戶版先在 Mac 安裝流程解鎖客戶資料包；兩台裝置再使用你設定的資料庫密碼。</p></div>
+    <p id="gate-error" class="error" role="alert"></p><button class="primary wide" id="gate-submit">配對並開啟</button>
+  </form><button id="gate-restore" class="text-button">從加密備份還原至這台裝置</button><p class="muted">配對後不需每日登入。密碼不會傳給 Mac 服務；加密備份仍需原密碼還原，請離線保存。</p><p class="muted" id="secure-state"></p></div>
+</section>
+<div id="workspace" hidden>
+  <aside class="rail"><a href="/" class="brand"><img src="/icon.svg" width="36" height="36" alt=""><span>藥局關係筆記<small id="app-version">CS EDITION · 1.4.3</small></span></a><nav aria-label="主選單"><button data-view="explore" class="active">◎ 關聯探索</button><button data-view="visits">▤ 拜訪紀錄</button><button data-view="stores">▦ 客戶門市</button><button data-view="entities">◇ 人物與主題</button><button data-view="csv">⇩ 匯入 CSV</button><button data-view="sync">⇄ 同步與備份</button><button data-view="trash">↶ 回收桶</button></nav><div class="rail-bottom"><span id="device-label"></span><small>由裝置鎖定保護</small></div></aside>
+  <main><header class="topbar"><div><p class="eyebrow">PRIVATE FIELD NOTES</p><h1 id="page-title">關聯探索</h1></div><div class="top-actions"><button id="sync-button" class="secondary">同步</button><button id="new-note" class="primary">＋ 新增拜訪</button></div></header>
+    <div class="statusline"><span id="save-state">已儲存於本機</span><span id="sync-state">尚未同步</span><button id="conflict-link" class="text-button" hidden></button></div>
+    <p id="update-state" class="update-state" role="status">程式 v1.4.3 · 等待檢查本機服務</p>
+    <section id="explore-view" class="explore-grid">
+      <aside class="store-pane"><div class="section-row"><h2>探索起點</h2><button class="text-button" data-add="store">＋ 門市</button></div><label class="sr-only" for="search">搜尋門市與拜訪原文</label><input id="search" placeholder="搜尋門市、客群、拜訪原文"><div class="filter-row"><select id="district" aria-label="地區"><option value="">所有地區</option></select><select id="channel" aria-label="通路"><option value="">所有通路</option><option>連鎖</option><option>獨立</option><option>加盟</option><option>診所</option></select></div><div id="store-list"></div></aside>
+      <section class="focus-pane"><div id="focus-header"></div><div id="graph-wrap"><svg id="graph" role="img" aria-label="客戶關聯圖"></svg></div><div id="graph-pager" class="graph-pager"></div><p class="graph-caption">點選節點繼續探索 · 虛線為同名／稱呼線索<br>共同提及不等於確認需求或人際關係</p><div id="focus-detail"></div></section>
+      <section class="evidence-pane"><div class="section-row"><h2>原始紀錄</h2><span id="evidence-count" class="pill"></span></div><div id="evidence-list"></div></section>
+    </section>
+    <section id="visits-view" class="page-section" hidden><div class="section-row"><h2>拜訪與匯入備註</h2><input id="visit-search" placeholder="搜尋文字、門市、人物、主題" aria-label="搜尋拜訪紀錄"></div><div id="visit-list" class="card-grid"></div></section>
+    <section id="stores-view" class="page-section" hidden><div class="section-row"><h2>客戶門市</h2><div><button data-view="csv" class="secondary">匯入 CSV</button> <button data-add="store" class="primary">＋ 新增門市</button></div></div><div id="customer-list" class="card-grid"></div></section>
+    <section id="csv-view" class="page-section" hidden></section>
+    <section id="entities-view" class="page-section" hidden><div class="section-row"><h2>人物與主題</h2><div><button data-add="person" class="secondary">＋ 人物</button> <button data-add="topic" class="primary">＋ 主題</button></div></div><p class="muted">同名只是一條線索。確認姓名與身分後，可將人物連到同一位對象；原始拜訪文字保留。</p><div id="entity-list" class="card-grid"></div></section>
+    <section id="sync-view" class="page-section" hidden><div class="settings-grid"><article class="panel"><p class="eyebrow">01 · DEVICE SYNC</p><h2>與 Mac 同步</h2><p id="connection-detail"></p><p>開啟並自動解密後，App 每 15 秒嘗試與 Mac 交換變更；按「立即同步」可提早執行。編輯表單或查看歷史時暫停自動交換。</p><button id="sync-now" class="primary">立即同步</button><div id="sync-result" class="result" role="status"></div><p class="muted">Mac 需開機並執行本機服務。不同時開啟也能先交給 Mac 保存，另一端下次同步再取得。</p><button id="repair-pair" class="text-button">重新配對此裝置（保留本機資料）</button></article>
+    <article class="panel"><p class="eyebrow">02 · ENCRYPTED BACKUP</p><h2>加密備份與還原</h2><p>匯出包括門市、人物、主題、歷史版本及附件。解鎖密碼同資料庫密碼；不包括裝置配對憑證。</p><button id="export-backup" class="secondary">匯出加密備份</button> <button id="import-backup" class="secondary">匯入備份並合併</button><p class="muted">儲存到外接碟或「我的 iPhone」，避開 iCloud Drive。Mac 每次收到同步後保留最近 30 份快照；同一顆硬碟上的快照不能防止硬碟故障。</p><p id="storage-detail" class="muted"></p></article>
+    <article class="panel"><p class="eyebrow">03 · PRIVACY CHECK</p><h2>正式資料啟用前</h2><p>App 只連到提供本頁的 Mac，沒有外部腳本、字型、AI 或遙測。Mac 更新器另行連到已設定的 GitHub 來源下載程式，不傳送客戶內容。PWA 無法替你控制 iOS 雲端備份或其他 App。</p><p>請依隨附指南確認 iCloud 備份、照片、輸入法及外接備份。關閉對外網路、保留 Wi-Fi 後，實測離線操作及同步。</p><p class="muted">切到背景會遮蔽畫面；沒有未完成編輯時清除本次記憶體中的資料。未儲存草稿暫留記憶體，請及時儲存。任何能解鎖這台 iPhone／Mac 的人，也能開啟本 App。</p></article>
+    <article class="panel"><p class="eyebrow">04 · REVIEW CHANGES</p><h2>待處理衝突</h2><div id="conflict-list"></div></article></div></section>
+    <section id="trash-view" class="page-section" hidden><h2>回收桶</h2><p class="muted">此版保留所有歷史。還原會新增一個版本，並在下次同步傳到另一台。</p><div id="trash-list" class="card-grid"></div></section>
+  </main>
+</div>
+<dialog id="editor"><form id="editor-form"><div class="section-row"><h2 id="editor-title"></h2><button type="button" data-close="editor" aria-label="關閉">✕</button></div><div id="editor-fields"></div><p id="editor-error" class="error" role="alert"></p><div class="dialog-footer"><button type="button" data-close="editor">取消</button><button id="editor-save" class="primary">加密儲存</button></div></form></dialog>
+<dialog id="review"><div class="section-row"><h2 id="review-title"></h2><button data-close="review" aria-label="關閉">✕</button></div><div id="review-body"></div></dialog>
+<input type="file" id="backup-file" accept=".pharmabackup,application/json" hidden><div id="toast" role="status" aria-live="polite"></div>
+</body></html>
