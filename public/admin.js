@@ -1,11 +1,15 @@
 const $ = id => document.getElementById(id), token = location.hash.slice(1);
 history.replaceState(null, '', '/admin');
 async function request(path, body) { const res = await fetch(`/api/admin/${path}`, { method: body === undefined ? 'GET' : 'POST', credentials: 'omit', cache: 'no-store', redirect: 'error', headers: { 'Content-Type': 'application/json', 'X-Pharmacy-Client': '1', Authorization: `Bearer ${token}` }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }); const value = await res.json(); if (!res.ok) throw new Error(value.error); return value; }
+function serviceUnavailable() { $('service-status').textContent = '暫時連不到 Mac 本機服務，可能正在更新切換或已停止。'; $('autostart-status').textContent = '目前無法取得登入啟動狀態。若持續無回應，請依下方指引處理。'; }
 async function task(fn) { $('admin-error').textContent = ''; try { await fn(); } catch (e) { $('admin-error').textContent = e.message; } }
 async function refresh() {
   const value = await request('status');
   const a = document.createElement('a'); a.href = `https://${value.hostname}:${location.port}/`; a.target = '_blank'; a.rel = 'noopener'; a.textContent = `開啟 App：${a.href}`; $('app-url').replaceChildren(a);
-  $('snapshot').textContent = `目前同步版本 ${value.version} · 已保存 ${value.backups} 份加密快照（最多 30 份）`;
+  $('snapshot').textContent = `目前資料版本 ${value.version} · 已保存 ${value.backups} 份加密快照（最多 30 份）`;
+  $('service-status').textContent = value.service?.running ? 'Mac 本機服務已回應。' + (value.service.supervised ? '程式更新管理服務已連接。' : '目前未連接程式更新管理服務，請依下方指引啟動。') : '此 Mac 程式尚未提供啟動狀態，請先完成程式更新。';
+  $('autostart-status').textContent = value.service?.autostart?.message || '尚未取得登入自動啟動狀態。';
+  $('service-checked').textContent = '檢查於 ' + new Date().toLocaleString('zh-TW') + '；此結果只確認 Mac 本機，iPhone 連線請從手機 App 按「檢查連線」。';
   const u = value.update;
   $('update-version').textContent = `Mac 程式 v${value.appVersion}`;
   $('update-status').textContent = u.message;
@@ -27,5 +31,5 @@ document.querySelectorAll('[data-update]').forEach(b => b.addEventListener('clic
   await request('update', { action: b.dataset.update });
   $('update-status').textContent = '已送出操作，狀態稍後更新。';
 })));
-if (token) setInterval(() => { if (!document.hidden) refresh().catch(() => { $('update-status').textContent = '服務正在切換或尚未啟動，會繼續重試。'; }); }, 4000);
+if (token) setInterval(() => { if (!document.hidden) refresh().catch(() => { serviceUnavailable(); $('update-status').textContent = '服務正在切換或尚未啟動，會繼續重試。'; }); }, 4000);
 if (!token) $('admin-error').textContent = '請用 Mac 的「03-Manage.command」開啟管理頁，網址需要一次載入的管理憑證。'; else task(refresh);

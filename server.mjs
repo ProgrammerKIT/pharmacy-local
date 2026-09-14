@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID, createHash, timingSafeEqual } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { checkEnvelope } from './public/core.js';
 import { APP_VERSION } from './public/version.js';
 
@@ -35,6 +35,31 @@ async function json(req) {
   for await (const part of req) { size += part.length; if (size > 36 * 1024 * 1024) throw Object.assign(new Error('資料超過同步上限。'), { status: 413 }); chunks.push(part); }
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw Object.assign(new Error('請求格式不正確。'), { status: 400 }); }
 }
+
+// Read-only launchd inspection. Return only status, never paths, PIDs or raw command output.
+export async function inspectAutostart({
+  platform = process.platform, uid = process.getuid?.(), parentPid = process.ppid, managed = !!process.send,
+  exists = fs.existsSync,
+  run = args => new Promise((resolve, reject) => execFile('/bin/launchctl', args, { encoding: 'utf8', timeout: 1500, maxBuffer: 65536 }, (error, stdout, stderr) => { if (error) { error.stderr = stderr; reject(error); } else resolve(stdout); })),
+} = {}) {
+  const label = 'local.pharmacy.cs.notes', reply = (state, message) => ({ state, message });
+  if (platform !== 'darwin') return reply('unsupported', '此檢查僅適用 Mac；目前無法確認登入自動啟動。');
+  if (!Number.isSafeInteger(uid) || uid < 1) return reply('unknown', '無法確認目前登入使用者，請從自己的 Mac 帳號開啟管理頁。');
+  if (!exists(path.join(os.homedir(), 'Library', 'LaunchAgents', label + '.plist'))) return reply('unconfigured', '未找到登入啟動設定。請從原安裝資料夾執行 05-Enable-Autostart.command。');
+  const domain = 'gui/' + uid;
+  try {
+    const disabled = await run(['print-disabled', domain]);
+    if (/"local\.pharmacy\.cs\.notes"\s*=>\s*true/.test(disabled)) return reply('disabled', '登入啟動項目已被停用。請在 Mac 系統設定檢查登入項目與背景執行權限。');
+    const info = await run(['print', domain + '/' + label]);
+    const pid = Number(info.match(/^\s*pid = (\d+)\s*$/m)?.[1]);
+    if (/^\s*state = running\s*$/m.test(info) && pid > 0 && managed && pid === parentPid) return reply('running', '登入啟動項目已載入，且正在管理目前的 Mac 服務。');
+    return reply('loaded', '登入啟動項目已載入，但尚未確認它正在管理目前服務；請依下方指引檢查。');
+  } catch (error) {
+    if (/Could not find service/i.test(String(error.stderr || ''))) return reply('not-loaded', '已有設定檔，但登入啟動項目尚未載入。請從原安裝資料夾執行 05-Enable-Autostart.command。');
+    return reply('unknown', '暫時無法讀取登入啟動狀態；不代表服務已停用。請稍後重新整理。');
+  }
+}
+
 export function createService({ dataDir = defaultDataDir(), host = '0.0.0.0', port, trial = false, updateCommand = null } = {}) {
   process.umask(0o077);
   const configPath = path.join(dataDir, 'config.json');
@@ -45,6 +70,12 @@ export function createService({ dataDir = defaultDataDir(), host = '0.0.0.0', po
   let pairing = null;
   let generation = null, updateStatus = { configured: false, phase: 'unconfigured', appVersion: APP_VERSION, message: '請以 02-Start 啟動更新管理服務。' };
   const activity = new Map();
+  let startupCache = null, startupCheckedAt = 0, startupPending = null;
+  const startupStatus = async () => {
+    if (startupCache && Date.now() - startupCheckedAt < 10000) return startupCache;
+    if (!startupPending) startupPending = inspectAutostart({ managed: !!updateCommand }).then(value => { startupCache = value; startupCheckedAt = Date.now(); return value; }).finally(() => { startupPending = null; });
+    return startupPending;
+  };
   let lastUpdateRequest = 0;
   const checkUpdates = () => { if (updateCommand && Date.now() - lastUpdateRequest > 60000) { lastUpdateRequest = Date.now(); updateCommand('check'); } };
   const prune = () => { for (const [id, v] of activity) if (Date.now() - v.at > 30000) activity.delete(id); };
@@ -75,7 +106,7 @@ export function createService({ dataDir = defaultDataDir(), host = '0.0.0.0', po
         const token = String(req.headers.authorization || '').replace(/^Bearer /, '');
         if (url.pathname.startsWith('/api/admin/')) {
           if (!isLoopback(req.socket.remoteAddress) || !equal(token, config.adminToken)) return send(403, { error: '請在 Mac 開啟管理頁面。' });
-          if (url.pathname === '/api/admin/status' && req.method === 'GET') return send(200, { hostname: config.hostname, version: snapshot.version, appVersion: APP_VERSION, update: updateStatus, devices: config.devices.map(({ id, label, created }) => ({ id, label, created })), backups: fs.readdirSync(path.join(dataDir, 'backups')).filter(n => n.endsWith('.pharmabackup')).length });
+          if (url.pathname === '/api/admin/status' && req.method === 'GET') return send(200, { hostname: config.hostname, version: snapshot.version, appVersion: APP_VERSION, update: updateStatus, service: { running: true, supervised: !!updateCommand, autostart: await startupStatus() }, devices: config.devices.map(({ id, label, created }) => ({ id, label, created })), backups: fs.readdirSync(path.join(dataDir, 'backups')).filter(n => n.endsWith('.pharmabackup')).length });
           if (url.pathname === '/api/admin/health' && req.method === 'GET') {
             if (snapshot.envelope) checkEnvelope(snapshot.envelope);
             for (const f of ['index.html', 'app.js', 'sw.js', 'version.js', 'update-client.js']) if (!fs.statSync(path.join(ROOT, 'public', f)).size) throw new Error('程式檔案不完整。');

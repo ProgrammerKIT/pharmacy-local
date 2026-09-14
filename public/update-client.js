@@ -99,7 +99,7 @@ export function startUpdates({ api, hasToken, isBusy, setHold, notify, onOffline
   if ('serviceWorker' in navigator && location.hostname !== 'localhost') {
     navigator.serviceWorker.addEventListener('message', event => {
       if (event.data?.type === 'UPDATE_PREPARE') {
-        const ready = !isBusy();
+        const ready = !isBusy() && !generation;
         if (ready) { workerHold = true; updateHold(); clearTimeout(workerTimer); workerTimer = setTimeout(releaseWorker, 10000); }
         event.ports[0]?.postMessage({ ready });
       }
