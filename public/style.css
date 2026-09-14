@@ -8,3 +8,8 @@
 .update-holding .update-state { background: #fff0d1; color: #69470e; }
 .update-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .update-history { padding-left: 20px; line-height: 1.8; }
+
+.sync-details { margin: 16px 0; font-size: .9rem; }
+.sync-details dt { font-weight: 650; margin-top: 10px; }
+.sync-details dd { margin: 2px 0 0; color: var(--muted); overflow-wrap: anywhere; }
+.connection-check { margin: 16px 0; padding: 14px; background: #edf3f6; border-radius: 8px; white-space: pre-line; overflow-wrap: anywhere; font-size: .9rem; }

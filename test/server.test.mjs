@@ -21,6 +21,13 @@ test('real HTTPS pairing, authentication, CAS sync, encrypted backups and revoca
     const req = https.request({ host: '127.0.0.1', servername: 'localhost', port: address.port, path: route, method, ca, headers }, res => { let s = ''; res.on('data', chunk => s += chunk); res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(s), headers: res.headers })); }); req.on('error', reject); req.end(body === undefined ? undefined : JSON.stringify(body));
   });
   const admin = 'test-admin-token-123456';
+  assert.equal((await request('/api/admin/status')).status, 403);
+  const status = await request('/api/admin/status', 'GET', undefined, admin);
+  assert.equal(status.body.service.running, true);
+  assert.equal(status.body.service.supervised, false);
+  assert.ok(['unsupported', 'unknown', 'unconfigured', 'disabled', 'not-loaded', 'loaded'].includes(status.body.service.autostart.state));
+  assert.ok(!JSON.stringify(status.body).includes(admin));
+  assert.equal((await request('/api/version', 'GET', undefined, undefined, { 'X-Pharmacy-Client': undefined })).status, 403);
   assert.equal((await request('/api/snapshot')).status, 401);
   assert.equal((await request('/api/admin/status', 'GET', undefined, admin, { Origin: 'https://evil.example' })).status, 403);
   assert.equal((await request('/api/admin/status', 'GET', undefined, admin, { Origin: undefined, 'Sec-Fetch-Site': 'same-origin' })).status, 200);

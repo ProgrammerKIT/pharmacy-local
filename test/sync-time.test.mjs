@@ -1,3 +1,5 @@
+import { APP_VERSION } from '../public/version.js';
+import { diagnoseConnection } from '../public/update-client.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -6,7 +8,9 @@ import { newMeta, derive, seal, unseal, emptyBundle, revision, merge, validateBu
 
 // Run the actual application functions, with a local in-memory transport and real encryption.
 const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
-const functions = app.slice(app.indexOf('async function autoSync()'), app.indexOf('function lockNow(')) +
+const functions = app.slice(app.indexOf('function programDetail()'), app.indexOf('async function api(')) +
+  app.slice(app.indexOf('async function checkConnection()'), app.indexOf('async function persist(')) +
+  app.slice(app.indexOf('async function autoSync()'), app.indexOf('function lockNow(')) +
   app.slice(app.indexOf('async function recordUnchangedSync()'), app.indexOf('function switchView('));
 const OLD = '2026-09-12T03:55:35.000Z', NOW = '2026-09-13T15:10:20.000Z';
 async function fixture() {
@@ -20,7 +24,7 @@ async function client(f, device = 'phone') {
   const $ = id => { if (!elements.has(id)) elements.set(id, { textContent: '', hidden: false, open: false }); return elements.get(id); };
   const c = vm.createContext({
     ...f, payload: { schema: 1, device, deviceName: device, token: `fictional-${device}`, bundle: structuredClone(f.bundle), dirty: false, serverVersion: 1, lastSync: OLD },
-    records: [], lastError: '', clock: NOW, failure: null, updateHolding: false, autoFetching: false, busy: false, editorContext: null,
+    records: [], lastError: '', lastSyncFailure: null, syncWarning: '', macProgram: null, APP_VERSION, diagnoseConnection, clock: NOW, failure: null, updateHolding: false, autoFetching: false, busy: false, editorContext: null,
     document: { hidden: false }, csvImport: { hasPending: () => false }, location: { hostname: 'fictional.local' },
     offlineReady: true, storagePersistent: true, TextEncoder, seal, unseal, validateBundle, merge, $, dateText: value => value || '尚未同步',
   });
@@ -41,12 +45,12 @@ async function client(f, device = 'phone') {
     if (route === '/api/snapshot' && options.method === 'PUT') {
       assert.equal(options.body.expectedVersion, f.remote.version);
       f.remote.version++; f.remote.envelope = options.body.envelope;
-      return { version: f.remote.version, backupOK: true };
+      return { version: f.remote.version, backupOK: c.failure !== 'backup' };
     }
     throw new Error('unexpected route');
   };
   vm.runInContext(functions, c);
-  c.manual = async () => { try { await c.synchronize(); } catch (e) { c.lastError = e.message; c.status(); throw e; } };
+  c.manual = async () => { try { await c.synchronize(); } catch (e) { c.recordSyncFailure(e); throw e; } };
   return { c, calls, local, $ };
 }
 
@@ -107,4 +111,44 @@ test('background and active editing never produce a fresh automatic success time
   c.document.hidden = true; await c.autoSync();
   c.document.hidden = false; c.editorContext = {}; await c.autoSync();
   assert.equal(c.payload.lastSync, OLD); assert.equal(calls.length, 0);
+});
+
+
+test('read-only connection diagnostics never claim sync or overwrite encrypted local edits and time', async () => {
+  const f = await fixture(), { c, calls, local, $ } = await client(f);
+  c.payload.dirty = true; await c.persist(c.payload);
+  const before = JSON.stringify(local.envelope);
+  await c.checkConnection();
+  assert.deepEqual(calls, [['/api/version', 'GET']]);
+  assert.equal(c.payload.lastSync, OLD); assert.equal(c.payload.dirty, true);
+  assert.equal(JSON.stringify(local.envelope), before);
+  assert.match($('connection-check').textContent, /配對有效/);
+  assert.match($('connection-check').textContent, /不會交換客戶資料或更新成功同步時間/);
+});
+
+test('program versions, data revisions, failure time and recovered sync remain distinct', async () => {
+  const f = await fixture(), { c, $ } = await client(f);
+  c.macProgram = { version: '1.4.3', at: NOW };
+  c.failure = 'network'; await assert.rejects(c.manual());
+  assert.equal(c.lastSyncFailure.at, NOW); assert.equal(c.payload.lastSync, OLD);
+  assert.match($('connection-detail').textContent, /資料版本 1/);
+  assert.doesNotMatch($('connection-detail').textContent, /Mac 版本/);
+  assert.ok($('program-detail').textContent.includes('本機 App v' + APP_VERSION));
+  assert.match($('program-detail').textContent, /Mac 程式 v1\.4\.3/);
+  assert.match($('sync-failure-detail').textContent, /連線失敗/);
+  c.failure = null; c.clock = '2026-09-13T16:00:00.000Z'; await c.manual();
+  assert.equal(c.lastSyncFailure.at, NOW); assert.equal(c.payload.lastSync, c.clock);
+  assert.match($('sync-failure-detail').textContent, /之後已成功同步/);
+  assert.doesNotMatch($('sync-state').textContent, /同步未完成/);
+});
+
+test('a failed Mac backup after accepted data is a warning, not a failed sync', async () => {
+  const f = await fixture(), { c, $ } = await client(f);
+  c.payload.bundle.ops.push(revision('store', 'backup-test', { name: '合成快照測試', city: '', district: '', channel: '', attr: '', contact: '' }, [], 'phone'));
+  c.payload.dirty = true; c.failure = 'backup'; await c.manual();
+  assert.equal(c.payload.lastSync, NOW); assert.equal(c.payload.dirty, false); assert.equal(c.lastError, '');
+  assert.equal(c.lastSyncFailure, null);
+  assert.match($('sync-result').textContent, /同步提醒.*自動快照失敗/);
+  assert.doesNotMatch($('sync-state').textContent, /同步未完成/);
+  await c.manual(); assert.match($('sync-success-detail').textContent, /自動快照失敗/);
 });

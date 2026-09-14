@@ -3,7 +3,7 @@ import { readLocal, writeLocal } from './db.js';
 import { createCSVImport } from './csv-ui.js';
 import { entityRule, evidenceKind, sourceTags } from './relations.js';
 import { APP_VERSION } from './version.js';
-import { startUpdates } from './update-client.js';
+import { startUpdates, requestLocal, diagnoseConnection } from './update-client.js';
 
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -12,7 +12,7 @@ const kinds = { store: '門市', visit: '拜訪', person: '人物', topic: '主�
 let key = null, meta = null, payload = null, slot = null, localRevision = 0, busy = false, pendingLock = false, activeView = 'explore';
 let focus = { type: 'topic', id: '' }, graphPage = 0, trail = [], records = [], editorContext = null, toastTimer, autoTimer, objectURLs = [];
 let lastError = '', offlineReady = false, storagePersistent = false, autoFetching = false, gateOpening = false;
-let updateHolding = false;
+let updateHolding = false, macProgram = null, lastSyncFailure = null, syncWarning = '';
 const csvImport = createCSVImport({ host: $('csv-view'), getState: () => payload, run, saveBundle: async bundle => { await persist({ ...payload, bundle, dirty: true }); render(); }, notify: toast });
 const all = type => records.filter(r => r.type === type && (!r.deleted || r.conflict));
 const by = (type, id) => records.find(r => r.type === type && r.id === id);
@@ -27,15 +27,20 @@ async function run(fn, errorTarget) {
   catch (e) { if (errorTarget) $(errorTarget).textContent = e.message; else toast(e.message); }
   finally { busy = false; buttons(false); if (pendingLock) lockNow(!document.hidden); }
 }
-async function api(path, { method = 'GET', body, token = payload?.token } = {}) {
-  const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 12000);
-  try {
-    const res = await fetch(path, { method, cache: 'no-store', redirect: 'error', credentials: 'omit', signal: controller.signal, headers: { 'Content-Type': 'application/json', 'X-Pharmacy-Client': '1', 'X-Pharmacy-App': APP_VERSION, ...(token ? { Authorization: `Bearer ${token}` } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
-    const data = await res.json();
-    if (!res.ok) throw Object.assign(new Error(data.error || '同步未完成。'), { status: res.status });
-    return data;
-  } catch (e) { if (!e.status) throw new Error('連不到 Mac。本機資料仍保留；請確認同一 Wi-Fi、Mac 服務及憑證。'); throw e; }
-  finally { clearTimeout(timer); }
+function programDetail() {
+  return '本機 App v' + APP_VERSION + ' · ' + (macProgram ? 'Mac 程式 v' + macProgram.version + '（確認於 ' + dateText(macProgram.at) + '）' : 'Mac 程式版本尚待連線確認');
+}
+async function api(path, options = {}) {
+  return requestLocal(path, { token: payload?.token, ...options }, version => {
+    macProgram = { version, at: new Date().toISOString() };
+    if (payload) $('program-detail').textContent = programDetail();
+  });
+}
+async function checkConnection() {
+  const output = $('connection-check');
+  output.hidden = false; output.textContent = '正在檢查 Mac 服務、HTTPS 與配對…';
+  const result = await diagnoseConnection({ api, hasToken: () => !!payload?.token });
+  output.textContent = '檢查時間：' + dateText(result.checkedAt) + '\nMac 服務：' + result.service + '\nHTTPS：' + result.tls + '\n裝置配對：' + result.pairing + (result.version !== null ? '\nMac 目前資料版本：' + result.version : '') + '\n' + result.message;
 }
 async function persist(next) {
   const envelope = await seal(next, key, meta, 'device');
@@ -75,7 +80,7 @@ async function initializeOrUnlock(event) {
   }, 'gate-error');
 }
 async function openWorkspace() {
-  pendingLock = document.hidden; lastError = '';
+  pendingLock = document.hidden; lastError = ''; lastSyncFailure = null; syncWarning = '';
   $('gate').hidden = true; $('workspace').hidden = false;
   document.body.classList.toggle('privacy-veil', pendingLock);
   try { storagePersistent = await navigator.storage?.persist?.() || false; } catch {}
@@ -94,18 +99,19 @@ async function autoSync() {
       try {
         if (payload.dirty || remote.version !== payload.serverVersion) await synchronize();
         else await recordUnchangedSync();
-      } catch (e) { lastError = e.message; status(); }
+      } catch (e) { recordSyncFailure(e); }
     });
-  } catch (e) { if (payload && key === sessionKey) { lastError = e.message; status(); } }
+  } catch (e) { if (payload && key === sessionKey) { recordSyncFailure(e); } }
   finally { autoFetching = false; }
 }
 function lockNow(reopen = !document.hidden) {
   if (busy || editorContext || csvImport.hasPending()) { pendingLock = true; document.body.classList.add('privacy-veil'); return; }
-  pendingLock = false; clearInterval(autoTimer); key = null; meta = null; payload = null; records = []; trail = []; editorContext = null; lastError = '';
+  pendingLock = false; clearInterval(autoTimer); key = null; meta = null; payload = null; records = []; trail = []; editorContext = null; lastError = ''; macProgram = null; lastSyncFailure = null; syncWarning = '';
   csvImport.reset();
   for (const u of objectURLs) URL.revokeObjectURL(u); objectURLs = [];
   document.querySelectorAll('dialog').forEach(d => d.close());
-  for (const id of ['focus-header', 'graph', 'graph-pager', 'focus-detail', 'evidence-list', 'store-list', 'visit-list', 'customer-list', 'entity-list', 'trash-list', 'review-body', 'editor-fields', 'conflict-list', 'connection-detail', 'device-label', 'sync-result', 'storage-detail']) $(id).replaceChildren();
+  for (const id of ['focus-header', 'graph', 'graph-pager', 'focus-detail', 'evidence-list', 'store-list', 'visit-list', 'customer-list', 'entity-list', 'trash-list', 'review-body', 'editor-fields', 'conflict-list', 'connection-detail', 'program-detail', 'sync-success-detail', 'sync-failure-detail', 'connection-check', 'device-label', 'sync-result', 'storage-detail']) $(id).replaceChildren();
+  $('connection-check').hidden = true;
   $('editor-form').reset(); $('gate-form').reset(); $('password').value = ''; $('backup-file').value = '';
   $('workspace').hidden = true; $('gate').hidden = false;
   if (reopen) { document.body.classList.remove('privacy-veil'); showGate(); }
@@ -145,7 +151,7 @@ async function synchronize() {
   $('sync-state').textContent = '正在與 Mac 交換…';
   for (let attempt = 0; attempt < 5; attempt++) {
     const remote = await api('/api/snapshot');
-    if (remote.version < (payload.serverVersion || 0)) throw new Error('Mac 版本比上次舊，可能已回復備份。請先匯出本機備份，再重新配對確認。');
+    if (remote.version < (payload.serverVersion || 0)) throw new Error('Mac 資料版本比上次舊，可能已回復備份。請先匯出本機備份，再重新配對確認。');
     if (remote.envelope && !payload.dirty && remote.version === payload.serverVersion) { await recordUnchangedSync(); return; }
     let combined = payload.bundle, other = null;
     if (remote.envelope) {
@@ -161,11 +167,16 @@ async function synchronize() {
       catch (e) { if (e.status === 409) continue; throw e; }
     }
     await persist({ ...payload, dirty: false, serverVersion: version, lastSync: new Date().toISOString() });
-    lastError = backupOK ? '' : '資料已同步，但 Mac 自動快照失敗。請檢查磁碟空間並手動匯出備份。';
-    render(); $('sync-result').textContent = `最近成功同步：${dateText(payload.lastSync)}\n已與 Mac 交換至資料版本 ${version}。${records.some(r => r.conflict) ? '有衝突需確認。' : '目前沒有內容衝突。'}${lastError ? '\n' + lastError : ''}`;
+    lastError = ''; syncWarning = backupOK ? '' : 'Mac 自動快照失敗。請檢查磁碟空間並手動匯出加密備份。';
+    render(); $('sync-result').textContent = `最近成功同步：${dateText(payload.lastSync)}\n已與 Mac 交換至資料版本 ${version}。${records.some(r => r.conflict) ? '有衝突需確認。' : '目前沒有內容衝突。'}${syncWarning ? '\n同步提醒：' + syncWarning : ''}`;
     return;
   }
   throw new Error('其他裝置持續更新，尚未完成同步。請稍後再按一次。');
+}
+function recordSyncFailure(error) {
+  lastError = error.message;
+  lastSyncFailure = { at: new Date().toISOString(), message: error.message };
+  status();
 }
 function status() {
   if (!payload) return;
@@ -174,7 +185,10 @@ function status() {
   $('sync-state').textContent = lastError ? `同步未完成：${lastError} ${lastSuccess}` : payload.dirty ? `本機有變更，等待同步。${lastSuccess}` : lastSuccess;
   $('conflict-link').hidden = !conflicts; $('conflict-link').textContent = `${conflicts} 筆衝突待確認`;
   $('device-label').textContent = payload.deviceName;
-  $('connection-detail').textContent = `${payload.deviceName} · ${location.hostname} · Mac 版本 ${payload.serverVersion || 0}`;
+  $('connection-detail').textContent = payload.deviceName + ' · ' + location.hostname + ' · 本機已確認的資料版本 ' + (payload.serverVersion || 0);
+  $('program-detail').textContent = programDetail();
+  $('sync-success-detail').textContent = lastSuccess + (payload.dirty ? '；另有本機變更等待同步。' : '') + (syncWarning ? '；同步提醒：' + syncWarning : '');
+  $('sync-failure-detail').textContent = lastSyncFailure ? dateText(lastSyncFailure.at) + ' · ' + lastSyncFailure.message + (!lastError ? '（之後已成功同步）' : '') : '本次開啟尚無同步失敗紀錄。';
   $('storage-detail').textContent = `離線介面：${offlineReady ? '已備妥' : '尚待確認，請先保持連線'}。持久儲存：${storagePersistent ? '已獲允許' : '瀏覽器尚未允許，請定期同步及備份'}。資料 ${(new TextEncoder().encode(JSON.stringify(payload.bundle)).length / 1048576).toFixed(2)} / 24 MB（包含歷史與附件）。`;
 }
 function switchView(view) {
@@ -388,10 +402,11 @@ document.addEventListener('click', event => {
   if (b.id === 'new-note') return openEditor('visit');
   if (b.id === 'back-node') { const previous = trail.pop(); if (previous) navigate(previous.type, previous.id, false); return; }
   if (b.id === 'conflict-link') return switchView('sync');
-  if (['sync-button', 'sync-now'].includes(b.id)) return run(async () => { try { await synchronize(); toast(`同步成功：${dateText(payload.lastSync)}。另一台裝置連線同步後會接收更新。`); } catch (e) { lastError = e.message; status(); throw e; } });
+  if (['sync-button', 'sync-now'].includes(b.id)) return run(async () => { try { await synchronize(); toast(`同步成功：${dateText(payload.lastSync)}。另一台裝置連線同步後會接收更新。`); } catch (e) { recordSyncFailure(e); throw e; } });
+  if (b.id === 'check-connection') return run(checkConnection);
   if (b.id === 'export-backup') return run(exportBackup);
   if (b.id === 'import-backup') return $('backup-file').click();
-  if (b.id === 'repair-pair') return run(repairPair);
+  if (b.id === 'repair-pair') return run(async () => { try { await repairPair(); } catch (e) { recordSyncFailure(e); throw e; } });
 });
 document.addEventListener('keydown', e => { const n = e.target.closest('.node[role="button"]'); if (n && ['Enter', ' '].includes(e.key) && !busy) { e.preventDefault(); navigate(n.dataset.nodeType, n.dataset.nodeId); } });
 document.addEventListener('visibilitychange', () => {
