@@ -59,6 +59,7 @@ test('malformed and unrelated responses never turn into a valid pairing or data 
   for (const make of [
     () => new Response('<html>proxy error</html>', { headers: { 'X-Pharmacy-Version': APP_VERSION } }),
     () => response({ version: 7 }, 200, false),
+    () => response({ error: 'unrelated authentication' }, 401, false),
     () => response({ version: '7' }),
     () => response({ version: -1 }),
     () => response({ error: '更新切換中' }, 503),

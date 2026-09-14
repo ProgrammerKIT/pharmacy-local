@@ -1,10 +1,19 @@
 const $ = id => document.getElementById(id), token = location.hash.slice(1);
 history.replaceState(null, '', '/admin');
-async function request(path, body) { const res = await fetch(`/api/admin/${path}`, { method: body === undefined ? 'GET' : 'POST', credentials: 'omit', cache: 'no-store', redirect: 'error', headers: { 'Content-Type': 'application/json', 'X-Pharmacy-Client': '1', Authorization: `Bearer ${token}` }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }); const value = await res.json(); if (!res.ok) throw new Error(value.error); return value; }
+async function request(path, body) {
+  const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 12000);
+  try {
+    const res = await fetch('/api/admin/' + path, { method: body === undefined ? 'GET' : 'POST', credentials: 'omit', cache: 'no-store', redirect: 'error', signal: controller.signal, headers: { 'Content-Type': 'application/json', 'X-Pharmacy-Client': '1', Authorization: 'Bearer ' + token }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    const value = await res.json();
+    if (!res.ok) throw new Error(value.error || 'Mac 尚未完成操作。');
+    return value;
+  } finally { clearTimeout(timer); }
+}
 function serviceUnavailable() { $('service-status').textContent = '暫時連不到 Mac 本機服務，可能正在更新切換或已停止。'; $('autostart-status').textContent = '目前無法取得登入啟動狀態。若持續無回應，請依下方指引處理。'; }
 async function task(fn) { $('admin-error').textContent = ''; try { await fn(); } catch (e) { $('admin-error').textContent = e.message; } }
 async function refresh() {
-  const value = await request('status');
+  let value;
+  try { value = await request('status'); } catch (error) { serviceUnavailable(); throw error; }
   const a = document.createElement('a'); a.href = `https://${value.hostname}:${location.port}/`; a.target = '_blank'; a.rel = 'noopener'; a.textContent = `開啟 App：${a.href}`; $('app-url').replaceChildren(a);
   $('snapshot').textContent = `目前資料版本 ${value.version} · 已保存 ${value.backups} 份加密快照（最多 30 份）`;
   $('service-status').textContent = value.service?.running ? 'Mac 本機服務已回應。' + (value.service.supervised ? '程式更新管理服務已連接。' : '目前未連接程式更新管理服務，請依下方指引啟動。') : '此 Mac 程式尚未提供啟動狀態，請先完成程式更新。';

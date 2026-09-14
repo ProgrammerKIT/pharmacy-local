@@ -1,3 +1,29 @@
+v1.4.4 穩定性修正｜2026-09-15（台灣時間）
+程式審查與測試分支：https://github.com/ProgrammerKIT/pharmacy-local/pull/1
+
+本次新增 15 項回歸測試；完整 Node 測試由 GitHub Actions 執行。
+首次完整測試：59 項通過，0 項失敗、取消或略過。
+執行：node --test test/*.test.mjs，GitHub Actions Ubuntu／Node.js 24。
+記錄：https://github.com/ProgrammerKIT/pharmacy-local/actions/runs/34881028856
+提交：5e432bcf497fbf7fe2a202606dc1a1d44447d198。
+發布前另核對最終提交的測試結果；PR 工作只測試，不取得簽章私鑰或發布。
+
+本次範圍
+- 同步時間與診斷時間分離；本機資料版本與程式版本分離。
+- 配對失效、HTTP 異常、無法辨識回應、逾時、網路中斷與修復後狀態。
+- 配對失效仍檢查新版介面；維護、草稿與所有分頁的更新保護仍保留。
+- 登入啟動狀態的確認／停用／未載入／未知分支；不執行設定變更。
+- 同步成功但 Mac 快照失敗時保留正確結果與備份提醒。
+
+未測／限制
+- 未從此環境操作使用者的 Mac、iPhone 或 Norton。
+- launchctl 分支以受控輸出模擬，沒有變更任何真實登入項目。
+- 瀏覽器控制流程測試不是 iPhone Safari 真機自動化。
+- 本次測試不代表裝置已取得 v1.4.4。
+
+以下保留舊版本當時的歷史紀錄；不代表目前仍未設定更新來源。
+v1.4.3 正式發布已完成：https://github.com/ProgrammerKIT/pharmacy-local/releases/tag/v1.4.3
+
 GitHub 首次發布準備｜2026-09-13
 目標：ProgrammerKIT/pharmacy-local，程式 v1.4.3。
 

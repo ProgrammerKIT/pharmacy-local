@@ -84,7 +84,7 @@ export function startUpdates({ api, hasToken, isBusy, setHold, notify, onOffline
       } catch (error) {
         activityFailed = true;
         remoteHold = false; generation = null; updateHold();
-        message(error.status === 401 ? '配對已失效；請重新配對以恢復同步。新版介面仍會獨立檢查。' : '目前使用已保存的版本；連回 Mac 後再檢查。');
+        message(error.code === 'pairing' ? '配對已失效；請重新配對以恢復同步。新版介面仍會獨立檢查。' : error.serviceReached ? 'Mac 已回應，更新狀態暫不可用；稍後會再檢查。' : '目前使用已保存的版本；連回 Mac 後再檢查。');
       }
       // Authentication must not gate downloading the public, versioned shell.
       // Activation still requires no local draft and the worker's all-tab handshake.

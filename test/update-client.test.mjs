@@ -38,7 +38,7 @@ async function browser() {
 
 test('revoked pairing still checks the shell; offline retries retain cached code and never reload a draft', async () => {
   const b = await browser();
-  b.model.fault = Object.assign(new Error('revoked'), { status: 401 });
+  b.model.fault = Object.assign(new Error('revoked'), { status: 401, code: 'pairing', serviceReached: true });
   b.model.busy = true; b.model.time += 60001; b.waiting();
   const before = b.counts.checks;
   await b.tick();
@@ -50,6 +50,8 @@ test('revoked pairing still checks the shell; offline retries retain cached code
   b.model.busy = false; await b.tick();
   assert.ok(b.counts.activations > 0); // Already prepared worker can still request the all-tab handshake.
   assert.equal(b.counts.reloads, 0); assert.equal(b.counts.holds, false);
+  b.model.fault = Object.assign(new Error('unrecognized proxy response'), { status: 401, code: 'response', serviceReached: false });
+  await b.tick(); assert.doesNotMatch(b.elements.get('update-state').textContent, /配對已失效/);
 });
 
 test('maintenance holds do not approve worker activation until the Mac finishes switching', async () => {
@@ -68,7 +70,7 @@ test('an authentication failure releases only the remote hold, preserving an ack
   let reply;
   b.handlers.worker.message({ data: { type: 'UPDATE_PREPARE' }, ports: [{ postMessage: value => reply = value }] });
   assert.equal(reply.ready, true); assert.equal(b.counts.holds, true);
-  b.model.fault = Object.assign(new Error('revoked'), { status: 401 }); await b.tick();
+  b.model.fault = Object.assign(new Error('revoked'), { status: 401, code: 'pairing', serviceReached: true }); await b.tick();
   assert.equal(b.counts.holds, true);
   b.handlers.worker.message({ data: { type: 'UPDATE_CANCEL' } });
   assert.equal(b.counts.holds, false);
