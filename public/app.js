@@ -2,7 +2,7 @@ import { newMeta, derive, seal, unseal, uuid, emptyBundle, revision, project, me
 import { readLocal, writeLocal } from './db.js';
 import { createCSVImport } from './csv-ui.js';
 import { PROFILE_FIELDS, FILL_FIELDS, scanQuality, setDistinctReview, sourceSuggestions, fillProfile } from './csv.js';
-import { entityRule, evidenceKind, sourceTags } from './relations.js';
+import { entityRule, evidenceKind, sourceTags, groupCSVNotes } from './relations.js';
 import { APP_VERSION } from './version.js';
 import { startUpdates, requestLocal, diagnoseConnection } from './update-client.js';
 
@@ -213,10 +213,11 @@ function canonicalPerson(id) { const seen = new Set(); let r = by('person', id);
 function related(f = focus) {
   const tag = by(f.type, f.id)?.csvTag;
   const tagged = tag ? all('store').filter(s => sourceTags(s).includes(tag)).map(s => s.id) : [];
-  return all('visit').filter(v => f.type === 'store' ? v.store === f.id : f.type === 'topic' ? tag ? tagged.includes(v.store) : v.topics.includes(f.id) : v.people.some(p => canonicalPerson(p) === canonicalPerson(f.id))).sort((a, b) => b.date.localeCompare(a.date));
+  return groupCSVNotes(all('visit').filter(v => f.type === 'store' ? v.store === f.id : f.type === 'topic' ? tag ? tagged.includes(v.store) : v.topics.includes(f.id) : v.people.some(p => canonicalPerson(p) === canonicalPerson(f.id))).sort((a, b) => b.date.localeCompare(a.date)));
 }
 function chip(type, id) { const r = by(type, id); return r ? `<button class="chip ${type}" data-node-type="${type}" data-node-id="${esc(id)}">${type === 'topic' ? '# ' : ''}${esc(r.name)}${r.conflict ? ' ⚠' : ''}</button>` : ''; }
 function noteHTML(v) {
+  if (v.evidenceMembers?.length > 1) return `<section class="note"><h3>相同來源文字 · ${v.evidenceMembers.length} 份來源</h3><p>同店、同日期欄位與全文相同，整合顯示一次；不代表已證實是同一次拜訪。每份來源與歷史都保留。</p><p>${esc(v.text)}</p><details><summary>展開所有來源、歷史與各別操作</summary>${v.evidenceMembers.map(noteHTML).join('')}</details></section>`;
   const rule = activeView === 'explore' ? entityRule(by(focus.type, focus.id)) : null;
   const evidence = rule ? evidenceKind(v.text, rule) : null;
   const hint = evidence?.lines.length ? `<div class="evidence-hint ${evidence.kind}"><strong>${esc(evidence.label)} · 字詞線索</strong>${evidence.lines.map(line => `<blockquote>${esc(line)}</blockquote>`).join('')}</div>` : '';

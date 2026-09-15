@@ -65,6 +65,19 @@ test('CSV UI keeps fill opt-in through filtering and requires confirmation befor
   assert.equal(project(h.state.bundle).find(r => r.type === 'visit').text, '<script>alert(1)</script>');
   assert.equal(h.ui.hasPending(), false); assert.match(h.prompts.at(-1), /補上 1 個空白欄位/);
 });
+
+test('CSV UI requires an explicit disposition for every supplementary text column', async t => {
+  const h = importUI(); t.after(h.cleanup);
+  await h.read('Title,筆記,URL,留言\n<測試>藥局,原文,https://maps.google.com/?cid=1234567,<額外文字>');
+  const html=h.preview(); assert.match(html,/其他文字欄/); assert.match(html,/&lt;額外文字&gt;/);
+  assert.match(html,/id="csv-commit"[^>]*disabled/);
+  await h.click('csv-commit'); assert.equal(h.saved.length,0);
+  const key=html.match(/data-csv-choice="([^"]+)"/)[1];
+  await h.change({dataset:{csvAck:'extraAccepted',row:key},checked:true});
+  assert.doesNotMatch(h.preview(),/id="csv-commit"[^>]*disabled/);
+  await h.click('csv-commit'); assert.equal(h.saved.length,1);
+  assert.equal(project(h.saved[0]).find(r=>r.type==='visit').csvSources[0].supplements[0].text,'<額外文字>');
+});
 test('CSV UI invalidates old preview after a mapping error and never commits stale selections', async t => {
   const h = importUI(); t.after(h.cleanup);
   await h.read('Title,Note,URL\n<測試>藥局,原文,https://maps.google.com/?cid=1234567');
@@ -77,7 +90,7 @@ test('CSV UI forces ambiguous stores to be resolved and resets fill choices when
   const h = importUI(); t.after(h.cleanup);
   await h.read('Title,Address,Note\n<測試>藥局,甲地址,原文');
   let html = h.preview(); assert.match(html, /id="csv-commit"[^>]*disabled/);
-  await h.click('csv-commit'); assert.equal(h.saved.length, 0); assert.match(h.errors().at(-1), /待確認/);
+  await h.click('csv-commit'); assert.equal(h.saved.length, 0); assert.match(h.errors().at(-1), /SOP1 尚未通過/);
   const key = html.match(/data-csv-choice="([^"]+)"/)[1];
   await h.change({ dataset: { csvChoice: key }, value: 'store:s0' });
   await h.change({ dataset: { csvFill: key }, value: 'address', checked: true });

@@ -106,7 +106,7 @@ test('existing data and all files in a batch share conservative duplicate eviden
   assert.ok(p.rows[1].candidates.some(c => c.choice.startsWith('row:')));
   const generic = fixture({ name: '甲', mapUrl: 'https://www.google.com/maps?q=藥局' });
   const plan = await planCSV([await file('Title,URL\n乙,https://www.google.com/maps?q=藥局')], generic);
-  assert.equal(plan.rows[0].choice, 'new');
+  assert.equal(plan.rows[0].choice, 'review');
 });
 test('identical CSV rows in different lists preserve both streams; repeating a list stays idempotent', async () => {
   const text = 'Title,Note,URL\n虛構測試藥局,原文,https://maps.google.com/?cid=1234567', b = emptyBundle('q');
@@ -121,10 +121,14 @@ test('unmapped notes preserve both text and existing sourceMissing state', async
   const first = await importCSV(emptyBundle('q'), text), unmapped = await file(text.replace('原文', '新的來源字'));
   unmapped.mapping.note = -1;
   const before = project(first.bundle).find(r => r.type === 'visit');
-  const next = buildCSVImport(await planCSV([unmapped], first.bundle), first.bundle, 'mac');
+  const plan = await planCSV([unmapped], first.bundle);
+  assert.throws(() => buildCSVImport(plan, first.bundle, 'mac'), /其他非空白文字欄/);
+  plan.rows[0].sop1.extraAccepted = true;
+  const next = buildCSVImport(plan, first.bundle, 'mac');
   assert.deepEqual(project(next.bundle).find(r => r.type === 'visit'), before);
   const missing = await importCSV(first.bundle, text.replace('原文', ''));
-  const kept = buildCSVImport(await planCSV([unmapped], missing.bundle), missing.bundle, 'mac');
+  const secondPlan = await planCSV([unmapped], missing.bundle); secondPlan.rows[0].sop1.extraAccepted = true;
+  const kept = buildCSVImport(secondPlan, missing.bundle, 'mac');
   assert.equal(project(kept.bundle).find(r => r.type === 'visit').sourceMissing, true);
 });
 test('CSV fill is opt-in, previews differences and never overwrites existing nonempty fields', async () => {
@@ -150,13 +154,13 @@ test('conflicting batch fills, stale previews and conflicted notes fail atomical
   const imported = await importCSV(b, csv('甲')), visit = project(imported.bundle).find(r => r.type === 'visit');
   for (const device of ['phone', 'mac']) imported.bundle.ops.push(revision('visit', visit.id, { ...visit.heads[0].data, text: device }, visit.heads.map(h => h.id), device));
   const plan = await planCSV([await file(csv('丙'))], imported.bundle), snapshot = JSON.stringify(imported.bundle);
-  assert.throws(() => buildCSVImport(plan, imported.bundle, 'mac'), /備註有同步衝突/); assert.equal(JSON.stringify(imported.bundle), snapshot);
+  assert.throws(() => buildCSVImport(plan, imported.bundle, 'mac'), /同步衝突/); assert.equal(JSON.stringify(imported.bundle), snapshot);
 });
 test('field length and malformed CSV diagnostics retain line numbers and leave input intact', async () => {
   const f = await file('Title,Address,Note\n測試,' + '長'.repeat(2001) + ',原文'), b = emptyBundle('q');
   const p = await planCSV([f], b);
   assert.equal(p.rows[0].line, 2); assert.ok(p.rows[0].errors.some(e => e.includes('地址超過 2000')));
-  assert.equal(p.rows[0].choice, 'skip');
+  assert.equal(p.rows[0].choice, 'review');
   await assert.rejects(file('Title,Note\n測試,A,B'), /第 2 行/);
   assert.deepEqual(b, emptyBundle('q'));
 });
