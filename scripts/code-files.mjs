@@ -12,5 +12,6 @@ export const CODE_FILES = [...RUNTIME_FILES,
   'test/update.test.mjs', 'test/worker.test.mjs', 'test/supervisor.test.mjs', 'test/sync-time.test.mjs',
   'test/connection.test.mjs', 'test/update-client.test.mjs', 'test/autostart-status.test.mjs',
   'test/quality.test.mjs', 'test/quality-ui.test.mjs',
+  'SOP1.md', 'AGENTS.md', 'scripts/sop1-audit.mjs', 'test/sop1.test.mjs',
   '.gitignore', '.github/workflows/release.yml',
 ];

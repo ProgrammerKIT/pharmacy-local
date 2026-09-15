@@ -194,7 +194,106 @@ function specificMapURL(s) {
     return short || google && specific ? s.trim() : '';
   } catch { return ''; }
 }
-export function identity(data) { const url = specificMapURL(data.mapUrl || ''); return url ? `url:${url}` : data.name.trim() && data.address?.trim() ? `address:${data.name.trim()}\n${data.address.trim()}` : ''; }
+export function identity(data) {
+  const key = mapKey(data.mapUrl || '');
+  // Link formatting is not a store identity. Short links remain review evidence only.
+  if (key && !key.startsWith('short:')) return `map:${key}`;
+  return data.name.trim() && data.address?.trim() ? `address:${comparisonText(data.name)}\n${comparisonText(data.address)}` : '';
+}
+export const SOP1_VERSION = '1.0.0';
+export const sourceListKey = list => normalizeListName(list).normalize('NFKC').trim().toLocaleLowerCase('zh-Hant');
+export function sourceTextFields(file, raw) {
+  const mapped = new Set(Object.values(file.mapping).filter(i => i >= 0));
+  return file.headers.flatMap((header, column) => {
+    const text = raw.cells[column];
+    if (!text?.trim()) return [];
+    const label = header.trim().toLowerCase();
+    const kind = column === file.mapping.note ? 'note' : ['標籤', 'tags', 'label', 'labels'].includes(label) ? 'tag' : mapped.has(column) ? 'profile' : 'supplement';
+    return [{ column, header, kind, text }];
+  });
+}
+function listMetadata(file, raw) {
+  const fields = sourceTextFields(file, raw);
+  return fields.length > 0 && fields.every(f => f.kind === 'tag');
+}
+export function displayText(text) {
+  // Presentation-only. Source text and sentence order stay intact.
+  return String(text || '').replace(/\r\n?/g, '\n').split('\n').map(line => line.replace(/[\t ]+$/g, '')).join('\n').trim();
+}
+function profileContradictions(a, b) {
+  const messages = [];
+  if (a.name?.trim() && b.name?.trim() && comparisonText(a.name) !== comparisonText(b.name)) messages.push('相同地點識別但門市名稱不同，須核對改名或錯連');
+  if (a.address?.trim() && b.address?.trim() && comparisonText(a.address) !== comparisonText(b.address)) messages.push('相同地點識別但地址不同，須核對搬遷或分店');
+  return messages;
+}
+function prepareSOP1(plan, records) {
+  const stores = new Map(records.filter(r => r.type === 'store').map(r => [r.id, r]));
+  const rows = new Map(plan.rows.map(r => [r.key, r]));
+  for (const row of plan.rows) {
+    const file = plan.files[row.fileIndex], raw = file.rows[row.rowIndex];
+    row.textFields = sourceTextFields(file, raw);
+    row.cleanedNote = displayText(row.note);
+    row.sop1 = { version: SOP1_VERSION, metadata: listMetadata(file, raw), extraAccepted: false, manualAccepted: false };
+    if (row.sop1.metadata) { row.choice = 'skip'; row.reason = '清單層級標籤：原檔保留，不建立門市或拜訪'; continue; }
+    if (row.errors.length) { row.choice = 'review'; continue; }
+    if (row.choice === 'skip') continue;
+    const other = row.choice.startsWith('store:') ? stores.get(row.choice.slice(6)) : row.choice.startsWith('row:') ? rows.get(row.choice.slice(4))?.data : null;
+    const contradictions = other ? profileContradictions(row.data, other) : [];
+    // Name-only classification is a review aid, not a deletion or customer judgment.
+    const scopeQuestion = !/藥|醫|診所|健康|保健/.test(row.data.name) && /咖啡|餐廳|餐館|飯店|旅館|酒店|民宿|公園|機場|牛排|麵店|早午餐|烤肉|餐酒|牛肉麵|車站|咖哩|拉麵/.test(row.data.name);
+    const weakIdentity = !identity(row.data);
+    if (contradictions.length || scopeQuestion || weakIdentity) {
+      row.choice = 'review';
+      row.reason = [...contradictions, ...(scopeQuestion ? ['名稱可能是非藥局地點，請確認是否納入此 App'] : []), ...(weakIdentity ? ['沒有穩定地點ID或名稱＋地址，請指定門市或明確確認新增'] : [])].join('；');
+    }
+  }
+  plan.sop1Version = SOP1_VERSION;
+  return plan;
+}
+export function sop1Report(plan, bundle) {
+  const records = project(bundle), byStore = new Map(records.filter(r => r.type === 'store').map(r => [r.id, r]));
+  const byRow = new Map(plan.rows.map(r => [r.key, r])), blockers = [], summaries = [], streams = new Map();
+  function target(row, chain = new Set()) {
+    if (chain.has(row.key)) return '';
+    chain.add(row.key);
+    if (row.choice === 'new') return 'new:' + row.key;
+    if (row.choice.startsWith('store:')) {
+      const store = byStore.get(row.choice.slice(6));
+      return store && !store.deleted && !store.conflict ? row.choice : '';
+    }
+    if (row.choice.startsWith('row:')) {
+      const other = byRow.get(row.choice.slice(4));
+      return other && other.choice !== 'skip' && !other.errors.length ? target(other, chain) : '';
+    }
+    return '';
+  }
+  const fail = (row, message) => blockers.push({ key: row.key, file: plan.files[row.fileIndex].file, line: row.line, message });
+  for (const row of plan.rows) {
+    if (row.choice === 'skip') { summaries.push({ key: row.key, kind: row.sop1?.metadata ? 'metadata' : 'skipped' }); continue; }
+    if (row.choice === 'review') { fail(row, row.reason || '門市尚未核對'); continue; }
+    if (row.errors.length) { fail(row, row.errors.join('；')); continue; }
+    const resolved = target(row);
+    if (!resolved) { fail(row, '門市連結尚未完成、被略過、已刪除或有衝突'); continue; }
+    const file = plan.files[row.fileIndex];
+    if ((row.textFields || []).some(f => f.kind === 'supplement') && !row.sop1?.extraAccepted) fail(row, '尚有其他非空白文字欄，須核對並確認保留為來源補充，不可默默漏掉');
+    const stream = resolved + ':' + sourceListKey(file.list), bucket = streams.get(stream) || [];
+    bucket.push(row); streams.set(stream, bucket);
+    const existing = resolved.startsWith('store:') ? records.filter(v => v.type === 'visit' && !v.deleted && visitStream(v) === csvStream(resolved.slice(6), file.list)) : [];
+    if (existing.length > 1 || existing.some(v => v.conflict)) fail(row, '同一來源有多筆備註或同步衝突，請先在 App 核對');
+    const old = existing[0];
+    let kind = !row.note?.trim() ? 'no-note' : old ? (old.googleText ?? old.text) === row.note && (!row.date || row.date === old.date) ? 'unchanged' : 'new-version' : 'new-note';
+    if (old && row.noteProvided && !row.note) kind = 'retain-missing';
+    const manual = old && row.note && old.googleText !== undefined && old.text !== old.googleText && row.note !== old.googleText;
+    if (manual && !row.sop1?.manualAccepted) fail(row, 'App 手動修改與新來源文字不同，須先確認保留 App 文字及保存來源新版');
+    summaries.push({ key: row.key, target: resolved, kind, manual: !!manual });
+  }
+  for (const group of streams.values()) {
+    const notes = new Set(group.filter(r => r.noteProvided).map(r => JSON.stringify([r.note, r.date])));
+    if (notes.size > 1) for (const row of group) fail(row, '同一門市、同一來源清單在本批有不同備註或日期，不能以檔案順序決定新版');
+  }
+  if (plan.vaultId !== bundle.vaultId || plan.baseRevision !== bundleRevision(bundle)) blockers.push({ key: '', message: 'App 資料已變更，請重新預覽' });
+  return { version: SOP1_VERSION, ready: !blockers.length, blockers, rows: summaries, counts: Object.fromEntries([...new Set(summaries.map(s => s.kind))].map(kind => [kind, summaries.filter(s => s.kind === kind).length])) };
+}
 export function normalizeListName(name = '') {
   let value = name.trim().replace(/\.csv$/i, '').trim();
   while (/\s*\(\d+\)$/.test(value)) value = value.replace(/\s*\(\d+\)$/, '').trim();
@@ -268,7 +367,7 @@ export async function planCSV(files, bundle) {
         const matched = matches[0]; choice = `store:${matched.id}`; reason = '相同地圖網址或名稱＋地址';
         const stream = csvStream(matched.id, f.list), current = visits.filter(v => visitStream(v) === stream);
         const sameStoreRow = (matched.csvSources || []).some(s => s.fingerprint === fingerprint && normalizeListName(s.list).toLocaleLowerCase('zh-Hant') === normalizeListName(f.list).toLocaleLowerCase('zh-Hant'));
-        const sameState = !noteProvided || (!note ? !current.length || current.length === 1 && current[0].sourceMissing : current.length === 1 && (current[0].googleText ?? current[0].text) === note && !current[0].sourceMissing);
+        const sameState = !noteProvided || (!note ? !current.length || current.length === 1 && current[0].sourceMissing : current.length === 1 && (current[0].googleText ?? current[0].text) === note && (!date || current[0].date === date) && !current[0].sourceMissing);
         if (sameStoreRow && sameState) { choice = 'skip'; reason = '目前版本已包含相同原始列'; }
       }
       else if (matches.length || names.length) { choice = 'review'; reason = '同名、已刪除或多個可能門市，請指定'; }
@@ -282,7 +381,7 @@ export async function planCSV(files, bundle) {
     }
   }
   if (rows.length > 1500) throw new Error('每批最多 1,500 列，請分批匯入。');
-  return { files, rows, baseRevision: bundleRevision(bundle), vaultId: bundle.vaultId };
+  return prepareSOP1({ files, rows, baseRevision: bundleRevision(bundle), vaultId: bundle.vaultId }, records);
 }
 export function profileChanges(row, records) {
   if (!row.choice.startsWith('store:')) return [];
@@ -292,6 +391,8 @@ export function profileChanges(row, records) {
 }
 export function buildCSVImport(plan, bundle, device) {
   if (plan.vaultId !== bundle.vaultId || plan.baseRevision !== bundleRevision(bundle)) throw new Error('資料已在預覽後變更，請重新產生匯入預覽；尚未寫入這批資料。');
+  const sop = sop1Report(plan, bundle);
+  if (!sop.ready) throw new Error('SOP1 尚未通過：' + sop.blockers[0].message + '。這批尚未寫入 App 或關聯圖。');
   const next = structuredClone(bundle), initial = project(bundle), states = new Map(initial.filter(r => r.type === 'store').map(r => [r.id, { data: structuredClone(r.heads[0].data), parents: r.heads.map(h => h.id), invalid: r.deleted || r.conflict }])); next.schema = 2;
   const resolution = new Map(), at = new Date().toISOString(), batch = uuid(), changed = new Set(), visitOps = [], addedBlobs = new Set();
   const summary = { stores: 0, linked: 0, notes: 0, updatedNotes: 0, missingNotes: 0, restoredNotes: 0, unchangedNotes: 0, duplicateNotes: 0, filledFields: 0, skipped: 0, rows: 0 };
@@ -323,7 +424,7 @@ export function buildCSVImport(plan, bundle, device) {
       if (!state.data[field]?.trim()) { state.data[field] = row.data[field]; summary.filledFields++; }
     }
     if (state.parents.length && !changed.has(id)) summary.linked++;
-    const source = { fingerprint: row.fingerprint, batch, file: f.file, line: row.line, list: f.list, at, blob: f.blob, headers: [...f.headers], cells: [...raw.cells] };
+    const source = { fingerprint: row.fingerprint, batch, file: f.file, line: row.line, list: f.list, at, blob: f.blob, headers: [...f.headers], cells: [...raw.cells], sop1Version: SOP1_VERSION, supplements: row.textFields.filter(field => field.kind === 'supplement'), disposition: row.choice, supplementReviewed: !!row.sop1?.extraAccepted, manualReviewed: !!row.sop1?.manualAccepted };
     state.data.csvSources = [...(state.data.csvSources || []), source];
     state.data.lists = [...new Set([...(state.data.lists || []), ...(f.list ? [f.list] : [])])];
     // Existing profiles are not overwritten, including their names, addresses and map URLs.
@@ -340,7 +441,7 @@ export function buildCSVImport(plan, bundle, device) {
     } else if (existing) {
       const base = structuredClone(existing.heads[0].data), parents = existing.heads.map(h => h.id);
       const previousGoogleText = existing.googleText ?? existing.text;
-      if (row.note && (previousGoogleText !== row.note || existing.sourceMissing)) {
+      if (row.note && (previousGoogleText !== row.note || existing.sourceMissing || row.date && row.date !== existing.date)) {
         const manuallyEdited = existing.googleText !== undefined && existing.text !== existing.googleText;
         const data = { ...base, store: id, date: row.date || existing.date || '', source: 'Google Maps CSV 匯入', text: manuallyEdited ? existing.text : row.note, googleText: row.note, csvStream: stream, sourceMissing: false, googleUpdatePending: manuallyEdited && existing.text !== row.note, csvSources: [source] };
         const op = revision('visit', existing.id, data, parents, device); visitOps.push(op); visitsByStream.set(stream, [{ ...existing, ...data, heads: [op], versions: [...existing.versions, op] }]);
