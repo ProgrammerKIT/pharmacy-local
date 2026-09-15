@@ -13,3 +13,30 @@
 .sync-details dt { font-weight: 650; margin-top: 10px; }
 .sync-details dd { margin: 2px 0 0; color: var(--muted); overflow-wrap: anywhere; }
 .connection-check { margin: 16px 0; padding: 14px; background: #edf3f6; border-radius: 8px; white-space: pre-line; overflow-wrap: anywhere; font-size: .9rem; }
+.quality-tabs { display:flex; flex-wrap:wrap; gap:8px; margin:16px 0; }
+.quality-filter { max-width:340px; margin:20px 0; }
+.quality-list,.csv-review-list { display:grid; gap:16px; }
+.quality-pair,.csv-review-columns { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:20px; }
+.quality-store strong { display:block; font-size:1.05rem; overflow-wrap:anywhere; }
+.quality-store p { margin:6px 0; overflow-wrap:anywhere; white-space:pre-wrap; }
+.quality-store small { color:var(--muted); }
+.quality-reasons { margin:16px 0; padding:10px 14px; background:#fff7e9; border-radius:8px; overflow-wrap:anywhere; }
+.quality-table-wrap { overflow:auto; margin:16px 0; }
+.quality-table { border-collapse:collapse; width:100%; table-layout:fixed; font-size:.87rem; }
+.quality-table th,.quality-table td { padding:10px; border:1px solid var(--line); vertical-align:top; white-space:pre-wrap; overflow-wrap:anywhere; }
+.quality-table th:first-child { width:24%; }
+.quality-table th { background:#edf3f6; text-align:left; }
+.quality-suggestions { margin:-4px 0 18px; }
+.quality-suggestions>div,.csv-candidate,.csv-change { margin:10px 0; padding:12px; border:1px solid var(--line); border-radius:8px; overflow-wrap:anywhere; }
+.quality-suggestions p,.csv-change p { margin:4px 0; white-space:pre-wrap; }
+.quality-suggestions small { color:var(--muted); display:block; }
+.csv-review-row { min-width:0; }
+.csv-review-row h3 { margin-top:6px; }
+.csv-review-row p,.csv-review-row small { overflow-wrap:anywhere; }
+.csv-review-row pre { white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; font-size:.9rem; max-height:320px; overflow:auto; }
+.csv-review-row select { width:100%; }
+.csv-review-row details { margin:12px 0; }
+.csv-review-row .csv-warnings p { font-size:.85rem; color:var(--muted); margin:6px 0; }
+.csv-review-row .csv-profile-changes { border-top:1px solid var(--line); padding-top:16px; }
+.csv-summary p { margin:6px 0 0; font-size:.86rem; }
+@media(max-width:760px) { .quality-pair,.csv-review-columns { grid-template-columns:1fr; gap:14px; } .quality-pair>.quality-store+div { border-top:1px solid var(--line); padding-top:14px; } .csv-review-row>.section-row { align-items:flex-start; flex-wrap:wrap; } }

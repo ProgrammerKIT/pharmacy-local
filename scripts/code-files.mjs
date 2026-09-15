@@ -11,5 +11,6 @@ export const CODE_FILES = [...RUNTIME_FILES,
   'test/core.test.mjs', 'test/csv.test.mjs', 'test/relations.test.mjs', 'test/server.test.mjs',
   'test/update.test.mjs', 'test/worker.test.mjs', 'test/supervisor.test.mjs', 'test/sync-time.test.mjs',
   'test/connection.test.mjs', 'test/update-client.test.mjs', 'test/autostart-status.test.mjs',
+  'test/quality.test.mjs', 'test/quality-ui.test.mjs',
   '.gitignore', '.github/workflows/release.yml',
 ];

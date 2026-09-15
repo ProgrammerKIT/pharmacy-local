@@ -39,6 +39,7 @@ const str = (s, max = 20000) => typeof s === 'string' && s.length <= max;
 const ids = a => Array.isArray(a) && a.length <= 100 && a.every(x => str(x, 100));
 export function validData(type, d) {
   if (!plain(d)) return false;
+  if (d.qualityDistinct !== undefined && (type !== 'store' || !Array.isArray(d.qualityDistinct) || d.qualityDistinct.length > 200 || !d.qualityDistinct.every(r => plain(r) && str(r.store, 100) && str(r.self, 6000) && str(r.other, 6000)))) return false;
   if (['ruleKey', 'csvTag', 'mentionTerm'].some(k => d[k] !== undefined && !str(d[k], 200))) return false;
   if (d.csvStream !== undefined && !str(d.csvStream, 500)) return false;
   if (d.googleText !== undefined && !str(d.googleText)) return false;

@@ -1,3 +1,33 @@
+v1.5.0 資料整理｜2026-09-15
+
+本次新增 22 項回歸測試（17 項資料處理、5 項介面操作流程）。
+完整本機執行：81 項通過，0 項失敗、取消或略過。
+命令：node --test test/*.test.mjs
+環境：Linux、Node.js 24.19.0；合成門市、CSV、暫存金鑰與測試資料庫。
+
+已驗證
+- 名稱／地址格式比較、特定地點連結識別、缺漏與格式問題的區分；不修改原文。
+- 不同門市核對可加密、合併同步、撤回；辨識資料改變後重新核對。
+- 待核對清單達顯示上限時，已保存的有效核對仍可查看與撤回。
+- 補登只寫確認的空白欄位，保留來源與拜訪原文；雙裝置同時修改仍顯示衝突。
+- CSV 欄名歧義、重複對應、欄位長度、原檔行號、同批與既有門市偵測。
+- 不同清單的相同列保留各自來源，同一清單重複匯入維持冪等。
+- 未對應備註欄位保留舊文及來源狀態，完整 CSV bytes 保留。
+- CSV 補值需勾選，非空白欄位保留；矛盾補值、過期預覽或備註衝突整批不寫入。
+- 執行實際 UI 函式與事件處理：確認／取消、篩選、改選門市、預覽失效、HTML 文字轉義與按鈕停用狀態。
+- 原有加密、歷史、同步時間、連線、更新、快取一致性及啟動失敗回復測試全部通過。
+- 版本改為 1.5.0；bootstrap 1／protocol 1／schema 2，21 個 runtime 檔案與 15 個介面快取項目維持相容。
+
+未測／限制
+- 測試瀏覽器開啟本機合成頁面被 ERR_BLOCKED_BY_CLIENT 阻擋，未完成實際畫面、觸控與版面驗證。
+- 介面事件測試使用 DOM 替身與 Node VM，不能取代 Safari／iPhone 真機測試。
+- 未操作使用者的 Mac、iPhone、真實客戶資料或防火牆；本紀錄不表示裝置已安裝 v1.5.0。
+- GitHub CI、簽章發布與版本資產，以儲存庫 Actions／Releases 的實際結果為準。
+  Actions：https://github.com/ProgrammerKIT/pharmacy-local/actions/workflows/release.yml
+  Releases：https://github.com/ProgrammerKIT/pharmacy-local/releases
+
+以下保留舊版當時的測試紀錄。
+
 v1.4.4 穩定性修正｜2026-09-15（台灣時間）
 程式審查與測試分支：https://github.com/ProgrammerKIT/pharmacy-local/pull/1
 

@@ -1,17 +1,19 @@
 import { newMeta, derive, seal, unseal, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES } from './core.js';
 import { readLocal, writeLocal } from './db.js';
 import { createCSVImport } from './csv-ui.js';
+import { PROFILE_FIELDS, FILL_FIELDS, scanQuality, setDistinctReview, sourceSuggestions, fillProfile } from './csv.js';
 import { entityRule, evidenceKind, sourceTags } from './relations.js';
 import { APP_VERSION } from './version.js';
 import { startUpdates, requestLocal, diagnoseConnection } from './update-client.js';
 
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const titles = { explore: '關聯探索', visits: '拜訪紀錄', stores: '客戶門市', entities: '人物與主題', csv: '匯入 CSV', sync: '同步與備份', trash: '回收桶' };
+const titles = { explore: '關聯探索', visits: '拜訪紀錄', stores: '客戶門市', entities: '人物與主題', csv: '匯入 CSV', quality: '資料整理', sync: '同步與備份', trash: '回收桶' };
 const kinds = { store: '門市', visit: '拜訪', person: '人物', topic: '主題' };
 let key = null, meta = null, payload = null, slot = null, localRevision = 0, busy = false, pendingLock = false, activeView = 'explore';
 let focus = { type: 'topic', id: '' }, graphPage = 0, trail = [], records = [], editorContext = null, toastTimer, autoTimer, objectURLs = [];
 let lastError = '', offlineReady = false, storagePersistent = false, autoFetching = false, gateOpening = false;
+let qualityTab = 'duplicates', qualityField = '', qualityPage = 0, qualityCache = null, qualityReview = null;
 let updateHolding = false, macProgram = null, lastSyncFailure = null, syncWarning = '';
 const csvImport = createCSVImport({ host: $('csv-view'), getState: () => payload, run, saveBundle: async bundle => { await persist({ ...payload, bundle, dirty: true }); render(); }, notify: toast });
 const all = type => records.filter(r => r.type === type && (!r.deleted || r.conflict));
@@ -19,7 +21,13 @@ const by = (type, id) => records.find(r => r.type === type && r.id === id);
 const name = (type, id) => by(type, id)?.name || (type === 'store' ? '已刪除／未命名門市' : '已刪除節點');
 const dateText = at => at ? new Date(at).toLocaleString('zh-TW', { hour12: false }) : '尚未同步';
 function toast(message) { $('toast').textContent = message; $('toast').classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').classList.remove('show'), 6500); }
-function buttons(disabled) { document.querySelectorAll('button').forEach(b => { if (!b.dataset.close) b.disabled = disabled; }); document.querySelectorAll('#csv-view input, #csv-view select').forEach(el => el.disabled = disabled); }
+function buttons(disabled) {
+  document.querySelectorAll('button, #csv-view input, #csv-view select').forEach(el => {
+    if (el.dataset.close) return;
+    if (disabled) { el.dataset.busyDisabled = el.disabled ? '1' : '0'; el.disabled = true; }
+    else if (el.dataset.busyDisabled !== undefined) { el.disabled = el.dataset.busyDisabled === '1'; delete el.dataset.busyDisabled; }
+  });
+}
 async function run(fn, errorTarget) {
   if (busy || updateHolding) return;
   busy = true; buttons(true);
@@ -107,10 +115,10 @@ async function autoSync() {
 function lockNow(reopen = !document.hidden) {
   if (busy || editorContext || csvImport.hasPending()) { pendingLock = true; document.body.classList.add('privacy-veil'); return; }
   pendingLock = false; clearInterval(autoTimer); key = null; meta = null; payload = null; records = []; trail = []; editorContext = null; lastError = ''; macProgram = null; lastSyncFailure = null; syncWarning = '';
-  csvImport.reset();
+  csvImport.reset(); qualityCache = null; qualityReview = null; qualityTab = 'duplicates'; qualityField = ''; qualityPage = 0;
   for (const u of objectURLs) URL.revokeObjectURL(u); objectURLs = [];
   document.querySelectorAll('dialog').forEach(d => d.close());
-  for (const id of ['focus-header', 'graph', 'graph-pager', 'focus-detail', 'evidence-list', 'store-list', 'visit-list', 'customer-list', 'entity-list', 'trash-list', 'review-body', 'editor-fields', 'conflict-list', 'connection-detail', 'program-detail', 'sync-success-detail', 'sync-failure-detail', 'connection-check', 'device-label', 'sync-result', 'storage-detail']) $(id).replaceChildren();
+  for (const id of ['quality-content', 'focus-header', 'graph', 'graph-pager', 'focus-detail', 'evidence-list', 'store-list', 'visit-list', 'customer-list', 'entity-list', 'trash-list', 'review-body', 'editor-fields', 'conflict-list', 'connection-detail', 'program-detail', 'sync-success-detail', 'sync-failure-detail', 'connection-check', 'device-label', 'sync-result', 'storage-detail']) $(id).replaceChildren();
   $('connection-check').hidden = true;
   $('editor-form').reset(); $('gate-form').reset(); $('password').value = ''; $('backup-file').value = '';
   $('workspace').hidden = true; $('gate').hidden = false;
@@ -223,12 +231,74 @@ function render() {
   if (!by(focus.type, focus.id) || by(focus.type, focus.id).deleted) { const first = all('topic').find(t => t.ruleKey === 'ortho') || all('store')[0] || all('topic')[0] || all('person')[0]; focus = first ? { type: first.type, id: first.id } : { type: 'store', id: '' }; }
   if (activeView === 'explore') { renderStores(); renderFocus(); }
   if (activeView === 'visits') renderVisits();
+  if (activeView === 'quality') renderQuality();
   if (activeView === 'stores') $('customer-list').innerHTML = all('store').map(s => entityCard(s)).join('') || '<p class="empty">先新增第一間門市。</p>';
   if (activeView === 'entities') $('entity-list').innerHTML = [...all('person'), ...all('topic')].map(entityCard).join('') || '<p class="empty">新增人物與主題，讓拜訪紀錄產生連結。</p>';
   $('conflict-list').innerHTML = records.filter(r => r.conflict).map(r => `<div class="conflict-card"><strong>${esc(r.name || name('store', r.store) + ' · ' + r.date)}</strong><p>${r.heads.length} 個版本待確認</p><button data-review="${r.type}:${esc(r.id)}">比較並處理</button></div>`).join('') || '<p class="muted">目前沒有衝突。</p>';
   if (activeView === 'trash') $('trash-list').innerHTML = records.filter(r => r.deleted && !r.conflict).map(r => `<article class="panel"><span class="pill">${kinds[r.type]}</span><h3>${esc(r.name || name('store', r.store) + ' · ' + r.date)}</h3><p>${esc(r.text || r.desc || r.contact || '')}</p><button data-restore="${r.type}:${esc(r.id)}">還原</button> <button data-history="${r.type}:${esc(r.id)}">查看歷史</button></article>`).join('') || '<p class="empty">回收桶是空的。</p>';
 }
 function entityCard(r) { return `<article class="panel"><span class="pill ${r.conflict ? 'warn' : ''}">${kinds[r.type]}${r.conflict ? ' · 有衝突' : ''}</span><h3>${esc(r.name)}</h3><p>${esc(r.type === 'store' ? `${r.city} ${r.district} · ${r.channel}\n${r.attr}\n${r.contact}` : r.type === 'person' ? `${r.confirmed ? '身分已核對' : '身分待確認'} · ${r.role}${r.sameAs ? '\n連到：' + name('person', r.sameAs) : ''}` : r.desc)}</p><div class="note-actions">${sourceButton(r)}<button class="text-button" data-node-type="${r.type}" data-node-id="${esc(r.id)}">探索關聯</button><button class="text-button" data-edit="${r.type}:${esc(r.id)}">編輯</button><button class="text-button" data-history="${r.type}:${esc(r.id)}">歷史</button><button class="text-button danger" data-delete="${r.type}:${esc(r.id)}">刪除</button></div></article>`; }
+function qualityReport() {
+  if (qualityCache?.bundle !== payload.bundle) qualityCache = { bundle: payload.bundle, report: scanQuality(records) };
+  return qualityCache.report;
+}
+function qualityStore(store) {
+  const visits = records.filter(r => r.type === 'visit' && !r.deleted && r.store === store.id).length;
+  return '<div class="quality-store"><strong>' + esc(store.name) + '</strong><p>' + esc(store.address || '地址未提供') + '</p><small>' + esc([store.city, store.district, store.channel].filter(Boolean).join(' · ') || '地區／通路未提供') + ' · ' + visits + ' 筆紀錄</small></div>';
+}
+function renderQuality() {
+  if (!payload) return;
+  const report = qualityReport(), labels = { duplicates: '疑似重複', missing: '缺漏與格式', reviewed: '已確認不同' };
+  const options = [['', '全部缺漏與格式'], ...Object.entries(PROFILE_FIELDS)].map(([value, text]) => '<option value="' + esc(value) + '" ' + (qualityField === value ? 'selected' : '') + '>' + esc(text) + '</option>').join('');
+  const source = qualityTab === 'missing' ? report.items.filter(x => !qualityField || x.issues.some(i => i.field === qualityField)) : qualityTab === 'reviewed' ? report.reviewed : report.pairs;
+  qualityPage = Math.min(qualityPage, Math.max(0, Math.ceil(source.length / 20) - 1));
+  const start = qualityPage * 20, rows = source.slice(start, start + 20);
+  const counts = { duplicates: report.pairs.length, missing: report.items.length, reviewed: report.reviewed.length };
+  let html = '<div class="quality-tabs" aria-label="資料整理分類">' + Object.entries(labels).map(([value, text]) => '<button data-quality-tab="' + value + '" aria-pressed="' + (qualityTab === value) + '" class="' + (qualityTab === value ? 'primary' : '') + '">' + text + ' · ' + counts[value] + (report.limited && value === 'duplicates' ? '＋' : '') + '</button>').join('') + '</div>';
+  html += '<p class="muted">已檢查 ' + report.stores + ' 間無衝突門市。疑似重複是比對線索；同名分店可確認為不同門市。選填欄位未知時可以留空。</p>';
+  if (report.limited) html += '<p class="conflict-card">疑似重複較多，目前列出部分配對。先核對這批後重新檢查，仍可能有其他待確認項目。</p>';
+  if (report.conflicts.length) html += '<div class="conflict-card">' + report.conflicts.length + ' 間門市有同步衝突，請先處理才能補登或核對。<button data-view="sync" class="text-button">前往處理衝突</button></div>';
+  if (qualityTab === 'missing') html += '<label class="quality-filter">依欄位篩選<select id="quality-field">' + options + '</select></label>';
+  html += '<div class="quality-list">' + rows.map((row, i) => {
+    if (qualityTab === 'missing') {
+      const missing = row.issues.filter(issue => issue.kind === 'missing'), warnings = row.issues.filter(issue => issue.kind !== 'missing');
+      return '<article class="panel">' + qualityStore(row.store) + '<div class="chips">' + missing.map(issue => '<span class="pill">' + esc(PROFILE_FIELDS[issue.field]) + '未提供</span>').join('') + '</div>' + warnings.map(issue => '<p class="error">' + esc(issue.message) + '</p>').join('') + '<div class="note-actions">' + (missing.length ? '<button class="secondary" data-fill-store="' + esc(row.store.id) + '">補登欄位</button>' : '') + '<button class="text-button" data-edit="store:' + esc(row.store.id) + '">檢查門市資料</button>' + sourceButton(row.store) + '</div></article>';
+    }
+    return '<article class="panel"><div class="quality-pair">' + qualityStore(row.a) + qualityStore(row.b) + '</div><p class="quality-reasons">' + row.reasons.map(esc).join('；') + '</p><button class="secondary" data-quality-pair="' + (qualityTab === 'reviewed' ? 'reviewed:' : 'duplicates:') + (start + i) + '">' + (qualityTab === 'reviewed' ? '查看／重新核對' : '並排核對') + '</button></article>';
+  }).join('') + '</div>';
+  if (!rows.length) html += '<p class="empty">' + (qualityTab === 'duplicates' ? '目前沒有符合比對規則的疑似重複；仍可到「客戶門市」人工核對。' : qualityTab === 'missing' ? '目前沒有符合篩選的缺漏或格式問題。' : '尚未記錄已確認為不同門市的配對。') + '</p>';
+  if (source.length > 20) html += '<div class="section-row csv-pagination"><button data-quality-page="-1" ' + (!qualityPage ? 'disabled' : '') + '>上一頁</button><span>' + (qualityPage + 1) + ' / ' + Math.ceil(source.length / 20) + ' 頁</span><button data-quality-page="1" ' + (start + 20 >= source.length ? 'disabled' : '') + '>下一頁</button></div>';
+  $('quality-content').innerHTML = html;
+}
+function openQualityPair(key) {
+  const [tab, index] = key.split(':'), report = qualityReport(), pair = (tab === 'reviewed' ? report.reviewed : report.pairs)[Number(index)];
+  if (!pair) return;
+  qualityReview = { a: pair.a.id, b: pair.b.id, forget: tab === 'reviewed' };
+  $('review-title').textContent = tab === 'reviewed' ? '已確認為不同門市' : '核對疑似重複門市';
+  $('review-body').innerHTML = '<div class="quality-pair">' + qualityStore(pair.a) + qualityStore(pair.b) + '</div><p class="quality-reasons">' + pair.reasons.map(esc).join('；') + '</p><div class="quality-table-wrap"><table class="quality-table"><thead><tr><th>欄位</th><th>門市一</th><th>門市二</th></tr></thead><tbody>' + Object.entries(PROFILE_FIELDS).map(([field, label]) => '<tr><th>' + label + '</th><td>' + esc(pair.a[field] || '未提供') + '</td><td>' + esc(pair.b[field] || '未提供') + '</td></tr>').join('') + '</tbody></table></div><p class="muted">確認不同門市後會保存核對紀錄並同步。名稱、地址或地圖等辨識資料改變時，會重新列入核對。</p><p class="muted">若確實為同一間，這一版先保留兩筆及其拜訪紀錄；完整合併另行處理。</p><div class="note-actions">' + sourceButton(pair.a) + sourceButton(pair.b) + '</div><div class="dialog-footer"><button data-close="review">稍後核對</button><button class="primary" data-quality-mark="1">' + (qualityReview.forget ? '撤回確認，重新核對' : '確認為不同門市') + '</button></div>';
+  $('review').showModal();
+}
+async function saveQualityReview() {
+  if (!qualityReview) return;
+  const { a, b, forget } = qualityReview;
+  const bundle = setDistinctReview(payload.bundle, a, b, payload.device, forget);
+  await persist({ ...payload, bundle, dirty: true }); $('review').close(); qualityReview = null; render();
+  toast(forget ? '已撤回核對，將重新顯示這組門市。' : '已記錄為不同門市，等待同步。');
+}
+function openFillStore(id) {
+  const store = by('store', id);
+  if (!store || store.deleted) return;
+  if (store.conflict) return openReview('store', id, true);
+  const fields = FILL_FIELDS.filter(field => !store[field]?.trim()), suggestions = sourceSuggestions(store);
+  if (!fields.length) { toast('目前沒有空白欄位，請到門市資料檢查。'); return; }
+  editorContext = { type: 'store', id, parents: store.heads.map(h => h.id), oldData: structuredClone(store.heads[0].data), fillFields: fields, suggestions };
+  $('editor-title').textContent = '補登 · ' + store.name; $('editor-error').textContent = '';
+  $('editor-fields').innerHTML = '<p class="muted">只補上空白欄位；未知資料可留空。來源建議需由你核對後採用。</p>' + fields.map(field => {
+    const choices = suggestions[field] || [];
+    return input('fill-' + field, PROFILE_FIELDS[field] + '（選填）', '', ['address', 'mapUrl'].includes(field) ? 2000 : 500) + (choices.length ? '<details class="quality-suggestions"><summary>查看原始 CSV 的 ' + choices.length + ' 個補值建議' + (choices.length > 1 ? '（來源有不同值）' : '') + '</summary>' + choices.slice(0, 20).map((s, i) => '<div><p>' + esc(s.value) + '</p><small>' + esc(s.file) + ' · 第 ' + s.line + ' 行</small><button type="button" class="text-button" data-fill-suggestion="' + field + '" data-suggestion-index="' + i + '">採用此值</button></div>').join('') + (choices.length > 20 ? '<p class="muted">此處先顯示 20 個值，完整內容可在門市原始來源查閱。</p>' : '') + '</details>' : '');
+  }).join('');
+  $('editor').showModal();
+}
 function renderStores() {
   const q = $('search').value.trim().toLowerCase(), district = $('district').value, channel = $('channel').value;
   const stores = all('store').filter(s => (!district || s.district === district) && (!channel || s.channel === channel) && (!q || `${s.name}${s.attr}${s.contact}${s.address || ""}${(s.lists || []).join()}${sourceTags(s).join()}`.toLowerCase().includes(q) || all('visit').some(v => v.store === s.id && v.text.toLowerCase().includes(q))));
@@ -303,7 +373,15 @@ async function commitRevision(type, id, data, parents, deleted = false, blobs = 
 }
 async function saveEditor(event) {
   event.preventDefault(); await run(async () => {
-    const ctx = editorContext; if (!ctx) return; const value = id => $(id).value.trim(); let d, blobs = {};
+    const ctx = editorContext; if (!ctx) return;
+    if (ctx.fillFields) {
+      const additions = Object.fromEntries(ctx.fillFields.map(field => [field, $('fill-' + field).value]));
+      const bundle = fillProfile(payload.bundle, ctx.id, additions, payload.device, ctx.parents);
+      const summary = Object.entries(additions).filter(([, value]) => value.trim()).map(([field, value]) => PROFILE_FIELDS[field] + '：' + value.trim()).join('\n');
+      if (!confirm('確認補上以下欄位？\n' + summary + '\n原始來源與既有欄位會保留。')) return;
+      await persist({ ...payload, bundle, dirty: true }); $('editor').close(); editorContext = null; render(); toast('欄位已補登，已保留歷史並等待同步。'); return;
+    }
+    const value = id => $(id).value.trim(); let d, blobs = {};
     if (ctx.type === 'visit') {
       if (!value('f-text')) throw new Error('請填寫拜訪內容。');
       const checked = n => [...document.querySelectorAll(`#editor [name="${n}"]:checked`)].map(c => c.value);
@@ -331,7 +409,9 @@ async function saveEditor(event) {
 function describeData(type, data) {
   if (type === 'visit') return `${name('store', data.store)} · ${data.date || '原始日期未提供'}\n${data.source}\n${data.sourceMissing ? 'Google 最新匯出：備註缺少（舊文保留）\n' : ''}${data.googleUpdatePending ? `Google 最新文字：${data.googleText}\nApp 文字待人工核對\n` : ''}\n${data.text}\n\n下次跟進：${data.next}\n主題：${data.topics.map(id => name('topic', id)).join('、')}\n人物：${data.people.map(id => name('person', id)).join('、')}\n附件：${data.attachments.map(a => a.name).join('、')}`;
   const labels = { address: '地址', mapUrl: '地圖網址', lists: '來源清單', name: '名稱', city: '縣市', district: '地區', channel: '通路', attr: '屬性', contact: '窗口', desc: '備註', role: '職務', confirmed: '身分已核對', sameAs: '同一人連結' };
-  return Object.entries(data).filter(([k]) => k !== 'csvSources').map(([k, v]) => `${labels[k] || k}：${k === 'sameAs' && v ? name('person', v) : v}`).join('\n');
+  const details = Object.entries(data).filter(([k]) => k !== 'csvSources' && k !== 'qualityDistinct').map(([k, v]) => `${labels[k] || k}：${k === 'sameAs' && v ? name('person', v) : v}`);
+  if (data.qualityDistinct !== undefined) details.push('此版本保存的不同門市核對：' + data.qualityDistinct.length + ' 組（辨識資料改變後需重新核對）');
+  return details.join('\n');
 }
 function openReview(type, id, conflict) {
   const r = by(type, id); if (!r) return;
@@ -388,6 +468,13 @@ document.addEventListener('click', event => {
   if (updateHolding || busy || !payload) return;
   if (b.dataset.view) return switchView(b.dataset.view);
   if (b.dataset.add) return openEditor(b.dataset.add);
+  if (b.dataset.fillStore) return openFillStore(b.dataset.fillStore);
+  if (b.dataset.qualityTab) { qualityTab = b.dataset.qualityTab; qualityPage = 0; return renderQuality(); }
+  if (b.dataset.qualityPair) return openQualityPair(b.dataset.qualityPair);
+  if (b.dataset.qualityMark) return run(saveQualityReview);
+  if (b.dataset.qualityPage) { qualityPage = Math.max(0, qualityPage + Number(b.dataset.qualityPage)); return renderQuality(); }
+  if (b.id === 'quality-refresh') { qualityCache = null; qualityPage = 0; return renderQuality(); }
+  if (b.dataset.fillSuggestion) { const field = b.dataset.fillSuggestion, suggestion = editorContext?.suggestions?.[field]?.[Number(b.dataset.suggestionIndex)]; if (suggestion && editorContext.fillFields.includes(field)) $('fill-' + field).value = suggestion.value; return; }
   if (b.dataset.edit) return openEditor(...b.dataset.edit.split(':'));
   if (b.dataset.review) return openReview(...b.dataset.review.split(':'), true);
   if (b.dataset.csvSource) return openSources(...b.dataset.csvSource.split(':'));
@@ -418,6 +505,7 @@ window.addEventListener('pagehide', () => { if (payload || busy) lockNow(false);
 window.addEventListener('pageshow', () => { if (!payload && !document.hidden) { document.body.classList.remove('privacy-veil'); showGate(); } });
 $('gate-form').addEventListener('submit', initializeOrUnlock); $('editor-form').addEventListener('submit', saveEditor);
 $('editor').addEventListener('close', () => editorContext = null);
+$('quality-content').addEventListener('change', e => { if (e.target.id === 'quality-field') { qualityField = e.target.value; qualityPage = 0; renderQuality(); } });
 $('gate-restore').addEventListener('click', () => { if (!$('password').value) { $('gate-error').textContent = '請先在密碼欄填寫備份密碼。'; return; } $('backup-file').click(); });
 $('backup-file').addEventListener('change', () => { const f = $('backup-file').files[0]; if (f) run(() => importBackup(f), payload ? null : 'gate-error'); $('backup-file').value = ''; });
 ['search', 'district', 'channel'].forEach(id => $(id).addEventListener(id === 'search' ? 'input' : 'change', renderStores)); $('visit-search').addEventListener('input', renderVisits);
