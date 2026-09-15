@@ -1,8 +1,140 @@
 import { b64, hashBytes, uuid, revision, project, validateBundle, MAX_BYTES } from './core.js';
 const utf8 = new TextEncoder();
 export const CSV_LIMIT = 2 * 1024 * 1024;
-export const FIELD_NAMES = { name: '藥局／地點名稱（必要）', note: '備註原文', url: 'Google Maps 網址', address: '地址', city: '縣市', district: '地區', channel: '通路／屬性', date: '拜訪日期（不是匯出日期）' };
-const aliases = { name: ['title', 'name', '名稱', '地點名稱', '藥局名稱', '門市名稱', '標題'], note: ['筆記', 'note', 'notes', 'comment', 'comments', '留言', '備註', '備註內容', '說明', 'description', '紀錄'], url: ['url', 'google maps url', '網址', '連結', '地圖網址'], address: ['address', '地址'], city: ['city', '縣市', '城市'], district: ['district', '地區', '行政區'], channel: ['channel', '通路', '門市屬性'], date: ['visit date', '拜訪日期'] };
+export const PROFILE_FIELDS = { name: '名稱', address: '地址', city: '縣市', district: '地區', channel: '通路', contact: '拜訪窗口', mapUrl: 'Google Maps 網址' };
+export const FILL_FIELDS = Object.keys(PROFILE_FIELDS).filter(k => k !== 'name');
+// Comparison keys only. Never write these normalized strings back into source data.
+export const comparisonText = value => String(value || '').normalize('NFKC').toLowerCase().replace(/\s+/gu, '').replaceAll('臺', '台');
+export function mapKey(value) {
+  try {
+    const u = new URL(value.trim());
+    if (u.protocol !== 'https:') return '';
+    if (u.hostname === 'maps.app.goo.gl' && u.pathname.length > 2) return 'short:' + u.hostname + u.pathname;
+    if (u.hostname === 'goo.gl' && u.pathname.startsWith('/maps/')) return 'short:' + u.hostname + u.pathname;
+    if (!['www.google.com', 'maps.google.com', 'www.google.com.tw', 'maps.google.com.tw'].includes(u.hostname)) return '';
+    const place = u.searchParams.get('query_place_id') || (u.searchParams.get('q') || '').match(/^place_id:(.+)$/)?.[1];
+    if (place) return 'place:' + place;
+    const cid = u.searchParams.get('cid');
+    if (cid && /^\d+$/.test(cid)) return 'cid:' + BigInt(cid).toString();
+    const feature = decodeURIComponent(u.pathname + u.search).match(/!1s([^!&/?]+)/)?.[1];
+    if (feature) return 'feature:' + feature;
+  } catch { /* Invalid/unrecognized links are never identity evidence. */ }
+  return '';
+}
+export function profileIssues(data) {
+  const issues = [];
+  if (!data.name?.trim()) issues.push({ field: 'name', kind: 'error', message: '缺少必要的門市名稱' });
+  for (const field of FILL_FIELDS) if (!data[field]?.trim()) issues.push({ field, kind: 'missing', message: PROFILE_FIELDS[field] + '未提供（選填）' });
+  const addressCity = comparisonText(data.address).replace(/^\d{3,6}/, '').match(/^(.{2,3}[縣市])/)?.[1];
+  if (addressCity && data.city?.trim() && addressCity !== comparisonText(data.city)) issues.push({ field: 'city', kind: 'warning', message: '縣市與地址開頭不同，請核對原文' });
+  if (data.mapUrl?.trim()) {
+    try {
+      const url = new URL(data.mapUrl.trim());
+      if (url.protocol !== 'https:' || !['www.google.com', 'maps.google.com', 'www.google.com.tw', 'maps.google.com.tw', 'maps.app.goo.gl', 'goo.gl'].includes(url.hostname)) throw new Error();
+      if (!mapKey(data.mapUrl)) issues.push({ field: 'mapUrl', kind: 'warning', message: '地圖連結未含可辨識的地點識別，不能單獨用來判定同一門市' });
+    } catch { issues.push({ field: 'mapUrl', kind: 'warning', message: '地圖網址格式或網域待核對' }); }
+  }
+  for (const field of Object.keys(PROFILE_FIELDS)) if (/[\uFFFD\u200B\u200C\u200D\uFEFF]/u.test(data[field] || '')) issues.push({ field, kind: 'warning', message: PROFILE_FIELDS[field] + '含替代字元或不可見字元，請對照來源' });
+  return issues;
+}
+function profileKeys(data) {
+  return [['name', comparisonText(data.name)], ['address', comparisonText(data.address)], ['map', mapKey(data.mapUrl || '')]].filter(([, v]) => v).map(([k, v]) => k + ':' + v);
+}
+export function duplicateEvidence(a, b) {
+  const reasons = [];
+  const ak = mapKey(a.mapUrl || ''), bk = mapKey(b.mapUrl || '');
+  if (ak && ak === bk) reasons.push('Google 地點識別／短連結相同');
+  if (comparisonText(a.name) && comparisonText(a.name) === comparisonText(b.name)) reasons.push(a.name === b.name ? '門市名稱相同' : '名稱僅有空白、全半形或臺／台等格式差異');
+  if (comparisonText(a.address) && comparisonText(a.address) === comparisonText(b.address)) reasons.push('地址比對相同');
+  if (!reasons.length) return [];
+  if (ak && bk && ak !== bk) reasons.push('地點識別不同，須核對是否為分店、搬遷或不同形式連結');
+  if (a.address?.trim() && b.address?.trim() && comparisonText(a.address) !== comparisonText(b.address)) reasons.push('地址不同，不能僅依名稱認定重複');
+  return reasons;
+}
+const profileSnapshot = s => JSON.stringify(['name', 'address', 'city', 'district', 'mapUrl'].map(k => s[k] || ''));
+export function distinctReviewed(a, b) {
+  return !a.conflict && !b.conflict && [ [a, b], [b, a] ].some(([self, other]) => (self.qualityDistinct || []).some(r => r.store === other.id && r.self === profileSnapshot(self) && r.other === profileSnapshot(other)));
+}
+export function scanQuality(records, limit = 200) {
+  const stores = records.filter(r => r.type === 'store' && !r.deleted && !r.conflict);
+  const items = stores.map(store => ({ store, issues: profileIssues(store) })).filter(x => x.issues.length);
+  const pairs = [], reviewed = [], index = new Map(), seen = new Set(), reviewedIds = new Set();
+  const byId = new Map(stores.map(store => [store.id, store]));
+  // Keep saved decisions accessible even when the pending-pair display is full.
+  for (const store of stores) for (const decision of store.qualityDistinct || []) {
+    const other = byId.get(decision.store); if (!other || other.id === store.id) continue;
+    const id = JSON.stringify([store.id, other.id].sort());
+    if (!reviewedIds.has(id) && distinctReviewed(store, other) && duplicateEvidence(store, other).length) {
+      reviewedIds.add(id); reviewed.push({ a: store, b: other, reasons: duplicateEvidence(store, other) });
+    }
+  }
+  let limited = false;
+  outer: for (const store of stores) {
+    for (const key of profileKeys(store)) {
+      const group = index.get(key) || [];
+      for (const other of group) {
+        const ids = [store.id, other.id].sort(), id = JSON.stringify(ids);
+        if (seen.has(id)) continue;
+        if (seen.size >= 100000) { limited = true; break outer; }
+        seen.add(id);
+        const pair = { a: other, b: store, reasons: duplicateEvidence(other, store) };
+        if (reviewedIds.has(id)) continue;
+        if (pairs.length >= limit) { limited = true; break outer; }
+        else pairs.push(pair);
+      }
+      group.push(store); index.set(key, group);
+    }
+  }
+  return { stores: stores.length, items, pairs, reviewed, limited, conflicts: records.filter(r => r.type === 'store' && r.conflict) };
+}
+export function setDistinctReview(bundle, leftId, rightId, device, forget = false) {
+  const records = project(bundle), a = records.find(r => r.type === 'store' && r.id === leftId), b = records.find(r => r.type === 'store' && r.id === rightId);
+  if (!a || !b || a.id === b.id || [a, b].some(s => s.deleted || s.conflict)) throw new Error('門市已變更、刪除或有同步衝突，請重新檢查。');
+  if (!forget && !duplicateEvidence(a, b).length) throw new Error('目前已沒有這組疑似重複，請重新檢查。');
+  const next = structuredClone(bundle);
+  for (const [self, other] of [[a, b], [b, a]]) {
+    const old = self.qualityDistinct || [], remaining = old.filter(r => r.store !== other.id);
+    if (!forget && self.id < other.id) {
+      if (remaining.length >= 200) throw new Error('此門市已達 200 組核對紀錄，請先檢查已確認清單。');
+      remaining.push({ store: other.id, self: profileSnapshot(self), other: profileSnapshot(other) });
+    }
+    if (JSON.stringify(old) !== JSON.stringify(remaining)) next.ops.push(revision('store', self.id, { ...self.heads[0].data, qualityDistinct: remaining }, self.heads.map(h => h.id), device));
+  }
+  return validateBundle(next);
+}
+export function sourceSuggestions(store) {
+  const values = new Map();
+  for (const source of store.csvSources || []) {
+    const mapping = guessMapping(source.headers);
+    for (const field of FILL_FIELDS) {
+      if (store[field]?.trim()) continue;
+      const index = mapping[field === 'mapUrl' ? 'url' : field], raw = index >= 0 ? source.cells[index] : '';
+      if (!raw?.trim()) continue;
+      const value = raw.trim(), max = ['address', 'mapUrl'].includes(field) ? 2000 : 500;
+      if (value.length > max) continue;
+      const bucket = values.get(field) || new Map();
+      bucket.set(value, { value, file: source.file, line: source.line });
+      values.set(field, bucket);
+    }
+  }
+  return Object.fromEntries([...values].map(([field, bucket]) => [field, [...bucket.values()]]));
+}
+export function fillProfile(bundle, id, additions, device, expectedParents) {
+  const store = project(bundle).find(r => r.type === 'store' && r.id === id);
+  if (!store || store.deleted || store.conflict || JSON.stringify(store.heads.map(h => h.id).sort()) !== JSON.stringify([...expectedParents].sort())) throw new Error('門市內容已變更，請重新開啟補登。');
+  const data = structuredClone(store.heads[0].data); let changed = false;
+  for (const [field, raw] of Object.entries(additions)) {
+    if (!FILL_FIELDS.includes(field) || typeof raw !== 'string') throw new Error('補登欄位不正確。');
+    const value = raw.trim(); if (!value) continue;
+    if (data[field]?.trim()) throw new Error(PROFILE_FIELDS[field] + '已有資料，請重新檢查。');
+    data[field] = value; changed = true;
+  }
+  if (!changed) throw new Error('請至少補上一個欄位；未知資料可以留空。');
+  const next = structuredClone(bundle); next.ops.push(revision('store', id, data, store.heads.map(h => h.id), device));
+  return validateBundle(next);
+}
+export const FIELD_NAMES = { name: '藥局／地點名稱（必要）', note: '備註原文', url: 'Google Maps 網址', address: '地址', city: '縣市', district: '地區', channel: '通路／屬性', contact: '拜訪窗口', date: '拜訪日期（不是匯出日期）' };
+const aliases = { contact: ['contact', '拜訪窗口', '聯絡人', '窗口'], name: ['title', 'name', '名稱', '地點名稱', '藥局名稱', '門市名稱', '標題'], note: ['筆記', 'note', 'notes', 'comment', 'comments', '留言', '備註', '備註內容', '說明', 'description', '紀錄'], url: ['url', 'google maps url', '網址', '連結', '地圖網址'], address: ['address', '地址'], city: ['city', '縣市', '城市'], district: ['district', '地區', '行政區'], channel: ['channel', '通路', '門市屬性'], date: ['visit date', '拜訪日期'] };
 export function decodeCSV(bytes, encoding = 'auto') {
   let codec = encoding;
   if (codec === 'auto') codec = bytes[0] === 255 && bytes[1] === 254 ? 'utf-16le' : bytes[0] === 254 && bytes[1] === 255 ? 'utf-16be' : 'utf-8';
@@ -41,8 +173,11 @@ export function parseCSV(input, delimiter = 'auto') {
 export function guessMapping(headers) {
   const norm = h => h.trim().toLowerCase();
   return Object.fromEntries(Object.keys(FIELD_NAMES).map(k => {
-    const index = aliases[k].map(alias => headers.findIndex(h => norm(h) === alias)).find(i => i >= 0);
-    return [k, index ?? -1];
+    // Google exports distinguish the user's 筆記 from the separate 留言 field.
+    const personalNotes = headers.map((h, i) => norm(h) === '筆記' ? i : -1).filter(i => i >= 0);
+    if (k === 'note' && personalNotes.length === 1) return [k, personalNotes[0]];
+    const matches = headers.map((h, i) => aliases[k].includes(norm(h)) ? i : -1).filter(i => i >= 0);
+    return [k, matches.length === 1 ? matches[0] : -1];
   }));
 }
 export function originalDate(raw) {
@@ -75,49 +210,91 @@ function visitStream(record) {
 export async function prepareCSV(file, bytes, encoding = 'auto', delimiter = 'auto') {
   if (bytes.length > CSV_LIMIT) throw new Error('單一 CSV 上限 2 MB；請拆分檔案。');
   const parsed = parseCSV(decodeCSV(bytes, encoding), delimiter), blob = await hashBytes(bytes);
-  return { file, bytes, blob, ...parsed, mapping: guessMapping(parsed.headers), list: normalizeListName(file), encoding, channel: '' };
+  if (parsed.headers.some(h => h.length > 20000)) throw new Error('CSV 欄位名稱超過長度上限，請先核對第一列。');
+  const warnings = [], names = new Map();
+  parsed.headers.forEach((h, i) => {
+    const key = h.trim().toLowerCase();
+    if (!key) warnings.push('第 ' + (i + 1) + ' 欄沒有欄位名稱，請核對對應');
+    if (names.has(key)) warnings.push('第 ' + (i + 1) + ' 欄與第 ' + (names.get(key) + 1) + ' 欄同名，請以欄位位置和原文核對');
+    else names.set(key, i);
+  });
+  for (const [field, options] of Object.entries(aliases)) if (parsed.headers.filter(h => options.includes(h.trim().toLowerCase())).length > 1) warnings.push(FIELD_NAMES[field] + (field === 'note' && parsed.headers.filter(h => h.trim() === '筆記').length === 1 ? '依 Google 格式優先對應「筆記」，請核對其他備註欄位' : '有多個可能欄位，請自行指定'));
+  return { file, bytes, blob, ...parsed, warnings, mapping: guessMapping(parsed.headers), list: normalizeListName(file), encoding, channel: '' };
 }
+function validateMapping(file) {
+  const used = new Set();
+  for (const field of Object.keys(FIELD_NAMES)) {
+    const index = file.mapping[field] ?? -1;
+    if (!Number.isInteger(index) || index < -1 || index >= file.headers.length) throw new Error(file.file + '：欄位對應超出範圍，請重新指定。');
+    if (index >= 0 && used.has(index)) throw new Error(file.file + '：同一個 CSV 欄位不可重複對應，請核對第 ' + (index + 1) + ' 欄。');
+    if (index >= 0) used.add(index);
+  }
+  if (!Number.isInteger(file.mapping.name) || file.mapping.name < 0) throw new Error(file.file + '：請指定藥局名稱欄位。');
+  if (!file.list?.trim() || file.list.length > 200) throw new Error(file.file + '：請填寫 1–200 字的來源清單名稱，以便追蹤備註版本。');
+}
+const bundleRevision = bundle => bundle.ops.map(o => o.id).sort().join(',');
 export async function planCSV(files, bundle) {
   const records = project(bundle), stores = records.filter(r => r.type === 'store'), visits = records.filter(r => r.type === 'visit' && !r.deleted && !r.conflict), seenBatch = new Set();
-  const rows = [], batchIdentities = new Map(), batchNames = new Map();
+  const rows = [], batchIdentities = new Map(), batchNames = new Map(), storeIndex = new Map(), rowIndex = new Map(), exactIndex = new Map();
+  const add = (index, key, item) => { if (!key) return; const group = index.get(key) || []; group.push(item); index.set(key, group); };
+  for (const store of stores) { add(exactIndex, identity(store), store); for (const key of profileKeys(store)) add(storeIndex, key, store); }
   for (let fi = 0; fi < files.length; fi++) {
     const f = files[fi];
-    if (!Number.isInteger(f.mapping.name) || f.mapping.name < 0) throw new Error(`${f.file}：請指定藥局名稱欄位。`);
+    validateMapping(f);
     for (const [ri, r] of f.rows.entries()) {
       const get = field => f.mapping[field] >= 0 ? r.cells[f.mapping[field]] ?? '' : '';
-      const data = { name: get('name'), address: get('address'), mapUrl: get('url'), city: get('city'), district: get('district'), channel: get('channel') || f.channel, attr: '', contact: '' };
+      const data = { name: get('name'), address: get('address'), mapUrl: get('url'), city: get('city'), district: get('district'), channel: get('channel') || f.channel, attr: '', contact: get('contact') };
       const note = get('note'), rawDate = get('date'), date = originalDate(rawDate), fingerprint = await hashBytes(utf8.encode(JSON.stringify([f.headers, r.cells]))), key = `${fi}:${ri}`;
       const warnings = [], errors = [];
       if (!data.name.trim()) errors.push('缺少地點名稱');
-      if (data.name.length > 200 || ['city', 'district', 'channel'].some(k => data[k].length > 500) || data.address.length > 2000 || data.mapUrl.length > 2000 || note.length > 20000) errors.push('欄位超過長度上限；不會截斷原文');
+      for (const [field, label] of Object.entries(PROFILE_FIELDS)) { const max = field === 'name' ? 200 : ['address', 'mapUrl'].includes(field) ? 2000 : 500; if ((data[field] || '').length > max) errors.push(label + '超過 ' + max + ' 字上限，不會截斷原文'); }
+      if (note.length > 20000) errors.push('備註超過 20,000 字上限，不會截斷原文');
       if (rawDate && !date) warnings.push('日期格式不明，將標示未提供，原始值保留');
-      if (!note) warnings.push('本次匯出沒有備註；若同一來源以前有內容，會保留舊文並標示狀態');
-      const id = identity(data), matches = id ? stores.filter(s => identity(s) === id) : [], sourceUrlMatches = data.mapUrl.trim() ? stores.filter(s => s.mapUrl?.trim() === data.mapUrl.trim()) : [], names = stores.filter(s => s.name.trim() === data.name.trim());
+      const noteProvided = f.mapping.note >= 0;
+      if (!noteProvided) warnings.push('未對應備註欄位，既有備註及來源缺失狀態不變');
+      else if (!note) warnings.push('本次匯出沒有備註；若同一來源以前有內容，會保留舊文並標示狀態');
+      else if (!note.trim()) warnings.push('備註只有空白字元，原文仍完整保留，請核對來源');
+      const issues = profileIssues(data);
+      warnings.push(...issues.filter(i => i.kind !== 'error').map(i => i.message));
+      const id = identity(data), matches = exactIndex.get(id) || [], names = storeIndex.get('name:' + comparisonText(data.name)) || [];
+      const keys = profileKeys(data), similar = [...new Set(keys.flatMap(k => storeIndex.get(k) || []))], batchSimilar = [...new Set(keys.flatMap(k => rowIndex.get(k) || []))];
+      const candidates = similar.map(s => ({ choice: 'store:' + s.id, data: s, reasons: duplicateEvidence(data, s) }));
+      const batchCandidates = batchSimilar.map(r => ({ choice: 'row:' + r.key, data: r.data, reasons: duplicateEvidence(data, r.data) }));
+      const batchFingerprint = normalizeListName(f.list).toLocaleLowerCase('zh-Hant') + ':' + fingerprint;
       let choice = 'new', reason = '新增門市';
-      if (seenBatch.has(fingerprint)) { choice = 'skip'; reason = '相同原始列已在本批出現'; }
+      if (seenBatch.has(batchFingerprint)) { choice = 'skip'; reason = '同一來源清單的相同原始列已在本批出現'; }
       else if (errors.length) { choice = 'skip'; reason = errors.join('；'); }
-      else if ((matches.length === 1 || !matches.length && sourceUrlMatches.length === 1) && !(matches[0] || sourceUrlMatches[0]).conflict && !(matches[0] || sourceUrlMatches[0]).deleted) {
-        const matched = matches[0] || sourceUrlMatches[0]; choice = `store:${matched.id}`; reason = matches.length ? '相同地圖網址或名稱＋地址' : '與已核對門市保存的來源網址完全相同';
+      else if (matches.length === 1 && !matches[0].conflict && !matches[0].deleted) {
+        const matched = matches[0]; choice = `store:${matched.id}`; reason = '相同地圖網址或名稱＋地址';
         const stream = csvStream(matched.id, f.list), current = visits.filter(v => visitStream(v) === stream);
-        const sameStoreRow = (matched.csvSources || []).some(s => s.fingerprint === fingerprint);
-        const sameState = !note ? !current.length || current.length === 1 && current[0].sourceMissing : current.length === 1 && (current[0].googleText ?? current[0].text) === note && !current[0].sourceMissing;
+        const sameStoreRow = (matched.csvSources || []).some(s => s.fingerprint === fingerprint && normalizeListName(s.list).toLocaleLowerCase('zh-Hant') === normalizeListName(f.list).toLocaleLowerCase('zh-Hant'));
+        const sameState = !noteProvided || (!note ? !current.length || current.length === 1 && current[0].sourceMissing : current.length === 1 && (current[0].googleText ?? current[0].text) === note && !current[0].sourceMissing);
         if (sameStoreRow && sameState) { choice = 'skip'; reason = '目前版本已包含相同原始列'; }
       }
       else if (matches.length || names.length) { choice = 'review'; reason = '同名、已刪除或多個可能門市，請指定'; }
       else if (id && batchIdentities.has(id)) { choice = `row:${batchIdentities.get(id)}`; reason = '連結本批相同網址／地址的門市'; }
       else if (batchNames.has(data.name.trim())) { choice = 'review'; reason = '本批有同名門市，不能只依名稱合併'; }
+      else if (candidates.length || batchCandidates.length) { choice = 'review'; reason = '有相似名稱、地址或地點識別，請比對來源後指定'; }
       if (choice === 'new') { if (id) batchIdentities.set(id, key); batchNames.set(data.name.trim(), key); }
-      seenBatch.add(fingerprint);
-      rows.push({ key, fileIndex: fi, rowIndex: ri, line: r.line, data, note, date, fingerprint, choice, reason, warnings, errors });
+      seenBatch.add(batchFingerprint);
+      rows.push({ key, fileIndex: fi, rowIndex: ri, line: r.line, data, note, noteProvided, date, fingerprint, choice, reason, warnings, errors, issues, candidates: [...candidates, ...batchCandidates], fillFields: [] });
+      for (const key of keys) add(rowIndex, key, rows.at(-1));
     }
   }
   if (rows.length > 1500) throw new Error('每批最多 1,500 列，請分批匯入。');
-  return { files, rows };
+  return { files, rows, baseRevision: bundleRevision(bundle), vaultId: bundle.vaultId };
+}
+export function profileChanges(row, records) {
+  if (!row.choice.startsWith('store:')) return [];
+  const store = records.find(s => s.type === 'store' && s.id === row.choice.slice(6) && !s.deleted && !s.conflict);
+  if (!store) return [];
+  return Object.keys(PROFILE_FIELDS).filter(field => row.data[field]?.trim() && row.data[field] !== (store[field] || '')).map(field => ({ field, label: PROFILE_FIELDS[field], previous: store[field] || '', incoming: row.data[field], fillable: FILL_FIELDS.includes(field) && !store[field]?.trim() }));
 }
 export function buildCSVImport(plan, bundle, device) {
+  if (plan.vaultId !== bundle.vaultId || plan.baseRevision !== bundleRevision(bundle)) throw new Error('資料已在預覽後變更，請重新產生匯入預覽；尚未寫入這批資料。');
   const next = structuredClone(bundle), initial = project(bundle), states = new Map(initial.filter(r => r.type === 'store').map(r => [r.id, { data: structuredClone(r.heads[0].data), parents: r.heads.map(h => h.id), invalid: r.deleted || r.conflict }])); next.schema = 2;
   const resolution = new Map(), at = new Date().toISOString(), batch = uuid(), changed = new Set(), visitOps = [], addedBlobs = new Set();
-  const summary = { stores: 0, linked: 0, notes: 0, updatedNotes: 0, missingNotes: 0, restoredNotes: 0, unchangedNotes: 0, duplicateNotes: 0, skipped: 0, rows: 0 };
+  const summary = { stores: 0, linked: 0, notes: 0, updatedNotes: 0, missingNotes: 0, restoredNotes: 0, unchangedNotes: 0, duplicateNotes: 0, filledFields: 0, skipped: 0, rows: 0 };
   const visitsByStream = new Map();
   for (const visit of initial.filter(r => r.type === 'visit' && !r.deleted)) {
     const stream = visitStream(visit);
@@ -139,6 +316,12 @@ export function buildCSVImport(plan, bundle, device) {
     if (row.choice === 'skip') { summary.skipped++; continue; }
     if (row.errors.length) throw new Error(`第 ${row.line} 行：${row.errors.join('；')}。請略過或修正原檔。`);
     const id = resolve(row), state = states.get(id), f = plan.files[row.fileIndex], raw = f.rows[row.rowIndex];
+    for (const field of row.fillFields || []) {
+      const original = initial.find(s => s.type === 'store' && s.id === id);
+      if (!row.choice.startsWith('store:') || !original || !FILL_FIELDS.includes(field) || original[field]?.trim() || !row.data[field]?.trim()) throw new Error('補欄位選取已失效，請重新核對匯入預覽。');
+      if (state.data[field]?.trim() && state.data[field] !== row.data[field]) throw new Error(PROFILE_FIELDS[field] + '在本批有不同補值，請取消其中一個選取後再匯入。');
+      if (!state.data[field]?.trim()) { state.data[field] = row.data[field]; summary.filledFields++; }
+    }
     if (state.parents.length && !changed.has(id)) summary.linked++;
     const source = { fingerprint: row.fingerprint, batch, file: f.file, line: row.line, list: f.list, at, blob: f.blob, headers: [...f.headers], cells: [...raw.cells] };
     state.data.csvSources = [...(state.data.csvSources || []), source];
@@ -149,6 +332,8 @@ export function buildCSVImport(plan, bundle, device) {
     const stream = csvStream(id, f.list), current = visitsByStream.get(stream) || [];
     if (current.length > 1) throw new Error(`第 ${row.line} 行：同一 Google 備註來源已有多筆舊紀錄，為避免錯誤合併，請先在 App 檢查。`);
     const existing = current[0];
+    if (row.noteProvided === false) continue;
+    if (existing?.conflict) throw new Error(f.file + ' 第 ' + row.line + ' 行：備註有同步衝突，請先核對後再匯入。');
     if (!existing && row.note) {
       const entity = uuid(), data = { store: id, date: row.date, source: 'Google Maps CSV 匯入', text: row.note, googleText: row.note, next: '', topics: [], people: [], attachments: [], csvStream: stream, sourceMissing: false, googleUpdatePending: false, csvSources: [source] };
       const op = revision('visit', entity, data, [], device); visitOps.push(op); visitsByStream.set(stream, [{ id: entity, type: 'visit', ...data, heads: [op], versions: [op] }]); summary.notes++;
