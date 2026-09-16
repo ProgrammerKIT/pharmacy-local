@@ -33,6 +33,14 @@ export async function unseal(e, key, purpose = 'shared') {
   catch { throw new Error('密碼不正確，或檔案已損毀；原資料未被覆蓋。'); }
 }
 export const emptyBundle = vaultId => ({ schema: 2, vaultId, ops: [], blobs: {} });
+export async function openRebuiltSnapshot(paired, currentVaultId, password, deviceName) {
+  const remote = paired?.snapshot;
+  if (!remote?.rebuild?.id || !remote.envelope || remote.envelope.vaultId === currentVaultId) throw new Error('Mac 尚未重建為另一個資料庫；本機資料保持原樣。');
+  if (!Number.isSafeInteger(remote.version) || remote.version < 1 || typeof paired.token !== 'string' || !paired.token || typeof paired.id !== 'string') throw new Error('新資料庫的配對回應不完整。');
+  const meta = remote.envelope, key = await derive(password, meta), bundle = validateBundle(await unseal(meta, key));
+  if (bundle.vaultId !== meta.vaultId) throw new Error('新資料庫身分不符。');
+  return { key, meta, payload: { schema: 1, device: paired.id, deviceName, token: paired.token, bundle, dirty: false, serverVersion: remote.version, lastSync: new Date().toISOString() } };
+}
 const types = ['store', 'visit', 'topic', 'person'];
 const plain = x => x !== null && typeof x === 'object' && !Array.isArray(x);
 const str = (s, max = 20000) => typeof s === 'string' && s.length <= max;

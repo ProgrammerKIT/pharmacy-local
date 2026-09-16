@@ -1,5 +1,5 @@
-import { newMeta, derive, seal, unseal, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES } from './core.js';
-import { readLocal, writeLocal } from './db.js';
+import { newMeta, derive, seal, unseal, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot } from './core.js';
+import { readLocal, writeLocal, archiveAndReplaceLocal, listLocalArchives, readLocalArchive } from './db.js';
 import { createCSVImport } from './csv-ui.js';
 import { PROFILE_FIELDS, FILL_FIELDS, scanQuality, setDistinctReview, sourceSuggestions, fillProfile } from './csv.js';
 import { entityRule, evidenceKind, sourceTags, groupCSVNotes, storeIdentityPending, relationVisitAllowed } from './relations.js';
@@ -96,13 +96,13 @@ async function openWorkspace() {
   autoTimer = setInterval(autoSync, 15000);
 }
 async function autoSync() {
-  if (updateHolding || autoFetching || !payload?.token || document.hidden || busy || editorContext || $('review').open || csvImport.hasPending()) return;
+  if (updateHolding || autoFetching || !payload?.token || document.hidden || busy || editorContext || $('review').open || $('rebuild-dialog')?.open || csvImport.hasPending()) return;
   const sessionKey = key;
   autoFetching = true;
   try {
     // Offline probes never block editing or take the write lock, and carry no customer content.
     const remote = await api('/api/version');
-    if (updateHolding || !payload || key !== sessionKey || document.hidden || busy || editorContext || $('review').open || csvImport.hasPending()) return;
+    if (updateHolding || !payload || key !== sessionKey || document.hidden || busy || editorContext || $('review').open || $('rebuild-dialog')?.open || csvImport.hasPending()) return;
     await run(async () => {
       try {
         if (payload.dirty || remote.version !== payload.serverVersion) await synchronize();
@@ -120,7 +120,7 @@ function lockNow(reopen = !document.hidden) {
   document.querySelectorAll('dialog').forEach(d => d.close());
   for (const id of ['quality-content', 'focus-header', 'graph', 'graph-pager', 'focus-detail', 'evidence-list', 'store-list', 'visit-list', 'customer-list', 'entity-list', 'trash-list', 'review-body', 'editor-fields', 'conflict-list', 'connection-detail', 'program-detail', 'sync-success-detail', 'sync-failure-detail', 'connection-check', 'device-label', 'sync-result', 'storage-detail']) $(id).replaceChildren();
   $('connection-check').hidden = true;
-  $('editor-form').reset(); $('gate-form').reset(); $('password').value = ''; $('backup-file').value = '';
+  $('editor-form').reset(); $('gate-form').reset(); $('rebuild-connect-form').reset(); $('password').value = ''; $('backup-file').value = '';
   $('workspace').hidden = true; $('gate').hidden = false;
   if (reopen) { document.body.classList.remove('privacy-veil'); showGate(); }
   $('toast').classList.remove('show'); $('toast').textContent = '';
@@ -459,6 +459,40 @@ async function importBackup(file) {
     await persist({ ...payload, bundle, dirty: true }); render(); toast('備份已合併。舊版本不會蓋掉較新的修改；可到歷史版本還原。');
   }
 }
+async function adoptRebuilt(event) {
+  event.preventDefault();
+  await run(async () => {
+    if (editorContext || csvImport.hasPending()) throw new Error('請先儲存編輯或取消匯入預覽，再切換資料庫。');
+    const code = $('rebuild-code').value.trim(), password = $('rebuild-connect-password').value;
+    if (!code || !password || !$('rebuild-understood').checked) throw new Error('請填寫配對碼、密碼並確認隔離本機舊資料。');
+    const paired = await api('/api/pair', { method: 'POST', token: null, body: { code, label: payload.deviceName } });
+    const next = await openRebuiltSnapshot(paired, meta.vaultId, password, payload.deviceName);
+    const envelope = await seal(next.payload, next.key, next.meta, 'device');
+    const rev = await archiveAndReplaceLocal(envelope, localRevision, next.key);
+    // Only adopt after the archive and active slot commit in one transaction.
+    meta = next.meta; key = next.key; payload = next.payload; localRevision = rev; slot = { envelope, revision: rev, unlockKey: key };
+    csvImport.reset(); qualityCache = null; qualityReview = null; editorContext = null; records = []; trail = []; focus = { type: 'store', id: '' }; graphPage = 0;
+    for (const u of objectURLs) URL.revokeObjectURL(u); objectURLs = [];
+    for (const id of ['focus-header', 'graph', 'graph-pager', 'focus-detail', 'evidence-list', 'store-list', 'visit-list', 'customer-list', 'entity-list', 'trash-list', 'review-body', 'editor-fields', 'quality-content']) $(id).replaceChildren();
+    $('search').value = ''; $('visit-search').value = ''; $('district').value = ''; $('channel').value = '';
+    lastError = ''; lastSyncFailure = null; syncWarning = '';
+    $('rebuild-dialog').close(); $('rebuild-connect-form').reset();
+    await openWorkspace(); switchView('csv'); toast('已改用重建後的資料庫。本機舊資料已隔離，請載入已核對資料包。');
+  }, 'rebuild-connect-error');
+  $('rebuild-connect-password').value = '';
+}
+async function openArchives() {
+  const archives = await listLocalArchives(); $('review-title').textContent = '本機隔離備份';
+  $('review-body').innerHTML = '<p>以下舊資料只保留為備份，不參與目前資料庫、同步、CSV 比對或關聯圖。匯出檔案仍使用該舊庫的原密碼。</p>' + (archives.map(a => '<article class="version"><p>' + esc(dateText(a.at)) + '</p><button data-export-archive="' + esc(a.id) + '">匯出舊庫加密備份</button></article>').join('') || '<p>這台裝置尚無隔離備份。</p>');
+  $('review').showModal();
+}
+async function exportArchive(id) {
+  const archived = await readLocalArchive(id); if (!archived?.unlockKey) throw new Error('找不到可匯出的隔離備份。');
+  const old = await unseal(archived.envelope, archived.unlockKey, 'device'); validateBundle(old.bundle);
+  if (old.bundle.vaultId !== archived.envelope.vaultId) throw new Error('隔離備份身分不符。');
+  const envelope = await seal(old.bundle, archived.unlockKey, archived.envelope);
+  download(JSON.stringify({ format: 'pharmacy-backup-1', envelope }), 'pharmacy-isolated-old-vault.pharmabackup', 'application/octet-stream');
+}
 async function repairPair() {
   const code = prompt('請輸入 Mac 管理頁新產生的配對碼：'); if (!code?.trim()) return;
   const paired = await api('/api/pair', { method: 'POST', token: null, body: { code: code.trim(), label: payload.deviceName } });
@@ -469,8 +503,11 @@ document.addEventListener('click', event => {
   const b = event.target.closest('button');
   const node = event.target.closest('[data-node-type]'); if (node && !busy) return navigate(node.dataset.nodeType, node.dataset.nodeId);
   if (!b) return;
-  if (b.dataset.close) { $(b.dataset.close).close(); if (b.dataset.close === 'editor') editorContext = null; return; }
+  if (b.dataset.close) { if (b.dataset.close === 'rebuild-dialog' && busy) return; $(b.dataset.close).close(); if (b.dataset.close === 'rebuild-dialog') $('rebuild-connect-form').reset(); if (b.dataset.close === 'editor') editorContext = null; return; }
   if (updateHolding || busy || !payload) return;
+  if (b.id === 'connect-rebuilt') { if (editorContext || csvImport.hasPending()) return toast('請先儲存編輯或取消匯入預覽。'); $('rebuild-connect-form').reset(); $('rebuild-connect-error').textContent = ''; $('rebuild-dialog').showModal(); return; }
+  if (b.id === 'view-archives') return run(openArchives);
+  if (b.dataset.exportArchive) return run(() => exportArchive(b.dataset.exportArchive));
   if (b.dataset.view) return switchView(b.dataset.view);
   if (b.dataset.add) return openEditor(b.dataset.add);
   if (b.dataset.fillStore) return openFillStore(b.dataset.fillStore);
@@ -513,12 +550,14 @@ $('editor').addEventListener('close', () => editorContext = null);
 $('quality-content').addEventListener('change', e => { if (e.target.id === 'quality-field') { qualityField = e.target.value; qualityPage = 0; renderQuality(); } });
 $('gate-restore').addEventListener('click', () => { if (!$('password').value) { $('gate-error').textContent = '請先在密碼欄填寫備份密碼。'; return; } $('backup-file').click(); });
 $('backup-file').addEventListener('change', () => { const f = $('backup-file').files[0]; if (f) run(() => importBackup(f), payload ? null : 'gate-error'); $('backup-file').value = ''; });
+$('rebuild-connect-form').addEventListener('submit', adoptRebuilt);
+$('rebuild-dialog').addEventListener('cancel', event => { if (busy) event.preventDefault(); else $('rebuild-connect-form').reset(); });
 ['search', 'district', 'channel'].forEach(id => $(id).addEventListener(id === 'search' ? 'input' : 'change', renderStores)); $('visit-search').addEventListener('input', renderVisits);
 new ResizeObserver(drawGraph).observe($('graph-wrap'));
 if (!isSecureContext || !crypto.subtle) { $('gate-error').textContent = '需要受信任的 HTTPS 連線。請完成 Mac 與 iPhone 憑證設定，不要略過憑證警告。'; $('gate-submit').disabled = true; }
 else {
   showGate();
-  const draftBusy = () => busy || gateOpening || !!editorContext || $('review').open || csvImport.hasPending() || (!$('gate').hidden && [...$('gate-form').querySelectorAll('input')].some(el => el.value && !['device-name'].includes(el.id)));
+  const draftBusy = () => busy || gateOpening || !!editorContext || $('review').open || $('rebuild-dialog')?.open || csvImport.hasPending() || (!$('gate').hidden && [...$('gate-form').querySelectorAll('input')].some(el => el.value && !['device-name'].includes(el.id)));
   for (const name of ['click', 'submit', 'keydown', 'beforeinput']) document.addEventListener(name, event => { if (updateHolding && event.target.closest('button,input,select,textarea,form,a')) { event.preventDefault(); event.stopImmediatePropagation(); } }, true);
   startUpdates({ api, hasToken: () => !!payload?.token, isBusy: draftBusy, setHold: held => { updateHolding = held; document.body.classList.toggle('update-holding', held); }, notify: toast, onOfflineReady: () => { offlineReady = true; $('secure-state').textContent = '離線介面已備妥。iPhone 請先加入主畫面，再從主畫面進行配對。'; status(); } });
   if (location.hostname === 'localhost') $('secure-state').textContent = '請使用 Mac 顯示的 .local 網址開啟 App，管理頁才使用 localhost。';
