@@ -56,8 +56,8 @@ test('Finder download suffixes map to one Google note stream and changes create 
 test('same names never auto-merge without evidence; generic map searches are not identifiers', async () => {
   assert.equal(identity({ name: '大樹藥局', mapUrl: 'https://www.google.com/maps?q=大樹藥局' }), '');
   const b = emptyBundle('test'), f = await fixture('Title,Note\n相同藥局,A\n相同藥局,B'), plan = await planCSV([f], b);
-  assert.equal(plan.rows[0].choice, 'new'); assert.equal(plan.rows[1].choice, 'review'); assert.throws(() => buildCSVImport(plan, b, 'mac'));
-  plan.rows[1].choice = 'new'; assert.equal(buildCSVImport(plan, b, 'mac').summary.stores, 2);
+  assert.equal(plan.rows[0].choice, 'review'); assert.equal(plan.rows[1].choice, 'review'); assert.throws(() => buildCSVImport(plan, b, 'mac'));
+  plan.rows.forEach(row => row.choice = 'new'); assert.equal(buildCSVImport(plan, b, 'mac').summary.stores, 2);
 });
 test('matching rows across distinct source lists join one store but keep one note stream per list', async () => {
   const b = emptyBundle('test'), f1 = await fixture(), f2 = await fixture(csv.replace('Title,Note,URL,Address', 'Name,Note,URL,Address'), '第二個清單.csv');
@@ -71,13 +71,18 @@ test('a Google update does not overwrite text manually edited in the App', async
   const bundle = structuredClone(first.bundle), old = project(bundle).find(r => r.type === 'visit');
   bundle.ops.push(revision('visit', old.id, { ...old.heads[0].data, text: '我在 App 補充的文字' }, old.heads.map(h => h.id), 'phone'));
   const changedCSV = csv.replace('再追蹤', 'Google 新版本');
-  const updated = buildCSVImport(await planCSV([await fixture(changedCSV, 'CS清單(2).csv')], bundle), bundle, 'mac');
+  const plan = await planCSV([await fixture(changedCSV, 'CS清單(2).csv')], bundle);
+  assert.throws(() => buildCSVImport(plan, bundle, 'mac'), /手動修改/);
+  plan.rows[0].sop1.manualAccepted = true;
+  const updated = buildCSVImport(plan, bundle, 'mac');
   const current = project(updated.bundle).find(r => r.type === 'visit');
   assert.equal(current.text, '我在 App 補充的文字'); assert.match(current.googleText, /Google 新版本/); assert.equal(current.googleUpdatePending, true); assert.equal(current.versions.length, 3);
 });
 test('linking preserves current store data and creates a normal conflict if another device edited offline', async () => {
   const b = emptyBundle('test'), d = { name: '原名', city: '', district: '大安區', channel: '獨立', contact: '保留窗口', attr: '', mapUrl: 'https://maps.google.com/?cid=1234567', address: '' };
-  b.ops.push(revision('store', 's1', d, [], 'mac')); const p = await planCSV([await fixture()], b), result = buildCSVImport(p, b, 'mac');
+  b.ops.push(revision('store', 's1', d, [], 'mac')); const p = await planCSV([await fixture()], b);
+  assert.equal(p.rows[0].choice, 'review'); p.rows[0].choice = 'store:s1';
+  const result = buildCSVImport(p, b, 'mac');
   assert.equal(project(result.bundle)[0].contact, '保留窗口'); assert.equal(project(result.bundle)[0].name, '原名');
   const other = structuredClone(b); other.ops.push(revision('store', 's1', { ...d, contact: '手機修改' }, [b.ops[0].id], 'phone'));
   assert.equal(project(merge(result.bundle, other)).find(r => r.type === 'store').conflict, true);
@@ -86,6 +91,6 @@ test('invalid rows cannot partially commit and schema 1 backups remain readable'
   const b = emptyBundle('test'); b.schema = 1; validateBundle(b);
   const p = await planCSV([await fixture('Title,Note\n合法,A\n,B')], b); p.rows[1].choice = 'new';
   const before = JSON.stringify(b); assert.throws(() => buildCSVImport(p, b, 'mac')); assert.equal(JSON.stringify(b), before);
-  p.rows[1].choice = 'skip'; const next = buildCSVImport(p, b, 'mac').bundle; assert.equal(next.schema, 2); assert.equal(merge(b, next).schema, 2);
+  p.rows[0].choice = 'new'; p.rows[1].choice = 'skip'; const next = buildCSVImport(p, b, 'mac').bundle; assert.equal(next.schema, 2); assert.equal(merge(b, next).schema, 2);
   delete next.blobs[Object.keys(next.blobs)[0]]; assert.throws(() => validateBundle(next));
 });

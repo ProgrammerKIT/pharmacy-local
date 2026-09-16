@@ -1,4 +1,11 @@
 // All matching runs on the device. Labels describe text evidence, never clinical advice.
+export function storeIdentityPending(store) {
+  return !!store && (store.csvIdentityPending === true || !!store.conflict && (store.heads || []).some(h => h.data.csvIdentityPending === true));
+}
+export function relationVisitAllowed(visit, stores) {
+  const store = stores.find(s => s.id === visit.store);
+  return !!store && !storeIdentityPending(store);
+}
 export const TOPIC_RULES = [
   { key: 'ortho', name: '角膜塑型片', terms: ['角膜塑型', '角膜塑形', '塑形片', '塑型片'] },
   { key: 'ha', name: '玻尿酸／HA', terms: ['玻尿酸', 'HA', 'HAUD', 'HAMD'] },
@@ -44,4 +51,18 @@ export function entityRule(entity) {
 }
 export function sourceTags(store) {
   return [...new Set((store.csvSources || []).flatMap(s => s.headers.flatMap((h, i) => ['標籤', 'tags', 'label', 'labels'].includes(h.trim().toLowerCase()) && s.cells[i].trim() ? [s.cells[i]] : [])))];
+}
+
+// A read-only evidence view, NOT a store/visit merge. Never infer event identity.
+export function groupCSVNotes(visits) {
+  const groups = new Map(), output = [];
+  for (const visit of visits) {
+    const eligible = visit.csvSources?.length && visit.googleText !== undefined && visit.text === visit.googleText && visit.text.trim() && !visit.conflict && !visit.googleUpdatePending && !visit.deleted;
+    if (!eligible) { output.push(visit); continue; }
+    const signature = JSON.stringify([visit.store, visit.text, visit.date || '', !!visit.sourceMissing, [...(visit.topics || [])].sort(), [...(visit.people || [])].sort(), visit.next || '', visit.attachments || [], (visit.csvSources || []).flatMap(s => s.supplements || [])]);
+    const found = groups.get(signature);
+    if (found) found.evidenceMembers.push(visit);
+    else { const group = { ...visit, evidenceMembers: [visit] }; groups.set(signature, group); output.push(group); }
+  }
+  return output;
 }

@@ -9,6 +9,8 @@ IMPORT-RESULTS.md
 START-HERE.html
 *.csv
 *.pharmabackup
+*.pharmareview
+pharmacy-import-preview*.json
 *.pharmaupdate
 *.key
 *.pem
