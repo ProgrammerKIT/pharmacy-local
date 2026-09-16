@@ -1,4 +1,4 @@
-import { b64, hashBytes, uuid, revision, project, validateBundle, MAX_BYTES } from './core.js';
+import { b64, unb64, hashBytes, uuid, revision, project, validateBundle, MAX_BYTES } from './core.js';
 const utf8 = new TextEncoder();
 export const CSV_LIMIT = 2 * 1024 * 1024;
 export const PROFILE_FIELDS = { name: '名稱', address: '地址', city: '縣市', district: '地區', channel: '通路', contact: '拜訪窗口', mapUrl: 'Google Maps 網址' };
@@ -269,6 +269,7 @@ export function sop1Report(plan, bundle) {
   }
   const fail = (row, message) => blockers.push({ key: row.key, file: plan.files[row.fileIndex].file, line: row.line, message });
   for (const row of plan.rows) {
+    if (row.reviewExcluded && row.choice !== 'skip') fail(row, '此列已裁定排除，須重新核對資料包才可納入');
     if (row.choice === 'skip') { summaries.push({ key: row.key, kind: row.sop1?.metadata ? 'metadata' : 'skipped' }); continue; }
     if (row.choice === 'review') { fail(row, row.reason || '門市尚未核對'); continue; }
     if (row.errors.length) { fail(row, row.errors.join('；')); continue; }
@@ -283,13 +284,25 @@ export function sop1Report(plan, bundle) {
     const old = existing[0];
     let kind = !row.note?.trim() ? 'no-note' : old ? (old.googleText ?? old.text) === row.note && (!row.date || row.date === old.date) ? 'unchanged' : 'new-version' : 'new-note';
     if (old && row.noteProvided && !row.note) kind = 'retain-missing';
-    const manual = old && row.note && old.googleText !== undefined && old.text !== old.googleText && row.note !== old.googleText;
+    const manual = old && row.note && old.text !== row.note && (old.googleText === undefined || old.text !== old.googleText) && row.note !== old.googleText;
     if (manual && !row.sop1?.manualAccepted) fail(row, 'App 手動修改與新來源文字不同，須先確認保留 App 文字及保存來源新版');
     summaries.push({ key: row.key, target: resolved, kind, manual: !!manual });
   }
   for (const group of streams.values()) {
     const notes = new Set(group.filter(r => r.noteProvided).map(r => JSON.stringify([r.note, r.date])));
     if (notes.size > 1) for (const row of group) fail(row, '同一門市、同一來源清單在本批有不同備註或日期，不能以檔案順序決定新版');
+  }
+  // Reviewed groups are user decisions, not another automatic identity heuristic.
+  const assigned = new Map();
+  for (const group of plan.reviewGroups || []) {
+    const members = group.rows.map(key => byRow.get(key)), active = members.filter(r => r.choice !== 'skip');
+    if (!active.length) continue;
+    const targets = new Set(active.map(r => target(r)).filter(Boolean));
+    if (active.length !== members.length || targets.size !== 1) { for (const row of active) fail(row, '已裁定的同組來源須一起指定，不能只移動或略過其中一列'); continue; }
+    const resolved = [...targets][0], prior = assigned.get(resolved);
+    if (prior && prior.id !== group.id) {
+      for (const key of [...prior.rows, ...group.rows]) fail(byRow.get(key), '兩個已裁定分開的組指向同一現有門市，請先核對，不能自動合併或搬移舊備註');
+    } else assigned.set(resolved, group);
   }
   if (plan.vaultId !== bundle.vaultId || plan.baseRevision !== bundleRevision(bundle)) blockers.push({ key: '', message: 'App 資料已變更，請重新預覽' });
   return { version: SOP1_VERSION, ready: !blockers.length, blockers, rows: summaries, counts: Object.fromEntries([...new Set(summaries.map(s => s.kind))].map(kind => [kind, summaries.filter(s => s.kind === kind).length])) };
@@ -417,14 +430,27 @@ export function buildCSVImport(plan, bundle, device) {
     if (row.choice === 'skip') { summary.skipped++; continue; }
     if (row.errors.length) throw new Error(`第 ${row.line} 行：${row.errors.join('；')}。請略過或修正原檔。`);
     const id = resolve(row), state = states.get(id), f = plan.files[row.fileIndex], raw = f.rows[row.rowIndex];
+    if (row.review) {
+      const known = (state.data.csvDecisionGroups || []).includes(row.review.key);
+      const prior = (state.data.csvSources || []).some(s => s.fingerprint === row.fingerprint && sourceListKey(s.list) === sourceListKey(f.list));
+      const current = visitsByStream.get(csvStream(id, f.list)) || [];
+      const same = row.noteProvided === false || (!row.note ? !current.length || current.length === 1 && current[0].sourceMissing : current.length === 1 && (current[0].googleText ?? current[0].text) === row.note && (!row.date || row.date === current[0].date) && !current[0].sourceMissing);
+      if (known && prior && same && !current.some(v => v.conflict) && !row.fillFields.length) { summary.skipped++; continue; }
+      if (!known) {
+        state.data.csvDecisionGroups = [...(state.data.csvDecisionGroups || []), row.review.key];
+        if (row.review.pending) state.data.csvIdentityPending = true;
+      }
+      state.data.csvAliases = [...new Set([...(state.data.csvAliases || []), ...row.review.names])];
+    }
     for (const field of row.fillFields || []) {
       const original = initial.find(s => s.type === 'store' && s.id === id);
-      if (!row.choice.startsWith('store:') || !original || !FILL_FIELDS.includes(field) || original[field]?.trim() || !row.data[field]?.trim()) throw new Error('補欄位選取已失效，請重新核對匯入預覽。');
+      if (!csvTargetChoice(plan, row).startsWith('store:') || !original || !FILL_FIELDS.includes(field) || original[field]?.trim() || !row.data[field]?.trim()) throw new Error('補欄位選取已失效，請重新核對匯入預覽。');
       if (state.data[field]?.trim() && state.data[field] !== row.data[field]) throw new Error(PROFILE_FIELDS[field] + '在本批有不同補值，請取消其中一個選取後再匯入。');
       if (!state.data[field]?.trim()) { state.data[field] = row.data[field]; summary.filledFields++; }
     }
     if (state.parents.length && !changed.has(id)) summary.linked++;
     const source = { fingerprint: row.fingerprint, batch, file: f.file, line: row.line, list: f.list, at, blob: f.blob, headers: [...f.headers], cells: [...raw.cells], sop1Version: SOP1_VERSION, supplements: row.textFields.filter(field => field.kind === 'supplement'), disposition: row.choice, supplementReviewed: !!row.sop1?.extraAccepted, manualReviewed: !!row.sop1?.manualAccepted };
+    if (row.review) source.review = structuredClone(row.review);
     state.data.csvSources = [...(state.data.csvSources || []), source];
     state.data.lists = [...new Set([...(state.data.lists || []), ...(f.list ? [f.list] : [])])];
     // Existing profiles are not overwritten, including their names, addresses and map URLs.
@@ -442,7 +468,7 @@ export function buildCSVImport(plan, bundle, device) {
       const base = structuredClone(existing.heads[0].data), parents = existing.heads.map(h => h.id);
       const previousGoogleText = existing.googleText ?? existing.text;
       if (row.note && (previousGoogleText !== row.note || existing.sourceMissing || row.date && row.date !== existing.date)) {
-        const manuallyEdited = existing.googleText !== undefined && existing.text !== existing.googleText;
+        const manuallyEdited = existing.googleText === undefined || existing.text !== existing.googleText;
         const data = { ...base, store: id, date: row.date || existing.date || '', source: 'Google Maps CSV 匯入', text: manuallyEdited ? existing.text : row.note, googleText: row.note, csvStream: stream, sourceMissing: false, googleUpdatePending: manuallyEdited && existing.text !== row.note, csvSources: [source] };
         const op = revision('visit', existing.id, data, parents, device); visitOps.push(op); visitsByStream.set(stream, [{ ...existing, ...data, heads: [op], versions: [...existing.versions, op] }]);
         if (existing.sourceMissing && previousGoogleText === row.note) summary.restoredNotes++; else summary.updatedNotes++;
@@ -456,4 +482,106 @@ export function buildCSVImport(plan, bundle, device) {
   next.ops.push(...visitOps); validateBundle(next);
   if (utf8.encode(JSON.stringify(next)).length > MAX_BYTES - 65536) throw new Error('匯入後超過資料庫 24 MB 上限。這批尚未寫入，請減少檔案或分庫。');
   return { bundle: next, summary, batch };
+}
+
+export const REVIEW_FORMAT = 'pharmacy-csv-review-1';
+export const REVIEW_LIMIT = 8 * 1024 * 1024;
+// A review package contains original CSV bytes and a complete row partition. It is
+// not a database backup and cannot write or resolve existing App data by itself.
+export async function prepareReviewedCSV(text) {
+  if (typeof text !== 'string' || utf8.encode(text).length > REVIEW_LIMIT) throw new Error('已核對資料包超過8 MB上限。');
+  let input; try { input = JSON.parse(text); } catch { throw new Error('已核對資料包不是有效JSON。'); }
+  const fail = () => { throw new Error('已核對資料包不完整或裁定與來源不一致，尚未寫入。'); };
+  if (input?.format !== REVIEW_FORMAT || !Array.isArray(input.files) || input.files.length < 1 || input.files.length > 10 || !Array.isArray(input.groups) || input.groups.length > 1500 || !Array.isArray(input.excluded)) fail();
+  const files = [], sources = new Map(); let total = 0;
+  for (const entry of input.files) {
+    if (typeof entry.file !== 'string' || !entry.file || entry.file.length > 500 || !/^[a-f0-9]{64}$/.test(entry.sha256) || typeof entry.content !== 'string' || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(entry.content)) fail();
+    let bytes; try { bytes = unb64(entry.content); } catch { fail(); }
+    total += bytes.length; if (total > 5 * 1024 * 1024 || bytes.length > CSV_LIMIT || await hashBytes(bytes) !== entry.sha256) fail();
+    if (sources.has(entry.sha256)) fail(); // Ambiguous references must not choose an arbitrary copy.
+    const f = await prepareCSV(entry.file, bytes);
+    if (entry.list !== f.list) fail();
+    sources.set(entry.sha256, f); files.push(f);
+  }
+  const base = await planCSV(files, { schema: 2, vaultId: 'review-validation', ops: [], blobs: {} });
+  const index = new Map(base.rows.map(r => [`${files[r.fileIndex].blob}:${r.line}`, r])), seen = new Set(), ids = new Set(), groups = [];
+  function member(ref) {
+    if (!ref || !/^[a-f0-9]{64}$/.test(ref.sha256) || !Number.isInteger(ref.line) || typeof ref.fingerprint !== 'string') fail();
+    const key = `${ref.sha256}:${ref.line}`, row = index.get(key);
+    if (!row || seen.has(key) || row.fingerprint !== ref.fingerprint) fail();
+    seen.add(key); return row;
+  }
+  for (const g of input.groups) {
+    if (!g || typeof g.id !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(g.id) || ids.has(g.id) || typeof g.label !== 'string' || !g.label.trim() || g.label.length > 200 || typeof g.pending !== 'boolean' || !Array.isArray(g.rows) || !g.rows.length || g.rows.length > 1500) fail();
+    ids.add(g.id);
+    const members = g.rows.map(member);
+    if (members.some(r => r.sop1.metadata || r.errors.length)) fail();
+    const names = [...new Set(members.map(r => r.data.name))];
+    if (names.length > 100) fail();
+    groups.push({ id: g.id, label: g.label, pending: g.pending, rows: members.map(r => r.key), names });
+  }
+  const excluded = input.excluded.map(ref => member(ref).key);
+  if (seen.size !== base.rows.length) fail();
+  // Canonical content-derived key makes whitespace-only reformatting idempotent.
+  const packageId = await hashBytes(utf8.encode(JSON.stringify({ files: files.map(f => [f.blob, f.list]), groups, excluded })));
+  return { files, groups, excluded, packageId };
+}
+export function setReviewedGroupChoice(plan, id, choice) {
+  const group = plan.reviewGroups?.find(g => g.id === id);
+  if (!group || !['new', 'review', 'skip'].includes(choice) && !choice.startsWith('store:')) throw new Error('裁定組或匯入方式不正確。');
+  const first = group.rows[0]; group.choice = choice;
+  for (const key of group.rows) {
+    const row = plan.rows.find(r => r.key === key);
+    row.choice = ['skip', 'review'].includes(choice) || key === first ? choice : 'row:' + first;
+    row.fillFields = []; row.sop1.manualAccepted = false;
+  }
+}
+export async function planReviewedCSV(review, bundle) {
+  const plan = await planCSV(review.files, bundle), records = project(bundle), stores = records.filter(r => r.type === 'store');
+  const byRow = new Map(plan.rows.map(r => [r.key, r]));
+  plan.reviewGroups = structuredClone(review.groups); plan.reviewPackageId = review.packageId;
+  for (const key of review.excluded) { const row = byRow.get(key); row.choice = 'skip'; row.reviewExcluded = true; row.reason = '依已核對裁定排除本批；原始來源保留'; }
+  for (const g of plan.reviewGroups) {
+    const members = g.rows.map(key => byRow.get(key)), decisionKey = `${review.packageId}:${g.id}`;
+    const known = stores.filter(s => s.csvDecisionGroups?.includes(decisionKey));
+    const sourced = stores.filter(s => members.some(r => s.csvSources?.some(src => src.fingerprint === r.fingerprint && sourceListKey(src.list) === sourceListKey(plan.files[r.fileIndex].list))));
+    const exact = stores.filter(s => g.names.some(n => comparisonText(n) === comparisonText(s.name)) && members.some(r => identity(r.data) && identity(r.data) === identity(s)));
+    const related = stores.filter(s => members.some(r => duplicateEvidence(r.data, s).length));
+    const matches = known.length ? known : sourced.length ? sourced : exact;
+    const chosen = matches.length === 1 && !matches[0].deleted && !matches[0].conflict ? 'store:' + matches[0].id : matches.length || related.length ? 'review' : 'new';
+    g.candidates = [...new Set([...known, ...sourced, ...exact, ...related])].map(s => s.id);
+    for (const row of members) {
+      row.review = { key: decisionKey, group: g.id, pending: g.pending, label: g.label, names: g.names };
+      row.data.name = g.label; // Display label only. CSV cells/fingerprints are never changed.
+      row.reason = chosen === 'review' ? '與App既有門市有可能重疊或衝突，請對照原文後指定整組去向' : chosen === 'new' ? '依已核對分組新增；仍須確認本機匯入預覽' : '依原始來源或地點與名稱對照App既有門市；既有名稱保持不變';
+    }
+    setReviewedGroupChoice(plan, g.id, chosen);
+  }
+  return plan;
+}
+export function csvTargetChoice(plan, row, seen = new Set()) {
+  if (!row || seen.has(row.key)) return 'review';
+  seen.add(row.key);
+  return row.choice.startsWith('row:') ? csvTargetChoice(plan, plan.rows.find(r => r.key === row.choice.slice(4)), seen) : row.choice;
+}
+export function exportCSVPreview(plan, bundle) {
+  const report = sop1Report(plan, bundle), records = project(bundle);
+  const candidateIds = new Set((plan.reviewGroups || []).flatMap(g => g.candidates));
+  for (const row of plan.rows) {
+    const target = csvTargetChoice(plan, row);
+    if (target.startsWith('store:')) candidateIds.add(target.slice(6));
+    for (const c of row.candidates) if (c.choice.startsWith('store:')) candidateIds.add(c.choice.slice(6));
+  }
+  const sourceRefs = sources => (sources || []).map(s => ({ file: s.file, line: s.line, list: s.list, fingerprint: s.fingerprint }));
+  return { format: 'pharmacy-csv-preview-1', createdAt: new Date().toISOString(), imported: false, ready: report.ready, counts: report.counts,
+    reviewPackageId: plan.reviewPackageId,
+    groups: (plan.reviewGroups || []).map(g => ({ id: g.id, name: g.label, pending: g.pending, choice: g.choice, rows: g.rows, candidates: g.candidates })),
+    existingStores: records.filter(s => s.type === 'store' && candidateIds.has(s.id)).map(s => ({ id: s.id, name: s.name, address: s.address, mapUrl: s.mapUrl, deleted: s.deleted, conflict: s.conflict, sources: sourceRefs(s.csvSources),
+      notes: records.filter(v => v.type === 'visit' && v.store === s.id && (!v.deleted || v.conflict)).map(v => ({ id: v.id, text: v.text, sourceText: v.googleText, date: v.date, conflict: v.conflict, sources: sourceRefs(v.csvSources), versions: v.conflict ? v.heads.map(h => ({ text: h.data.text, sourceText: h.data.googleText, date: h.data.date, deleted: h.deleted })) : undefined })) })),
+    blockers: report.blockers.map(b => ({ ...b, name: plan.rows.find(r => r.key === b.key)?.data.name || '' })),
+    rows: plan.rows.map(row => {
+      const file = plan.files[row.fileIndex], target = csvTargetChoice(plan, row), storeId = target.startsWith('store:') ? target.slice(6) : '';
+      const old = records.filter(r => r.type === 'visit' && !r.deleted && visitStream(r) === csvStream(storeId, file.list));
+      return { key: row.key, file: file.file, line: row.line, name: row.data.name, target, pending: !!row.review?.pending, action: report.rows.find(r => r.key === row.key)?.kind || 'blocked', incomingText: row.note, existing: old.map(v => ({ text: v.text, sourceText: v.googleText, date: v.date, conflict: v.conflict })) };
+    }) };
 }

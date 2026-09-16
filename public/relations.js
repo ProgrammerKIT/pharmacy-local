@@ -1,4 +1,11 @@
 // All matching runs on the device. Labels describe text evidence, never clinical advice.
+export function storeIdentityPending(store) {
+  return !!store && (store.csvIdentityPending === true || !!store.conflict && (store.heads || []).some(h => h.data.csvIdentityPending === true));
+}
+export function relationVisitAllowed(visit, stores) {
+  const store = stores.find(s => s.id === visit.store);
+  return !!store && !storeIdentityPending(store);
+}
 export const TOPIC_RULES = [
   { key: 'ortho', name: '角膜塑型片', terms: ['角膜塑型', '角膜塑形', '塑形片', '塑型片'] },
   { key: 'ha', name: '玻尿酸／HA', terms: ['玻尿酸', 'HA', 'HAUD', 'HAMD'] },

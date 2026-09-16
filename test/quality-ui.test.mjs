@@ -3,11 +3,29 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import { createCSVImport } from '../public/csv-ui.js';
-import { emptyBundle, revision, project } from '../public/core.js';
-import { PROFILE_FIELDS, FILL_FIELDS, scanQuality, setDistinctReview, sourceSuggestions, fillProfile } from '../public/csv.js';
+import { emptyBundle, revision, project, b64 } from '../public/core.js';
+import { PROFILE_FIELDS, FILL_FIELDS, scanQuality, setDistinctReview, sourceSuggestions, fillProfile, prepareCSV, planCSV } from '../public/csv.js';
+import { groupCSVNotes, sourceTags, storeIdentityPending, relationVisitAllowed, evidenceKind, entityRule } from '../public/relations.js';
 
 const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+test('actual exploration functions keep pending-store text visible locally and out of topic, person and tag graphs',()=>{
+  const store=(id,pending)=>({id,type:'store',name:id,csvIdentityPending:pending,csvSources:[{headers:['標籤'],cells:['虛構標籤']}]});
+  const visit=(id,store)=>({id,type:'visit',store,date:'',text:id,topics:['t'],people:['p'],attachments:[]});
+  const records=[store('pending',true),store('confirmed',false),{id:'t',type:'topic',name:'虛構主題'},{id:'tag',type:'topic',name:'虛構標籤',csvTag:'虛構標籤'},{id:'p',type:'person',name:'虛構人物',confirmed:true},visit('pending-text','pending'),visit('confirmed-text','confirmed')];
+  const nodes=new Map();const node=id=>{if(!nodes.has(id))nodes.set(id,{innerHTML:'',textContent:'',clientWidth:800,style:{},setAttribute(){}});return nodes.get(id);};
+  const ctx=vm.createContext({records,focus:{type:'store',id:'pending'},payload:{},activeView:'explore',graphPage:0,groupCSVNotes,sourceTags,storeIdentityPending,relationVisitAllowed,evidenceKind,entityRule,esc,kinds:{store:'門市',topic:'主題',person:'人物'},$:node,all:type=>records.filter(r=>r.type===type),by:(type,id)=>records.find(r=>r.type===type&&r.id===id),canonicalPerson:id=>id});
+  vm.runInContext(app.slice(app.indexOf('function related('),app.indexOf('function chip('))+app.slice(app.indexOf('function drawGraph('),app.indexOf('function renderVisits(')),ctx);
+  assert.equal(vm.runInContext('related()[0].text',ctx),'pending-text');
+  vm.runInContext('drawGraph()',ctx);assert.equal(node('graph').innerHTML,'');assert.match(node('graph-pager').textContent,/待確認/);
+  for(const focus of [{type:'topic',id:'t'},{type:'topic',id:'tag'},{type:'person',id:'p'}]) {
+    ctx.focus=focus;assert.equal(vm.runInContext('related().some(v=>v.store==="pending")',ctx),false);
+    vm.runInContext('drawGraph()',ctx);assert.doesNotMatch(node('graph').innerHTML,/data-node-id="pending"/);
+  }
+  records[0].csvIdentityPending=false;ctx.focus={type:'topic',id:'t'};
+  assert.equal(vm.runInContext('related().some(v=>v.store==="pending")',ctx),true);
+  vm.runInContext('drawGraph()',ctx);assert.match(node('graph').innerHTML,/data-node-id="pending"/);
+});
 function bundle() {
   const b = emptyBundle('synthetic-ui');
   b.ops.push(revision('store', 's0', { name: '<測試>藥局', address: '', city: '臺北市', district: '', channel: '', contact: '', attr: '', mapUrl: 'https://maps.google.com/?cid=1234567' }, [], 'mac'));
@@ -16,7 +34,7 @@ function bundle() {
 // Event and rendering harness: real import UI, CSV parser and persistence result.
 // This deliberately does not claim browser layout or Safari coverage.
 function importUI(b = bundle()) {
-  const nodes = new Map(), handlers = {}, saved = [], prompts = [], messages = [];
+  const nodes = new Map(), handlers = {}, saved = [], prompts = [], messages = [], reports = [];
   const state = { bundle: b, device: 'phone' };
   let errors = [], accepted = true;
   function node(id = '') {
@@ -38,10 +56,10 @@ function importUI(b = bundle()) {
   globalThis.confirm = text => { prompts.push(text); return accepted; };
   const ui = createCSVImport({ host, getState: () => state,
     run: async fn => { try { await fn(); } catch (e) { errors.push(e.message); } },
-    saveBundle: async next => { saved.push(next); state.bundle = next; }, notify: text => messages.push(text) });
+    saveBundle: async next => { saved.push(next); state.bundle = next; }, notify: text => messages.push(text), exportReport: report => reports.push(report) });
   const change = target => handlers.change({ target: { dataset: {}, ...target } });
   const click = id => handlers.click({ target: { id, closest() { return this; } } });
-  return { ui, nodes, state, saved, prompts, messages, change, click,
+  return { ui, nodes, state, saved, prompts, messages, reports, change, click,
     errors: () => errors, reject: () => accepted = false, accept: () => accepted = true,
     preview: () => nodes.get('#csv-preview').innerHTML,
     read: async text => { const bytes = new TextEncoder().encode(text); await change({ id: 'csv-files', files: [{ name: '虛構.csv', size: bytes.length, arrayBuffer: async () => bytes.buffer }] }); await click('csv-preview-button'); },
@@ -77,6 +95,26 @@ test('CSV UI requires an explicit disposition for every supplementary text colum
   assert.doesNotMatch(h.preview(),/id="csv-commit"[^>]*disabled/);
   await h.click('csv-commit'); assert.equal(h.saved.length,1);
   assert.equal(project(h.saved[0]).find(r=>r.type==='visit').csvSources[0].supplements[0].text,'<額外文字>');
+});
+test('review package UI previews locally, exports without writes, preserves group choices and requires final confirmation',async t=>{
+  const h=importUI(emptyBundle('review-ui')); t.after(h.cleanup);
+  const files=await Promise.all(['甲','乙'].map((name,i)=>prepareCSV('虛構'+i+'.csv',new TextEncoder().encode('Title,Note,URL\n虛構'+name+'藥局,原文'+i+',https://maps.google.com/?cid=1234567'))));
+  const p=await planCSV(files,h.state.bundle);
+  const packet={format:'pharmacy-csv-review-1',files:files.map(f=>({file:f.file,list:f.list,sha256:f.blob,content:b64(f.bytes)})),groups:[{id:'g',label:'虛構甲／乙藥局',pending:true,rows:p.rows.map(r=>({sha256:files[r.fileIndex].blob,line:r.line,fingerprint:r.fingerprint}))}],excluded:[]};
+  const text=JSON.stringify(packet);
+  await h.change({id:'csv-review-file',files:[{size:text.length,text:async()=>text}]});
+  assert.deepEqual(h.errors(),[]);assert.equal(h.saved.length,0);assert.match(h.preview(),/同組來源/);assert.equal((h.preview().match(/data-csv-choice=/g)||[]).length,1);
+  await h.click('csv-export-preview');assert.equal(h.reports.length,1);assert.equal(h.reports[0].imported,false);assert.equal(h.saved.length,0);
+  h.reject();await h.click('csv-commit');assert.equal(h.saved.length,0);
+  h.accept();await h.click('csv-commit');assert.deepEqual(h.errors(),[]);assert.equal(h.saved.length,1);assert.equal(project(h.saved[0]).filter(r=>r.type==='store').length,1);
+  assert.equal(project(h.saved[0]).find(r=>r.type==='store').csvIdentityPending,true);
+});
+test('failed replacement package invalidates a previously ready import preview',async t=>{
+  const h=importUI(); t.after(h.cleanup);
+  await h.read('Title,Note,URL\n<測試>藥局,原文,https://maps.google.com/?cid=1234567');
+  assert.match(h.preview(),/csv-commit/);
+  await h.change({id:'csv-review-file',files:[{size:9*1024*1024,text:async()=>''}]});
+  assert.equal(h.preview(),'');await h.click('csv-commit');assert.equal(h.saved.length,0);assert.match(h.errors().at(-1),/請先預覽/);
 });
 test('CSV UI invalidates old preview after a mapping error and never commits stale selections', async t => {
   const h = importUI(); t.after(h.cleanup);
