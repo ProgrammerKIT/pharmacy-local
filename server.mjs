@@ -19,6 +19,24 @@ export function atomic(file, value) {
   fs.renameSync(temp, file);
   try { const dir = fs.openSync(path.dirname(file), 'r'); fs.fsyncSync(dir); fs.closeSync(dir); } catch {}
 }
+// One atomic snapshot replacement is the cutover. Old device tokens are scoped
+// to the previous rebuild id; a crash cannot leave an empty, unbound server.
+export function rebuildSnapshot(dataDir, snapshot, body, write = atomic) {
+  if (body?.confirmation !== '清空全部資料' || !/^[a-f0-9-]{36}$/.test(body.operationId || '')) throw Object.assign(new Error('請確認清空全部資料。'), { status: 400 });
+  checkEnvelope(body.envelope);
+  if (snapshot.rebuild?.id === body.operationId && JSON.stringify(snapshot.envelope) === JSON.stringify(body.envelope)) return snapshot;
+  if (body.expectedVersion !== snapshot.version) throw Object.assign(new Error('資料在確認期間已更新，請重新整理後再重建。'), { status: 409 });
+  const retired = [...new Set([...(snapshot.retiredVaults || []), ...(snapshot.envelope ? [snapshot.envelope.vaultId] : [])])];
+  if (retired.includes(body.envelope.vaultId)) throw Object.assign(new Error('重建必須使用全新資料庫；舊備份不能成為新庫。'), { status: 409 });
+  const at = new Date().toISOString(), archive = `rebuild-${body.operationId}.pharmabackup`;
+  if (snapshot.envelope) {
+    const dir = path.join(dataDir, 'archives'); fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    write(path.join(dir, archive), { format: 'pharmacy-backup-1', envelope: snapshot.envelope });
+  }
+  const next = { version: snapshot.version + 1, envelope: body.envelope, retiredVaults: retired, rebuild: { id: body.operationId, at, archive: snapshot.envelope ? archive : null } };
+  write(path.join(dataDir, 'snapshot.json'), next);
+  return next;
+}
 export const isLoopback = address => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(address);
 export function isPrivate(address = '') {
   const ip = address.replace(/^::ffff:/, '');
@@ -67,6 +85,7 @@ export function createService({ dataDir = defaultDataDir(), host = '0.0.0.0', po
   const snapshotFile = path.join(dataDir, 'snapshot.json');
   let snapshot = fs.existsSync(snapshotFile) ? JSON.parse(fs.readFileSync(snapshotFile, 'utf8')) : { version: 0, envelope: null };
   if (snapshot.envelope) checkEnvelope(snapshot.envelope);
+  const deviceActive = device => !snapshot.rebuild || device.rebuildId === snapshot.rebuild.id;
   let pairing = null;
   let generation = null, updateStatus = { configured: false, phase: 'unconfigured', appVersion: APP_VERSION, message: '請以 02-Start 啟動更新管理服務。' };
   const activity = new Map();
@@ -106,7 +125,7 @@ export function createService({ dataDir = defaultDataDir(), host = '0.0.0.0', po
         const token = String(req.headers.authorization || '').replace(/^Bearer /, '');
         if (url.pathname.startsWith('/api/admin/')) {
           if (!isLoopback(req.socket.remoteAddress) || !equal(token, config.adminToken)) return send(403, { error: '請在 Mac 開啟管理頁面。' });
-          if (url.pathname === '/api/admin/status' && req.method === 'GET') return send(200, { hostname: config.hostname, version: snapshot.version, appVersion: APP_VERSION, update: updateStatus, service: { running: true, supervised: !!updateCommand, autostart: await startupStatus() }, devices: config.devices.map(({ id, label, created }) => ({ id, label, created })), backups: fs.readdirSync(path.join(dataDir, 'backups')).filter(n => n.endsWith('.pharmabackup')).length });
+          if (url.pathname === '/api/admin/status' && req.method === 'GET') return send(200, { hostname: config.hostname, version: snapshot.version, appVersion: APP_VERSION, rebuild: snapshot.rebuild ? { id: snapshot.rebuild.id, at: snapshot.rebuild.at, hasBackup: !!snapshot.rebuild.archive } : null, update: updateStatus, service: { running: true, supervised: !!updateCommand, autostart: await startupStatus() }, devices: config.devices.filter(deviceActive).map(({ id, label, created }) => ({ id, label, created })), backups: fs.readdirSync(path.join(dataDir, 'backups')).filter(n => n.endsWith('.pharmabackup')).length });
           if (url.pathname === '/api/admin/health' && req.method === 'GET') {
             if (snapshot.envelope) checkEnvelope(snapshot.envelope);
             for (const f of ['index.html', 'app.js', 'sw.js', 'version.js', 'update-client.js']) if (!fs.statSync(path.join(ROOT, 'public', f)).size) throw new Error('程式檔案不完整。');
@@ -120,6 +139,16 @@ export function createService({ dataDir = defaultDataDir(), host = '0.0.0.0', po
             updateCommand(body.action); return send(202, { ok: true });
           }
           if (generation && req.method !== 'GET') return send(503, { error: '程式即將更新，請稍候再配對或管理裝置。' });
+          if (url.pathname === '/api/admin/rebuild' && req.method === 'POST') {
+            const body = await json(req);
+            if (generation || ['activating', 'checking'].includes(updateStatus.phase)) return send(503, { error: '程式正在更新，請完成後再重建。' });
+            snapshot = rebuildSnapshot(dataDir, snapshot, body); pairing = null; activity.clear();
+            return send(200, { version: snapshot.version, rebuild: snapshot.rebuild });
+          }
+          if (url.pathname === '/api/admin/rebuild-backup' && req.method === 'GET') {
+            if (!snapshot.rebuild?.archive || !/^rebuild-[a-f0-9-]{36}\.pharmabackup$/.test(snapshot.rebuild.archive)) return send(404, { error: '沒有本次重建前的備份。' });
+            return send(200, JSON.parse(fs.readFileSync(path.join(dataDir, 'archives', snapshot.rebuild.archive), 'utf8')));
+          }
           if (url.pathname === '/api/admin/code' && req.method === 'POST') { await json(req); const code = randomBytes(16).toString('base64url'); pairing = { hash: digest(code), expiry: Date.now() + 300000, attempts: 0 }; return send(200, { code, expires: pairing.expiry }); }
           if (url.pathname === '/api/admin/revoke' && req.method === 'POST') { const body = await json(req); config.devices = config.devices.filter(d => d.id !== body.id); saveConfig(); return send(200, { ok: true }); }
           return send(404, { error: '找不到管理操作。' });
@@ -136,16 +165,18 @@ export function createService({ dataDir = defaultDataDir(), host = '0.0.0.0', po
             return send(403, { error: '配對碼不正確、已使用或已過期，請在 Mac 重新產生。' });
           }
           if (typeof body.label !== 'string' || !body.label.trim() || body.label.length > 60) return send(400, { error: '請填寫裝置名稱。' });
+          config.devices = config.devices.filter(deviceActive);
           if (config.devices.length >= 10) return send(409, { error: '已達 10 台裝置上限，請先撤銷未使用的裝置。' });
           const deviceToken = randomBytes(32).toString('base64url'), id = randomUUID();
-          config.devices.push({ id, hash: digest(deviceToken), label: body.label.trim(), created: new Date().toISOString() }); saveConfig(); pairing = null;
+          config.devices.push({ id, hash: digest(deviceToken), label: body.label.trim(), created: new Date().toISOString(), ...(snapshot.rebuild ? { rebuildId: snapshot.rebuild.id } : {}) }); saveConfig(); pairing = null;
           return send(200, { id, token: deviceToken, snapshot });
         }
-        const device = config.devices.find(d => equal(d.hash, digest(token)));
+        const device = config.devices.find(d => deviceActive(d) && equal(d.hash, digest(token)));
         if (!device) return send(401, { error: '裝置尚未配對或已被撤銷。請重新配對，離線資料仍保留。' });
         prune();
         if (url.pathname === '/api/activity' && req.method === 'POST') {
           const body = await json(req);
+          if (!deviceActive(device) || !config.devices.some(d => d.id === device.id)) return send(401, { error: '資料庫已重建或配對已撤銷，請重新連接。' });
           if (typeof body.clientId !== 'string' || !/^[a-f0-9-]{36}$/.test(body.clientId) || typeof body.busy !== 'boolean') return send(400, { error: '畫面狀態不正確。' });
           if (activity.size >= 100 && !activity.has(`${device.id}:${body.clientId}`)) return send(429, { error: '開啟的畫面過多。' });
           activity.set(`${device.id}:${body.clientId}`, { at: Date.now(), busy: body.busy, generation: body.generation });
@@ -157,11 +188,12 @@ export function createService({ dataDir = defaultDataDir(), host = '0.0.0.0', po
         if (url.pathname === '/api/snapshot' && req.method === 'GET') return send(200, snapshot);
         if (url.pathname === '/api/snapshot' && req.method === 'PUT') {
           const body = await json(req);
+          if (!deviceActive(device) || !config.devices.some(d => d.id === device.id)) return send(401, { error: '資料庫已重建或配對已撤銷，舊資料不會寫入新庫。' });
           if (generation) return send(503, { error: '程式正在更新，變更已保存在裝置，稍後會再同步。' });
           if (body.expectedVersion !== snapshot.version) return send(409, { error: '另一台裝置先更新，請重新合併。' });
           checkEnvelope(body.envelope);
           if (snapshot.envelope && ['vaultId', 'salt', 'iterations'].some(k => body.envelope[k] !== snapshot.envelope[k])) return send(409, { error: '資料庫身分不同，拒絕覆蓋。' });
-          const next = { version: snapshot.version + 1, envelope: body.envelope };
+          const next = { ...snapshot, version: snapshot.version + 1, envelope: body.envelope };
           // No awaits from version comparison to atomic replacement: compare-and-swap is serialized.
           atomic(snapshotFile, next); snapshot = next;
           let backupOK = true;
