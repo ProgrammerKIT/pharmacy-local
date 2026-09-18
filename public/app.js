@@ -2,7 +2,7 @@ import { newMeta, derive, seal, unseal, uuid, emptyBundle, revision, project, me
 import { readLocal, writeLocal, archiveAndReplaceLocal, listLocalArchives, readLocalArchive } from './db.js';
 import { createCSVImport } from './csv-ui.js';
 import { PROFILE_FIELDS, FILL_FIELDS, scanQuality, setDistinctReview, sourceSuggestions, fillProfile } from './csv.js';
-import { entityRule, evidenceKind, sourceTags, groupCSVNotes, storeIdentityPending, relationVisitAllowed } from './relations.js';
+import { entityRule, evidenceKind, sourceTags, groupCSVNotes, storeIdentityPending, relationVisitAllowed, retailChannel, filterStoreDirectory } from './relations.js';
 import { APP_VERSION } from './version.js';
 import { startUpdates, requestLocal, diagnoseConnection } from './update-client.js';
 
@@ -14,6 +14,7 @@ let key = null, meta = null, payload = null, slot = null, localRevision = 0, bus
 let focus = { type: 'topic', id: '' }, graphPage = 0, trail = [], records = [], editorContext = null, toastTimer, autoTimer, objectURLs = [];
 let lastError = '', offlineReady = false, storagePersistent = false, autoFetching = false, gateOpening = false;
 let qualityTab = 'duplicates', qualityField = '', qualityPage = 0, qualityCache = null, qualityReview = null;
+let storeFilters = { query: '', district: '', kind: '', groups: [] };
 let updateHolding = false, macProgram = null, lastSyncFailure = null, syncWarning = '';
 const csvImport = createCSVImport({ host: $('csv-view'), getState: () => payload, run, saveBundle: async bundle => { await persist({ ...payload, bundle, dirty: true }); render(); }, notify: toast, exportReport: report => download(JSON.stringify({ ...report, appVersion: APP_VERSION }, null, 2), 'pharmacy-import-preview.json', 'application/json') });
 const all = type => records.filter(r => r.type === type && (!r.deleted || r.conflict));
@@ -116,6 +117,7 @@ function lockNow(reopen = !document.hidden) {
   if (busy || editorContext || csvImport.hasPending()) { pendingLock = true; document.body.classList.add('privacy-veil'); return; }
   pendingLock = false; clearInterval(autoTimer); key = null; meta = null; payload = null; records = []; trail = []; editorContext = null; lastError = ''; macProgram = null; lastSyncFailure = null; syncWarning = '';
   csvImport.reset(); qualityCache = null; qualityReview = null; qualityTab = 'duplicates'; qualityField = ''; qualityPage = 0;
+  resetStoreFilters();
   for (const u of objectURLs) URL.revokeObjectURL(u); objectURLs = [];
   document.querySelectorAll('dialog').forEach(d => d.close());
   for (const id of ['quality-content', 'focus-header', 'graph', 'graph-pager', 'focus-detail', 'evidence-list', 'store-list', 'visit-list', 'customer-list', 'entity-list', 'trash-list', 'review-body', 'editor-fields', 'conflict-list', 'connection-detail', 'program-detail', 'sync-success-detail', 'sync-failure-detail', 'connection-check', 'device-label', 'sync-result', 'storage-detail']) $(id).replaceChildren();
@@ -227,18 +229,16 @@ function noteHTML(v) {
 function render() {
   if (!payload) return;
   records = project(payload.bundle); status();
-  const previous = $('district').value;
-  $('district').innerHTML = '<option value="">所有地區</option>' + [...new Set(all('store').map(s => s.district).filter(Boolean))].sort().map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join(''); $('district').value = previous;
   if (!by(focus.type, focus.id) || by(focus.type, focus.id).deleted) { const first = all('topic').find(t => t.ruleKey === 'ortho') || all('store')[0] || all('topic')[0] || all('person')[0]; focus = first ? { type: first.type, id: first.id } : { type: 'store', id: '' }; }
   if (activeView === 'explore') { renderStores(); renderFocus(); }
   if (activeView === 'visits') renderVisits();
   if (activeView === 'quality') renderQuality();
-  if (activeView === 'stores') $('customer-list').innerHTML = all('store').map(s => entityCard(s)).join('') || '<p class="empty">先新增第一間門市。</p>';
+  if (activeView === 'stores') renderStores();
   if (activeView === 'entities') $('entity-list').innerHTML = [...all('person'), ...all('topic')].map(entityCard).join('') || '<p class="empty">新增人物與主題，讓拜訪紀錄產生連結。</p>';
   $('conflict-list').innerHTML = records.filter(r => r.conflict).map(r => `<div class="conflict-card"><strong>${esc(r.name || name('store', r.store) + ' · ' + r.date)}</strong><p>${r.heads.length} 個版本待確認</p><button data-review="${r.type}:${esc(r.id)}">比較並處理</button></div>`).join('') || '<p class="muted">目前沒有衝突。</p>';
   if (activeView === 'trash') $('trash-list').innerHTML = records.filter(r => r.deleted && !r.conflict).map(r => `<article class="panel"><span class="pill">${kinds[r.type]}</span><h3>${esc(r.name || name('store', r.store) + ' · ' + r.date)}</h3><p>${esc(r.text || r.desc || r.contact || '')}</p><button data-restore="${r.type}:${esc(r.id)}">還原</button> <button data-history="${r.type}:${esc(r.id)}">查看歷史</button></article>`).join('') || '<p class="empty">回收桶是空的。</p>';
 }
-function entityCard(r) { return `<article class="panel"><span class="pill ${r.conflict ? 'warn' : ''}">${kinds[r.type]}${r.conflict ? ' · 有衝突' : ''}${storeIdentityPending(r) ? ' · 需要後續的確認' : ''}</span><h3>${esc(r.name)}</h3>${r.csvAliases?.length ? '<p class="muted">來源名稱：' + r.csvAliases.map(esc).join('／') + '</p>' : ''}<p>${esc(r.type === 'store' ? `${r.city} ${r.district} · ${r.channel}\n${r.attr}\n${r.contact}` : r.type === 'person' ? `${r.confirmed ? '身分已核對' : '身分待確認'} · ${r.role}${r.sameAs ? '\n連到：' + name('person', r.sameAs) : ''}` : r.desc)}</p><div class="note-actions">${sourceButton(r)}<button class="text-button" data-node-type="${r.type}" data-node-id="${esc(r.id)}">探索關聯</button><button class="text-button" data-edit="${r.type}:${esc(r.id)}">編輯</button><button class="text-button" data-history="${r.type}:${esc(r.id)}">歷史</button><button class="text-button danger" data-delete="${r.type}:${esc(r.id)}">刪除</button></div></article>`; }
+function entityCard(r) { return `<article class="panel"><span class="pill ${r.conflict ? 'warn' : ''}">${kinds[r.type]}${r.conflict ? ' · 有衝突' : ''}${storeIdentityPending(r) ? ' · 需要後續的確認' : ''}</span><h3>${esc(r.name)}</h3>${r.type === 'store' ? '<span class="pill retail-label">' + esc(retailChannel(r).label) + '</span>' : ''}${r.csvAliases?.length ? '<p class="muted">來源名稱：' + r.csvAliases.map(esc).join('／') + '</p>' : ''}<p>${esc(r.type === 'store' ? `${r.city} ${r.district} · ${r.channel}\n${r.attr}\n${r.contact}` : r.type === 'person' ? `${r.confirmed ? '身分已核對' : '身分待確認'} · ${r.role}${r.sameAs ? '\n連到：' + name('person', r.sameAs) : ''}` : r.desc)}</p><div class="note-actions">${sourceButton(r)}<button class="text-button" data-node-type="${r.type}" data-node-id="${esc(r.id)}">探索關聯</button><button class="text-button" data-edit="${r.type}:${esc(r.id)}">編輯</button><button class="text-button" data-history="${r.type}:${esc(r.id)}">歷史</button><button class="text-button danger" data-delete="${r.type}:${esc(r.id)}">刪除</button></div></article>`; }
 function qualityReport() {
   if (qualityCache?.bundle !== payload.bundle) qualityCache = { bundle: payload.bundle, report: scanQuality(records) };
   return qualityCache.report;
@@ -300,10 +300,46 @@ function openFillStore(id) {
   }).join('');
   $('editor').showModal();
 }
+function resetStoreFilters() {
+  storeFilters = { query: '', district: '', kind: '', groups: [] };
+  for (const prefix of ['', 'customer-']) {
+    $(prefix + 'search').value = '';
+    $(prefix + 'district').innerHTML = '<option value="">所有地區</option>';
+    $(prefix + 'channel').innerHTML = '<option value="">所有門市型態</option>';
+    $(prefix + 'retail-options').replaceChildren();
+    $(prefix + 'store-count').textContent = '';
+  }
+}
+function changeStoreFilter(field, value) {
+  if (!payload || updateHolding) return;
+  if (field === 'groups') {
+    storeFilters.groups = !value ? [] : storeFilters.groups.includes(value) ? storeFilters.groups.filter(id => id !== value) : [...storeFilters.groups, value];
+  } else if (field === 'clear') resetStoreFilters();
+  else storeFilters[field] = value;
+  renderStores();
+}
 function renderStores() {
-  const q = $('search').value.trim().toLowerCase(), district = $('district').value, channel = $('channel').value;
-  const stores = all('store').filter(s => (!district || s.district === district) && (!channel || s.channel === channel) && (!q || `${s.name}${s.attr}${s.contact}${s.address || ""}${(s.lists || []).join()}${sourceTags(s).join()}`.toLowerCase().includes(q) || all('visit').some(v => v.store === s.id && v.text.toLowerCase().includes(q))));
-  $('store-list').innerHTML = stores.map(s => `<button class="store-card ${focus.type === 'store' && focus.id === s.id ? 'active' : ''}" data-node-type="store" data-node-id="${esc(s.id)}"><strong>${esc(s.name)}</strong><small>${esc(s.district || '地區未提供')} · ${esc(s.channel || '屬性待整理')} · ${related({ type: 'store', id: s.id }).length} 筆</small>${s.conflict ? '<span class="pill warn">有衝突</span>' : ''}${storeIdentityPending(s) ? '<span class="pill warn">需要後續的確認</span>' : ''}</button>`).join('') || '<p class="empty">沒有符合的門市。可新增門市或調整篩選。</p>';
+  if (!payload) return;
+  const stores = all('store'), result = filterStoreDirectory(stores, all('visit'), storeFilters);
+  const options = (values, current, label) => '<option value="">' + label + '</option>' + [...new Set([...values.filter(Boolean), ...(current ? [current] : [])])].sort().map(value => `<option value="${esc(value)}">${esc(value)}</option>`).join('');
+  const districtOptions = options(stores.map(s => s.district), storeFilters.district, '所有地區');
+  const kindOptions = options(stores.map(s => s.channel), storeFilters.kind, '所有門市型態');
+  const optionButton = (id, label, count, selected) => `<button type="button" data-retail-group="${id}" aria-pressed="${selected}">${esc(label)} <span>${count}</span></button>`;
+  const groupOptions = optionButton('', '全部通路', result.matchedBeforeGroups, !storeFilters.groups.length) + result.groups.map(g => optionButton(g.id, g.label, g.count, storeFilters.groups.includes(g.id))).join('');
+  for (const prefix of ['', 'customer-']) {
+    // Do not replace the text input: typing keeps its caret and IME composition.
+    if ($(prefix + 'search').value !== storeFilters.query) $(prefix + 'search').value = storeFilters.query;
+    $(prefix + 'district').innerHTML = districtOptions; $(prefix + 'district').value = storeFilters.district;
+    $(prefix + 'channel').innerHTML = kindOptions; $(prefix + 'channel').value = storeFilters.kind;
+    const container = $(prefix + 'retail-options'), focused = container.contains(document.activeElement) ? document.activeElement?.dataset.retailGroup : undefined;
+    const scrollTop = container.scrollTop;
+    container.innerHTML = groupOptions; container.scrollTop = scrollTop;
+    if (focused !== undefined) [...container.querySelectorAll('button')].find(b => b.dataset.retailGroup === focused)?.focus({ preventScroll: true });
+    $(prefix + 'store-count').textContent = `顯示 ${result.entries.length} ／ ${result.total} 間門市`;
+  }
+  const empty = '<p class="empty">沒有符合的門市。請調整條件或清除篩選。</p>';
+  if (activeView === 'stores') $('customer-list').innerHTML = result.entries.map(({ store: s }) => entityCard(s)).join('') || empty;
+  if (activeView === 'explore') $('store-list').innerHTML = result.entries.map(({ store: s, group }) => `<button class="store-card ${focus.type === 'store' && focus.id === s.id ? 'active' : ''}" data-node-type="store" data-node-id="${esc(s.id)}"><strong>${esc(s.name)}</strong><small>${esc(group.label)} · ${esc(s.district || '地區未提供')}</small><small>${esc(s.channel || '型態待整理')} · ${related({ type: 'store', id: s.id }).length} 筆</small>${s.conflict ? '<span class="pill warn">有衝突</span>' : ''}${storeIdentityPending(s) ? '<span class="pill warn">需要後續的確認</span>' : ''}</button>`).join('') || empty;
 }
 function renderFocus() {
   const r = by(focus.type, focus.id);
@@ -474,7 +510,7 @@ async function adoptRebuilt(event) {
     csvImport.reset(); qualityCache = null; qualityReview = null; editorContext = null; records = []; trail = []; focus = { type: 'store', id: '' }; graphPage = 0;
     for (const u of objectURLs) URL.revokeObjectURL(u); objectURLs = [];
     for (const id of ['focus-header', 'graph', 'graph-pager', 'focus-detail', 'evidence-list', 'store-list', 'visit-list', 'customer-list', 'entity-list', 'trash-list', 'review-body', 'editor-fields', 'quality-content']) $(id).replaceChildren();
-    $('search').value = ''; $('visit-search').value = ''; $('district').value = ''; $('channel').value = '';
+    resetStoreFilters(); $('visit-search').value = '';
     lastError = ''; lastSyncFailure = null; syncWarning = '';
     $('rebuild-dialog').close(); $('rebuild-connect-form').reset();
     await openWorkspace(); switchView('csv'); toast('已改用重建後的資料庫。本機舊資料已隔離，請載入已核對資料包。');
@@ -509,6 +545,8 @@ document.addEventListener('click', event => {
   if (b.id === 'view-archives') return run(openArchives);
   if (b.dataset.exportArchive) return run(() => exportArchive(b.dataset.exportArchive));
   if (b.dataset.view) return switchView(b.dataset.view);
+  if (b.dataset.retailGroup !== undefined) return changeStoreFilter('groups', b.dataset.retailGroup);
+  if (b.dataset.clearStoreFilters !== undefined) return changeStoreFilter('clear');
   if (b.dataset.add) return openEditor(b.dataset.add);
   if (b.dataset.fillStore) return openFillStore(b.dataset.fillStore);
   if (b.dataset.qualityTab) { qualityTab = b.dataset.qualityTab; qualityPage = 0; return renderQuality(); }
@@ -552,7 +590,8 @@ $('gate-restore').addEventListener('click', () => { if (!$('password').value) { 
 $('backup-file').addEventListener('change', () => { const f = $('backup-file').files[0]; if (f) run(() => importBackup(f), payload ? null : 'gate-error'); $('backup-file').value = ''; });
 $('rebuild-connect-form').addEventListener('submit', adoptRebuilt);
 $('rebuild-dialog').addEventListener('cancel', event => { if (busy) event.preventDefault(); else $('rebuild-connect-form').reset(); });
-['search', 'district', 'channel'].forEach(id => $(id).addEventListener(id === 'search' ? 'input' : 'change', renderStores)); $('visit-search').addEventListener('input', renderVisits);
+for (const prefix of ['', 'customer-']) for (const [id, field] of [['search', 'query'], ['district', 'district'], ['channel', 'kind']]) $(prefix + id).addEventListener(id === 'search' ? 'input' : 'change', event => changeStoreFilter(field, event.target.value));
+$('visit-search').addEventListener('input', renderVisits);
 new ResizeObserver(drawGraph).observe($('graph-wrap'));
 if (!isSecureContext || !crypto.subtle) { $('gate-error').textContent = '需要受信任的 HTTPS 連線。請完成 Mac 與 iPhone 憑證設定，不要略過憑證警告。'; $('gate-submit').disabled = true; }
 else {

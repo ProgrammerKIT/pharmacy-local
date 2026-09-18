@@ -158,11 +158,12 @@ test('actual device-switch UI keeps the active vault on failure, then clears old
     api:async()=>paired,archiveAndReplaceLocal:async()=>{if(failWrite)throw new Error('quota');writes++;return 2;},openWorkspace:async()=>{},switchView:view=>ctx.view=view,toast:message=>ctx.notice=message,
     run:async(fn,errorTarget)=>{try{await fn();}catch(e){$(errorTarget).textContent=e.message;}},
   });
-  vm.runInContext(app.slice(app.indexOf('async function adoptRebuilt('),app.indexOf('async function openArchives(')),ctx);
+  vm.runInContext("let storeFilters = {query:'old',groups:['great-tree']};" + app.slice(app.indexOf('function resetStoreFilters('),app.indexOf('function changeStoreFilter(')) + app.slice(app.indexOf('async function adoptRebuilt('),app.indexOf('async function openArchives(')),ctx);
   $('rebuild-connect-password').value='wrong';await ctx.adoptRebuilt({preventDefault(){}});assert.equal(ctx.meta.vaultId,old.meta.vaultId);assert.equal(writes,0);
   $('rebuild-connect-password').value=PASSWORD;await ctx.adoptRebuilt({preventDefault(){}});assert.equal(ctx.meta.vaultId,old.meta.vaultId);assert.equal($('graph').innerHTML,'old graph');assert.equal(writes,0);
   failWrite=false;$('rebuild-connect-password').value=PASSWORD;await ctx.adoptRebuilt({preventDefault(){}});
   assert.equal(writes,1);assert.equal(ctx.meta.vaultId,fresh.meta.vaultId);assert.equal(ctx.payload.bundle.ops.length,0);assert.equal($('graph').innerHTML,'');assert.equal(ctx.records.length,0);assert.equal(ctx.trail.length,0);assert.equal(ctx.view,'csv');assert.equal($('rebuild-connect-password').value,'');
+  assert.equal(vm.runInContext('storeFilters.groups.length',ctx),0);assert.equal($('customer-search').value,'');assert.equal($('retail-options').innerHTML,'');
 });
 
 test('actual Mac rebuild form requires the scope phrase and sends only a newly encrypted empty vault',async()=>{
