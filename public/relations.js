@@ -53,6 +53,68 @@ export function sourceTags(store) {
   return [...new Set((store.csvSources || []).flatMap(s => s.headers.flatMap((h, i) => ['標籤', 'tags', 'label', 'labels'].includes(h.trim().toLowerCase()) && s.cells[i].trim() ? [s.cells[i]] : [])))];
 }
 
+// Read-only name-based channels. This is not store identity or corporate ownership.
+// Only 佑全 / 健康人生 is a user-confirmed cross-name equivalence.
+export const RETAIL_CHANNELS = Object.freeze([
+  ['great-tree', '大樹', ['大樹']],
+  ['you-chuan', '佑全／健康人生', ['佑全', '健康人生']],
+  ['yes-chain', '躍獅', ['躍獅']],
+  ['medcon', '美康', ['美康']],
+  ['ding-ding', '丁丁', ['丁丁']],
+  ['bo-yu', '博昱', ['博昱']],
+  ['pro-chain', '專品', ['專品']],
+  ['fu-kang', '富康', ['富康']],
+  ['tien-kang', '天康', ['天康']],
+  ['woodpecker', '博登', ['博登']],
+  ['cosmed', '康是美', ['康是美']],
+  ['jian-xiang', '建祥', ['建祥']],
+  ['ri-sen', '日森人文', ['日森人文']],
+  ['jie-deng', '婕登', ['婕登']],
+  ['hong-yue', '宏越', ['宏越']],
+  ['kang-zhi-you', '康之友', ['康之友']],
+].map(([id, label, prefixes]) => Object.freeze({ id, label, prefixes: Object.freeze(prefixes) })));
+const NAME_HEADERS = ['title', '標題', '地點名稱', '藥局名稱', '門市名稱', 'name', '名稱'];
+const nameKey = value => String(value || '').normalize('NFKC').replace(/\s+/gu, '').toLowerCase();
+export function originalStoreNames(store) {
+  const versions = [store, ...(store.conflict ? (store.heads || []).filter(h => !h.deleted).map(h => h.data) : [])];
+  const sourceNames = versions.flatMap(s => (s.csvSources || []).flatMap(source => {
+    // Prefer the original title when a CSV contains more than one name-like column.
+    const headers = (source.headers || []).map(h => String(h).trim().toLowerCase());
+    const index = NAME_HEADERS.map(h => headers.indexOf(h)).find(i => i >= 0 && String(source.cells?.[i] || '').trim());
+    return index === undefined ? [] : [source.cells[index]];
+  }));
+  const aliases = versions.flatMap(s => s.csvAliases || []).filter(s => s.trim());
+  return [...new Set(sourceNames.length ? sourceNames : aliases.length ? aliases : versions.map(s => s.name).filter(Boolean))];
+}
+export function retailChannel(store) {
+  const names = originalStoreNames(store);
+  const matches = RETAIL_CHANNELS.filter(group => names.some(name => {
+    const title = nameKey(name).split(/[|｜]/u)[0];
+    return group.prefixes.some(prefix => title.startsWith(prefix) &&
+      (title === prefix || /藥局|藥妝|藥房/.test(title) || /^[-—–(]/u.test(title.slice(prefix.length))));
+  }));
+  if (matches.length > 1) return { id: 'pending', label: '通路待確認', names, candidates: matches.map(g => g.label) };
+  if (!matches.length) return { id: 'ungrouped', label: '未分群', names, candidates: [] };
+  return { id: matches[0].id, label: matches[0].label, names, candidates: [] };
+}
+export function filterStoreDirectory(stores, visits, filters = {}) {
+  const query = String(filters.query || '').trim().toLowerCase(), selected = new Set(filters.groups || []);
+  const active = stores.filter(s => !s.deleted || s.conflict), visitText = new Map();
+  for (const visit of visits) {
+    if (visit.deleted && !visit.conflict) continue;
+    visitText.set(visit.store, (visitText.get(visit.store) || '') + '\n' + (visit.text || '') + '\n' + (visit.googleText || ''));
+  }
+  const entries = active.map(store => ({ store, group: retailChannel(store) }));
+  const base = entries.filter(({ store: s, group }) => (!filters.district || s.district === filters.district) &&
+    (!filters.kind || s.channel === filters.kind) && (!query ||
+      [s.name, ...group.names, group.label, s.city, s.district, s.attr, s.contact, s.address, ...(s.lists || []), ...sourceTags(s), visitText.get(s.id)].join('\n').toLowerCase().includes(query)));
+  const counts = new Map();
+  for (const entry of base) counts.set(entry.group.id, (counts.get(entry.group.id) || 0) + 1);
+  const groups = [...RETAIL_CHANNELS, { id: 'pending', label: '通路待確認' }, { id: 'ungrouped', label: '未分群' }]
+    .filter((g, i) => i < 3 || counts.has(g.id) || selected.has(g.id)).map(g => ({ id: g.id, label: g.label, count: counts.get(g.id) || 0 }));
+  return { entries: base.filter(e => !selected.size || selected.has(e.group.id)), groups, total: active.length, matchedBeforeGroups: base.length };
+}
+
 // A read-only evidence view, NOT a store/visit merge. Never infer event identity.
 export function groupCSVNotes(visits) {
   const groups = new Map(), output = [];
