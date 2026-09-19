@@ -50,15 +50,17 @@ export function createCSVImport({ host, getState, run, saveBundle, notify, expor
     page = Math.min(page, Math.max(0, Math.ceil(filtered.length / 40) - 1));
     const start = page * 40, rows = filtered.slice(start, start + 40);
     const newRows = selected.filter(r => r.choice === 'new').length, linkedRows = selected.filter(r => /^(store|row):/.test(r.choice)).length;
-    const fills = selected.reduce((n, r) => n + r.fillFields.length, 0);
-    let html = '<div class="csv-summary"><div><strong>' + plan.rows.length + ' 列 · 選取 ' + selected.length + ' 列 · 略過 ' + (plan.rows.length - selected.length) + ' 列 · 待處理 ' + unresolved + ' 列</strong><p>新增門市列 ' + newRows + ' · 連結列 ' + linkedRows + ' · 已選補值 ' + fills + ' 項</p></div><button id="csv-commit" class="primary" ' + (unresolved ? 'disabled' : '') + '>確認保存來源並加密匯入</button></div>';
+    const fills = selected.reduce((n, r) => n + r.fillFields.length, 0), merges = (plan.reviewGroups || []).filter(g => g.merge);
+    const mergedStores = merges.reduce((n, g) => n + g.merge.merged.length, 0), movedVisits = merges.reduce((n, g) => n + g.merge.movedVisits, 0);
+    let html = '<div class="csv-summary"><div><strong>' + plan.rows.length + ' 列 · 選取 ' + selected.length + ' 列 · 略過 ' + (plan.rows.length - selected.length) + ' 列 · 待處理 ' + unresolved + ' 列</strong><p>新增門市列 ' + newRows + ' · 連結列 ' + linkedRows + ' · 已選補值 ' + fills + ' 項' + (merges.length ? ' · 依裁定整併 ' + mergedStores + ' 間既有門市、搬移 ' + movedVisits + ' 筆既有拜訪' : '') + '</p></div><button id="csv-commit" class="primary" ' + (unresolved ? 'disabled' : '') + '>確認保存來源並加密匯入</button></div>';
     html += '<p class="muted">同一門市與來源清單的備註會建立新版本。選取補值只填空白欄位；既有欄位與原始 CSV 都會保留。</p><p class="muted">本批每一份原始 CSV 都會先建立唯讀 Source Snapshot；即使所有列都略過，完整原檔仍會加密保存。相同檔案可共用同一份 bytes，但每次確認提交仍保留本次來源快照。</p>';
     if (review) html += '<p class="conflict-card">待確認門市會標記「需要後續的確認」。原文仍可在客戶與拜訪紀錄查看，身分核實前不列入關聯分析。同組來源一起指定，已裁定分開的組不能指向同一間現有門市。</p>';
     html += '<section class="conflict-card" aria-live="polite"><h3>SOP1 · 匯入前整理閘門</h3><p>' + (sop.ready ? '本批已通過檢查；按確認後才寫入 App。' : '尚有待處理事項；整批不會寫入 App 或關聯圖。請切換「待核對門市」篩選。') + '</p><p>檔案原文與來源逐列保留；同店同來源重傳不新增拜訪。不同清單的完全相同文字整合顯示，來源分別留存。</p><p>備註未變 ' + (sop.counts.unchanged || 0) + ' 列 · 來源新版 ' + (sop.counts['new-version'] || 0) + ' 列 · 清單標籤行 ' + (sop.counts.metadata || 0) + ' 列</p></section>';
     html += '<label class="quality-filter">檢查篩選<select id="csv-filter">' + [['all', '全部列'], ['review', '待核對門市'], ['errors', '無法匯入的列'], ['warnings', '缺漏或提醒'], ['selected', '選取匯入的列']].map(([key, label]) => '<option value="' + key + '" ' + (filter === key ? 'selected' : '') + '>' + label + '</option>').join('') + '</select></label>';
     html += '<div class="csv-review-list">' + rows.map(row => {
       const group = row.review ? plan.reviewGroups.find(g => g.id === row.review.group) : null;
-      const control = row.reviewExcluded ? '<p>依裁定排除本批；原始來源保留。</p>' : group && group.rows[0] !== row.key ? '<p>同組來源：跟隨「' + esc(group.label) + '」的整組匯入方式。</p>' : '<label>' + (group ? '這組的匯入方式' : '這列的匯入方式') + '<select data-csv-choice="' + esc(row.key) + '" aria-label="' + esc(row.data.name) + '的匯入方式">' + targets(row, records) + '</select></label>';
+      const mergeText = group?.merge ? '<div class="conflict-card"><strong>依已裁定同店規則整併</strong><p>' + group.merge.merged.map(s => esc(s.name)).join('、') + ' → ' + esc(group.merge.keeperName) + '</p><p>將搬移 ' + group.merge.movedVisits + ' 筆既有拜訪；被整併門市移到回收桶，原版本、附件與來源歷史仍保留。</p></div>' : '';
+      const control = row.reviewExcluded ? '<p>依裁定排除本批；原始來源保留。</p>' : group && group.rows[0] !== row.key ? '<p>同組來源：跟隨「' + esc(group.label) + '」的整組匯入方式。</p>' : group?.merge ? mergeText : group?.mergeBlocked ? '<div class="conflict-card"><p class="error">同店裁定目前不能安全整併：' + esc(group.mergeBlocked) + '</p><p>不能用手動改指門市繞過；請取消本批並先處理衝突。</p></div>' : '<label>' + (group ? '這組的匯入方式' : '這列的匯入方式') + '<select data-csv-choice="' + esc(row.key) + '" aria-label="' + esc(row.data.name) + '的匯入方式">' + targets(row, records) + '</select></label>';
       const changes = profileChanges({ ...row, choice: csvTargetChoice(plan, row) }, records);
       const extra = (row.textFields || []).filter(f => f.kind === 'supplement');
       const manual = sop.rows.find(s => s.key === row.key)?.manual;
@@ -126,9 +128,9 @@ export function createCSVImport({ host, getState, run, saveBundle, notify, expor
     if (b.id === 'csv-commit') return run(async () => {
       if (!plan) throw new Error('請先預覽並確認本批來源。');
       const state = getState(), result = buildCSVImport(plan, state.bundle, state.device);
-      if (!confirm(`確認保存 ${result.summary.sourceSnapshots} 份原始 CSV Source Snapshot，並匯入 ${result.summary.rows} 列？\n新增 ${result.summary.stores} 間門市、${result.summary.notes} 筆備註；更新 ${result.summary.updatedNotes} 筆版本。\n補上 ${result.summary.filledFields} 個空白欄位。\n原始 CSV 完整 bytes 不會被分析結果回寫；Google 缺少備註時保留舊文。`)) return;
+      if (!confirm(`確認保存 ${result.summary.sourceSnapshots} 份原始 CSV Source Snapshot，並匯入 ${result.summary.rows} 列？\n新增 ${result.summary.stores} 間門市、${result.summary.notes} 筆備註；更新 ${result.summary.updatedNotes} 筆版本。\n${result.summary.mergeGroups ? `依已裁定同店規則整併 ${result.summary.mergedStores} 間既有門市，搬移 ${result.summary.movedVisits} 筆既有拜訪；原版本與來源歷史保留。\n` : ''}補上 ${result.summary.filledFields} 個空白欄位。\n原始 CSV 完整 bytes 不會被分析結果回寫；Google 缺少備註時保留舊文。`)) return;
       await saveBundle(result.bundle);
-      const s = result.summary; reset(); find('#csv-result').textContent = `完成：已保存 ${s.sourceSnapshots} 份原始 CSV Source Snapshot；新增 ${s.stores} 間門市，連結 ${s.linked} 間現有門市，新增 ${s.notes} 筆備註，更新 ${s.updatedNotes} 筆版本，補上 ${s.filledFields} 個空白欄位；${s.missingNotes} 筆最新匯出缺少備註但舊文已保留，${s.restoredNotes} 筆重新出現，${s.unchangedNotes} 筆未變，${s.skipped} 列略過。已加密儲存於本機，Mac 可連線時會交換。`;
+      const s = result.summary; reset(); find('#csv-result').textContent = `完成：已保存 ${s.sourceSnapshots} 份原始 CSV Source Snapshot；新增 ${s.stores} 間門市，連結 ${s.linked} 間現有門市，新增 ${s.notes} 筆備註，更新 ${s.updatedNotes} 筆版本${s.mergeGroups ? `，依裁定整併 ${s.mergedStores} 間既有門市並搬移 ${s.movedVisits} 筆既有拜訪` : ''}，補上 ${s.filledFields} 個空白欄位；${s.missingNotes} 筆最新匯出缺少備註但舊文已保留，${s.restoredNotes} 筆重新出現，${s.unchangedNotes} 筆未變，${s.skipped} 列略過。已加密儲存於本機，Mac 可連線時會交換。`;
       notify('CSV 已加密匯入，可到客戶門市與拜訪紀錄查看。');
     }, 'csv-error');
   });
