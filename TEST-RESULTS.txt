@@ -1,3 +1,24 @@
+v1.5.5 原始 CSV Source Snapshot｜2026-09-19
+
+GitHub Actions 完整執行：121 項通過，0 項失敗、取消或略過。
+命令：node --test test/*.test.mjs
+環境：GitHub Actions Ubuntu 24.04、Node.js 24.20.0；公開測試只使用虛構門市與文字。
+PR 測試紀錄：run 35427848309，commit e5dd35c53e7860b8e4eb12ba8fe7b4ce5d15878a。
+
+本次新增與調整
+- 每次確認提交 CSV 都建立 append-only Source Snapshot；完整原始 bytes 以 SHA-256 blob 加密保存。
+- 即使一份 CSV 所有資料列都略過或排除，原始檔仍保存；不因 derived data 決策而消失。
+- 相同 CSV 重傳不新增門市或拜訪版本，但會新增一次來源快照事件；相同 bytes 可共用同一 blob。
+- 被納入門市／拜訪的來源列保存 sourceSnapshot 參照、原始 headers、cells、實體行號與 row fingerprint。
+- Source Snapshot record 不允許修改版本或刪除版本；來源列參照與 snapshot blob 不一致時拒絕資料。
+- 「匯入 CSV」頁可看到最近保存的 Source Snapshot，並在明文警告後下載原始 CSV。
+- 現有 schema 2 舊資料可讀；含 source record 的新資料需要 v1.5.5，因此 Mac 與 iPhone 必須先更新，再提交新批次。
+- 資料庫 24 MB 上限維持；容量不足時整批失敗，不會自動刪除舊來源。
+
+限制：尚未合併到 main、尚未發布 v1.5.5，也未安裝到使用者 Mac／iPhone。PR 測試成功只驗證程式與虛構資料，不代表真機更新、Source Snapshot 下載或 2026-09-19 主檔匯入已完成。
+
+以下保留舊版當時的測試紀錄。
+
 v1.5.4 門市身分裁定沿用｜2026-09-19
 
 完整本機執行：118 項通過，0 項失敗、取消或略過。
