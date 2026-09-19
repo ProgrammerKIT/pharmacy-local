@@ -114,7 +114,7 @@ test('identical CSV rows in different lists preserve both streams; repeating a l
   const result = buildCSVImport(await planCSV([a, c], b), b, 'mac');
   assert.equal(result.summary.stores, 1); assert.equal(result.summary.notes, 2);
   assert.equal(project(result.bundle).filter(r => r.type === 'visit').length, 2);
-  const again = buildCSVImport(await planCSV([a, c], result.bundle), result.bundle, 'mac'); assert.equal(again.bundle.ops.length, result.bundle.ops.length);
+  const again = buildCSVImport(await planCSV([a, c], result.bundle), result.bundle, 'mac'); assert.equal(again.summary.rows, 0); assert.equal(again.summary.sourceSnapshots, 2); assert.equal(project(again.bundle).filter(r=>r.type==='source').length, project(result.bundle).filter(r=>r.type==='source').length + 2);
 });
 test('unmapped notes preserve both text and existing sourceMissing state', async () => {
   const text = 'Title,Note,URL\n虛構測試藥局,原文,https://maps.google.com/?cid=1234567';
