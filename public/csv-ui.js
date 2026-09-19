@@ -115,7 +115,7 @@ export function createCSVImport({ host, getState, run, saveBundle, notify, expor
   });
   host.addEventListener('click', event => {
     const b = event.target.closest('button'); if (!b || !getState()) return;
-    if (b.dataset.csvSourceSnapshot) { const snapshot = project(getState().bundle).find(r => r.type === 'source' && r.id === b.dataset.csvSourceSnapshot); if (!snapshot) return notify('找不到這份原始 CSV Source Snapshot。'); if (!downloadSource) return notify('此介面尚未支援下載原始來源。'); return downloadSource(snapshot.blob, snapshot.file); }
+    if (b.dataset?.csvSourceSnapshot) { const snapshot = project(getState().bundle).find(r => r.type === 'source' && r.id === b.dataset.csvSourceSnapshot); if (!snapshot) return notify('找不到這份原始 CSV Source Snapshot。'); if (!downloadSource) return notify('此介面尚未支援下載原始來源。'); return downloadSource(snapshot.blob, snapshot.file); }
     if (b.id === 'csv-choose') return find('#csv-files').click();
     if (b.id === 'csv-review-choose') return find('#csv-review-file').click();
     if (b.id === 'csv-export-preview') return run(async () => { if (!plan) throw new Error('請先產生匯入預覽。'); if (!exportReport) throw new Error('此介面尚未支援匯出核對結果。'); exportReport(exportCSVPreview(plan, getState().bundle)); }, 'csv-error');
