@@ -206,7 +206,7 @@ export function identityRuleAllows(store, incoming) {
   const name = comparisonText(incoming.name), address = comparisonText(incoming.address);
   return (store.csvIdentityRules || []).some(rule => rule.decision === 'same' && rule.mapKey === key && rule.names.some(alias => comparisonText(alias) === name) && (!address || !rule.addresses.length || rule.addresses.some(value => comparisonText(value) === address)));
 }
-export const SOP1_VERSION = '1.0.1';
+export const SOP1_VERSION = '1.0.3';
 export const sourceListKey = list => normalizeListName(list).normalize('NFKC').trim().toLocaleLowerCase('zh-Hant');
 export function sourceTextFields(file, raw) {
   const mapped = new Set(Object.values(file.mapping).filter(i => i >= 0));
@@ -258,7 +258,11 @@ function prepareSOP1(plan, records) {
 }
 export function sop1Report(plan, bundle) {
   const records = project(bundle), byStore = new Map(records.filter(r => r.type === 'store').map(r => [r.id, r]));
-  const byRow = new Map(plan.rows.map(r => [r.key, r])), blockers = [], summaries = [], streams = new Map();
+  const byRow = new Map(plan.rows.map(r => [r.key, r])), blockers = [], summaries = [], streams = new Map(), mergeTargets = mergeTargetMap(plan);
+  const effectiveVisitStream = visit => {
+    const keeper = mergeTargets.get(visit.store);
+    return keeper ? remappedVisitStream(visit, visit.store, keeper) : visitStream(visit);
+  };
   function target(row, chain = new Set()) {
     if (chain.has(row.key)) return '';
     chain.add(row.key);
@@ -285,7 +289,7 @@ export function sop1Report(plan, bundle) {
     if ((row.textFields || []).some(f => f.kind === 'supplement') && !row.sop1?.extraAccepted) fail(row, '尚有其他非空白文字欄，須核對並確認保留為來源補充，不可默默漏掉');
     const stream = resolved + ':' + sourceListKey(file.list), bucket = streams.get(stream) || [];
     bucket.push(row); streams.set(stream, bucket);
-    const existing = resolved.startsWith('store:') ? records.filter(v => v.type === 'visit' && !v.deleted && visitStream(v) === csvStream(resolved.slice(6), file.list)) : [];
+    const existing = resolved.startsWith('store:') ? records.filter(v => v.type === 'visit' && !v.deleted && effectiveVisitStream(v) === csvStream(resolved.slice(6), file.list)) : [];
     if (existing.length > 1 || existing.some(v => v.conflict)) fail(row, '同一來源有多筆備註或同步衝突，請先在 App 核對');
     const old = existing[0];
     let kind = !row.note?.trim() ? 'no-note' : old ? (old.googleText ?? old.text) === row.note && (!row.date || row.date === old.date) ? 'unchanged' : 'new-version' : 'new-note';
@@ -302,6 +306,14 @@ export function sop1Report(plan, bundle) {
   const assigned = new Map();
   for (const group of plan.reviewGroups || []) {
     const members = group.rows.map(key => byRow.get(key)), active = members.filter(r => r.choice !== 'skip');
+    if (group.merge) {
+      const candidates = group.candidates.map(id => byStore.get(id)).filter(Boolean), verified = reviewedMergePlan(group, candidates, records);
+      const samePlan = verified && !verified.blocked && verified.keeper === group.merge.keeper && JSON.stringify(verified.merged.map(s => s.id).sort()) === JSON.stringify(group.merge.merged.map(s => s.id).sort());
+      if (!samePlan || group.choice !== 'store:' + group.merge.keeper) {
+        for (const row of active) fail(row, '已裁定既有門市整併計畫已失效，請重新產生預覽');
+        continue;
+      }
+    }
     if (!active.length) continue;
     const targets = new Set(active.map(r => target(r)).filter(Boolean));
     if (active.length !== members.length || targets.size !== 1) { for (const row of active) fail(row, '已裁定的同組來源須一起指定，不能只移動或略過其中一列'); continue; }
@@ -420,8 +432,8 @@ export function buildCSVImport(plan, bundle, device) {
   const sop = sop1Report(plan, bundle);
   if (!sop.ready) throw new Error('SOP1 尚未通過：' + sop.blockers[0].message + '。這批尚未寫入 App 或關聯圖。');
   const next = structuredClone(bundle), initial = project(bundle), states = new Map(initial.filter(r => r.type === 'store').map(r => [r.id, { data: structuredClone(r.heads[0].data), parents: r.heads.map(h => h.id), invalid: r.deleted || r.conflict }])); next.schema = 2;
-  const resolution = new Map(), at = new Date().toISOString(), batch = uuid(), changed = new Set(), visitOps = [], sourceOps = [], sourceSnapshotIds = plan.files.map(() => uuid());
-  const summary = { sourceSnapshots: 0, stores: 0, linked: 0, notes: 0, updatedNotes: 0, missingNotes: 0, restoredNotes: 0, unchangedNotes: 0, duplicateNotes: 0, filledFields: 0, skipped: 0, rows: 0 };
+  const resolution = new Map(), at = new Date().toISOString(), batch = uuid(), changed = new Set(), visitOps = [], sourceOps = [], mergeStoreOps = [], movedVisitRecords = new Map(), sourceSnapshotIds = plan.files.map(() => uuid());
+  const summary = { sourceSnapshots: 0, stores: 0, linked: 0, notes: 0, updatedNotes: 0, missingNotes: 0, restoredNotes: 0, unchangedNotes: 0, duplicateNotes: 0, filledFields: 0, skipped: 0, rows: 0, mergeGroups: 0, mergedStores: 0, movedVisits: 0 };
   for (const [index, f] of plan.files.entries()) {
     const encoded = b64(f.bytes);
     if (Object.hasOwn(next.blobs, f.blob) && next.blobs[f.blob] !== encoded) throw new Error('原始 CSV 雜湊相同但內容不同，停止匯入。');
@@ -429,9 +441,42 @@ export function buildCSVImport(plan, bundle, device) {
     const data = { file: f.file, list: f.list, batch, blob: f.blob, rows: f.rows.length, headers: [...f.headers], encoding: f.encoding || 'auto', delimiter: f.delimiter || 'auto', ...(plan.reviewPackageId ? { reviewPackageId: plan.reviewPackageId } : {}) };
     sourceOps.push(revision('source', sourceSnapshotIds[index], data, [], device)); summary.sourceSnapshots++;
   }
+  for (const group of plan.reviewGroups || []) {
+    if (!group.merge) continue;
+    const candidates = group.candidates.map(id => initial.find(r => r.type === 'store' && r.id === id)).filter(Boolean), verified = reviewedMergePlan(group, candidates, initial);
+    if (!verified || verified.blocked || verified.keeper !== group.merge.keeper || JSON.stringify(verified.merged.map(s => s.id).sort()) !== JSON.stringify(group.merge.merged.map(s => s.id).sort())) throw new Error('已裁定既有門市整併計畫已失效，請重新產生預覽。');
+    const keeper = states.get(verified.keeper);
+    if (!keeper || keeper.invalid) throw new Error('整併的保留門市已刪除或有衝突，請重新預覽。');
+    const decisionKey = group.merge.decisionKey || (plan.reviewPackageId + ':' + group.id), rule = group.identityRule;
+    const donors = verified.merged.map(item => ({ item, state: states.get(item.id), record: initial.find(r => r.type === 'store' && r.id === item.id) }));
+    if (donors.some(d => !d.state || d.state.invalid || !d.record)) throw new Error('要整併的既有門市已刪除或有衝突，請重新預覽。');
+    for (const { state: donor } of donors) for (const field of MERGE_PROFILE_FIELDS) if (!keeper.data[field]?.trim() && donor.data[field]?.trim()) keeper.data[field] = donor.data[field];
+    const combinedSources = uniqueObjects([...(keeper.data.csvSources || []), ...donors.flatMap(d => d.state.data.csvSources || [])]);
+    keeper.data.csvSources = combinedSources;
+    keeper.data.lists = uniqueStrings([...(keeper.data.lists || []), ...donors.flatMap(d => d.state.data.lists || [])]);
+    keeper.data.csvAliases = uniqueStrings([keeper.data.name, ...(keeper.data.csvAliases || []), ...donors.flatMap(d => [d.state.data.name, ...(d.state.data.csvAliases || [])]), ...group.names]);
+    keeper.data.csvDecisionGroups = uniqueStrings([...(keeper.data.csvDecisionGroups || []), ...donors.flatMap(d => d.state.data.csvDecisionGroups || []), decisionKey]);
+    keeper.data.csvIdentityRules = uniqueObjects([...(keeper.data.csvIdentityRules || []), ...donors.flatMap(d => d.state.data.csvIdentityRules || []), rule]);
+    const pendingSources = combinedSources.filter(source => source.review?.pending);
+    const covered = source => Array.isArray(source.review?.names) && source.review.names.length && source.review.names.every(name => rule.names.some(allowed => comparisonText(allowed) === comparisonText(name)));
+    const opaquePending = [keeper, ...donors.map(d => d.state)].some(state => state.data.csvIdentityPending) && !pendingSources.length;
+    keeper.data.csvIdentityPending = !!group.pending || opaquePending || pendingSources.some(source => !covered(source));
+    changed.add(verified.keeper); summary.mergeGroups++;
+    for (const { item, state: donor, record } of donors) {
+      mergeStoreOps.push(revision('store', item.id, { ...donor.data, mergedInto: verified.keeper, mergeDecision: decisionKey }, donor.parents, device, true));
+      donor.invalid = true; summary.mergedStores++;
+      for (const visit of initial.filter(r => r.type === 'visit' && !r.deleted && r.store === item.id)) {
+        const data = structuredClone(visit.heads[0].data), stream = remappedVisitStream(visit, item.id, verified.keeper);
+        data.store = verified.keeper;
+        if (stream) data.csvStream = stream;
+        const op = revision('visit', visit.id, data, visit.heads.map(h => h.id), device);
+        visitOps.push(op); movedVisitRecords.set(visit.id, { ...visit, ...data, heads: [op], versions: [...visit.versions, op], conflict: false }); summary.movedVisits++;
+      }
+    }
+  }
   const visitsByStream = new Map();
-  for (const visit of initial.filter(r => r.type === 'visit' && !r.deleted)) {
-    const stream = visitStream(visit);
+  for (const original of initial.filter(r => r.type === 'visit' && !r.deleted)) {
+    const visit = movedVisitRecords.get(original.id) || original, stream = visitStream(visit);
     if (!stream) continue;
     const group = visitsByStream.get(stream) || [];
     group.push(visit); visitsByStream.set(stream, group);
@@ -504,7 +549,7 @@ export function buildCSVImport(plan, bundle, device) {
     }
   }
   for (const id of changed) { const s = states.get(id); next.ops.push(revision('store', id, s.data, s.parents, device)); }
-  next.ops.push(...sourceOps, ...visitOps); validateBundle(next);
+  next.ops.push(...mergeStoreOps, ...sourceOps, ...visitOps); validateBundle(next);
   if (utf8.encode(JSON.stringify(next)).length > MAX_BYTES - 65536) throw new Error('匯入後超過資料庫 24 MB 上限。這批尚未寫入，請減少檔案或分庫。');
   return { bundle: next, summary, batch };
 }
@@ -557,9 +602,74 @@ export async function prepareReviewedCSV(text) {
   const packageId = await hashBytes(utf8.encode(JSON.stringify({ files: files.map(f => [f.blob, f.list]), groups, excluded })));
   return { files, groups, excluded, packageId };
 }
+const MERGE_PROFILE_FIELDS = ['address', 'city', 'district', 'channel', 'contact', 'attr'];
+const mergeFieldLabel = field => PROFILE_FIELDS[field] || ({ attr: '屬性' }[field] || field);
+const sameMergeValue = (a, b) => comparisonText(a) === comparisonText(b);
+const uniqueStrings = values => [...new Set(values.filter(v => typeof v === 'string' && v))];
+const uniqueObjects = values => {
+  const seen = new Set();
+  return values.filter(value => { const key = JSON.stringify(value); if (seen.has(key)) return false; seen.add(key); return true; });
+};
+function remappedVisitStream(visit, fromStore, toStore) {
+  const stream = visitStream(visit);
+  if (!stream) return '';
+  const prefix = 'google-csv:' + fromStore + ':';
+  if (stream.startsWith(prefix)) return 'google-csv:' + toStore + ':' + stream.slice(prefix.length);
+  const source = [...(visit.csvSources || [])].reverse().find(s => s?.list);
+  return source?.list ? csvStream(toStore, source.list) : '';
+}
+function reviewedMergePlan(group, candidates, records) {
+  const rule = group.identityRule;
+  if (!rule || rule.decision !== 'same') return null;
+  const active = candidates.filter(s => !s.deleted);
+  const scoped = active.filter(s => rule.names.some(name => comparisonText(name) === comparisonText(s.name)) && mapKey(s.mapUrl || '') === rule.mapKey && (!rule.addresses.length || !s.address?.trim() || rule.addresses.some(address => comparisonText(address) === comparisonText(s.address))));
+  if (scoped.length < 2) return null;
+  if (scoped.some(s => s.conflict)) return { blocked: '已裁定同店的既有門市存在同步衝突，不能自動整併' };
+  const scopedIds = new Set(scoped.map(s => s.id));
+  const unrelated = active.filter(s => !scopedIds.has(s.id));
+  if (unrelated.length) return { blocked: '同店裁定附近仍有裁定範圍外的既有門市候選，不能自動整併' };
+  const keepers = scoped.filter(s => comparisonText(s.name) === comparisonText(rule.label));
+  if (keepers.length !== 1) return { blocked: '同店裁定命中多筆既有門市，但無法唯一決定保留哪一筆 App 門市' };
+  const keeper = keepers[0], merged = scoped.filter(s => s.id !== keeper.id);
+  if (scoped.some(s => (s.qualityDistinct || []).length) || records.some(s => s.type === 'store' && (s.qualityDistinct || []).some(r => scopedIds.has(r.store)))) return { blocked: '既有資料含「確認為不同門市」紀錄，須先人工核對後才能整併' };
+  for (const donor of merged) for (const field of MERGE_PROFILE_FIELDS) {
+    const a = keeper[field]?.trim(), b = donor[field]?.trim();
+    if (a && b && !sameMergeValue(a, b)) return { blocked: '已裁定同店的兩筆既有門市「' + mergeFieldLabel(field) + '」不同，不能自動覆蓋' };
+  }
+  for (const store of scoped) for (const prior of store.csvIdentityRules || []) {
+    if (prior.mapKey === rule.mapKey && JSON.stringify(prior) !== JSON.stringify(rule)) return { blocked: '既有門市保存了不同的身分裁定證據，不能自動整併' };
+  }
+  const activeVisits = records.filter(r => r.type === 'visit' && !r.deleted);
+  if (activeVisits.some(v => scopedIds.has(v.store) && v.conflict)) return { blocked: '要整併的門市有拜訪同步衝突，須先解決衝突' };
+  const seenStreams = new Set(activeVisits.filter(v => v.store === keeper.id).map(visitStream).filter(Boolean));
+  let movedVisits = 0;
+  for (const donor of merged) for (const visit of activeVisits.filter(v => v.store === donor.id)) {
+    const current = visitStream(visit), target = remappedVisitStream(visit, donor.id, keeper.id);
+    if (current && !target) return { blocked: '既有 Google 來源無法安全改連到保留門市，停止自動整併' };
+    if (target && seenStreams.has(target)) return { blocked: '兩筆既有門市在同一來源清單各有拜訪版本，不能自動決定哪一筆保留' };
+    if (target) seenStreams.add(target);
+    movedVisits++;
+  }
+  const sourceCount = scoped.reduce((n, s) => n + (s.csvSources || []).length, 0);
+  const aliases = uniqueStrings(scoped.flatMap(s => [s.name, ...(s.csvAliases || [])]).concat(rule.names));
+  const decisions = uniqueStrings(scoped.flatMap(s => s.csvDecisionGroups || []));
+  const rules = uniqueObjects(scoped.flatMap(s => s.csvIdentityRules || []).concat([rule]));
+  const lists = uniqueStrings(scoped.flatMap(s => s.lists || []));
+  if (sourceCount > 20000 || aliases.length > 100 || decisions.length + 1 > 200 || rules.length > 200 || lists.length > 2000) return { blocked: '整併後會超過門市來源或裁定紀錄上限，停止自動整併' };
+  return { keeper: keeper.id, keeperName: keeper.name, merged: merged.map(s => ({ id: s.id, name: s.name })), movedVisits };
+}
+function mergeTargetMap(plan) {
+  return new Map((plan.reviewGroups || []).flatMap(g => g.merge ? g.merge.merged.map(s => [s.id, g.merge.keeper]) : []));
+}
+function plannedVisitStream(plan, visit) {
+  const keeper = mergeTargetMap(plan).get(visit.store);
+  return keeper ? remappedVisitStream(visit, visit.store, keeper) : visitStream(visit);
+}
 export function setReviewedGroupChoice(plan, id, choice) {
   const group = plan.reviewGroups?.find(g => g.id === id);
   if (!group || !['new', 'review', 'skip'].includes(choice) && !choice.startsWith('store:')) throw new Error('裁定組或匯入方式不正確。');
+  if (group.merge && choice !== 'store:' + group.merge.keeper) throw new Error('此組已有精確同店裁定與安全整併計畫；若要改變去向，請取消本批並重新裁定。');
+  if (group.mergeBlocked && choice !== 'review') throw new Error('此組同店裁定目前無法安全整併，不能以手動改指門市繞過阻擋。');
   const first = group.rows[0]; group.choice = choice;
   for (const key of group.rows) {
     const row = plan.rows.find(r => r.key === key);
@@ -579,12 +689,17 @@ export async function planReviewedCSV(review, bundle) {
     const exact = stores.filter(s => g.names.some(n => comparisonText(n) === comparisonText(s.name)) && members.some(r => identity(r.data) && identity(r.data) === identity(s)));
     const related = stores.filter(s => members.some(r => duplicateEvidence(r.data, s).length));
     const matches = known.length ? known : sourced.length ? sourced : exact;
-    const chosen = matches.length === 1 && !matches[0].deleted && !matches[0].conflict ? 'store:' + matches[0].id : matches.length || related.length ? 'review' : 'new';
-    g.candidates = [...new Set([...known, ...sourced, ...exact, ...related])].map(s => s.id);
+    const candidates = [...new Map([...known, ...sourced, ...exact, ...related].map(s => [s.id, s])).values()];
+    const merge = reviewedMergePlan(g, candidates, records);
+    let chosen;
+    if (merge?.blocked) { g.mergeBlocked = merge.blocked; chosen = 'review'; }
+    else if (merge) { g.merge = { ...merge, decisionKey }; chosen = 'store:' + merge.keeper; }
+    else chosen = matches.length === 1 && !matches[0].deleted && !matches[0].conflict ? 'store:' + matches[0].id : matches.length || related.length ? 'review' : 'new';
+    g.candidates = candidates.map(s => s.id);
     for (const row of members) {
       row.review = { key: decisionKey, group: g.id, pending: g.pending, label: g.label, names: g.names, ...(g.identityRule ? { identityRule: structuredClone(g.identityRule) } : {}) };
       row.data.name = g.label; // Display label only. CSV cells/fingerprints are never changed.
-      row.reason = chosen === 'review' ? '與App既有門市有可能重疊或衝突，請對照原文後指定整組去向' : chosen === 'new' ? '依已核對分組新增；仍須確認本機匯入預覽' : '依原始來源或地點與名稱對照App既有門市；既有名稱保持不變';
+      row.reason = g.mergeBlocked || (g.merge ? '依已核對同店裁定，將既有門市整併至「' + g.merge.keeperName + '」；原版本與來源保留' : chosen === 'review' ? '與App既有門市有可能重疊或衝突，請對照原文後指定整組去向' : chosen === 'new' ? '依已核對分組新增；仍須確認本機匯入預覽' : '依原始來源或地點與名稱對照App既有門市；既有名稱保持不變');
     }
     setReviewedGroupChoice(plan, g.id, chosen);
   }
@@ -606,13 +721,13 @@ export function exportCSVPreview(plan, bundle) {
   const sourceRefs = sources => (sources || []).map(s => ({ file: s.file, line: s.line, list: s.list, fingerprint: s.fingerprint }));
   return { format: 'pharmacy-csv-preview-1', createdAt: new Date().toISOString(), imported: false, ready: report.ready, counts: report.counts,
     reviewPackageId: plan.reviewPackageId,
-    groups: (plan.reviewGroups || []).map(g => ({ id: g.id, name: g.label, pending: g.pending, choice: g.choice, rows: g.rows, candidates: g.candidates })),
+    groups: (plan.reviewGroups || []).map(g => ({ id: g.id, name: g.label, pending: g.pending, choice: g.choice, rows: g.rows, candidates: g.candidates, ...(g.merge ? { merge: structuredClone(g.merge) } : {}), ...(g.mergeBlocked ? { mergeBlocked: g.mergeBlocked } : {}) })),
     existingStores: records.filter(s => s.type === 'store' && candidateIds.has(s.id)).map(s => ({ id: s.id, name: s.name, address: s.address, mapUrl: s.mapUrl, deleted: s.deleted, conflict: s.conflict, sources: sourceRefs(s.csvSources),
       notes: records.filter(v => v.type === 'visit' && v.store === s.id && (!v.deleted || v.conflict)).map(v => ({ id: v.id, text: v.text, sourceText: v.googleText, date: v.date, conflict: v.conflict, sources: sourceRefs(v.csvSources), versions: v.conflict ? v.heads.map(h => ({ text: h.data.text, sourceText: h.data.googleText, date: h.data.date, deleted: h.deleted })) : undefined })) })),
     blockers: report.blockers.map(b => ({ ...b, name: plan.rows.find(r => r.key === b.key)?.data.name || '' })),
     rows: plan.rows.map(row => {
       const file = plan.files[row.fileIndex], target = csvTargetChoice(plan, row), storeId = target.startsWith('store:') ? target.slice(6) : '';
-      const old = records.filter(r => r.type === 'visit' && !r.deleted && visitStream(r) === csvStream(storeId, file.list));
+      const old = records.filter(r => r.type === 'visit' && !r.deleted && plannedVisitStream(plan, r) === csvStream(storeId, file.list));
       return { key: row.key, file: file.file, line: row.line, name: row.data.name, target, pending: !!row.review?.pending, action: report.rows.find(r => r.key === row.key)?.kind || 'blocked', incomingText: row.note, existing: old.map(v => ({ text: v.text, sourceText: v.googleText, date: v.date, conflict: v.conflict })) };
     }) };
 }
