@@ -124,7 +124,7 @@ export function createCSVImport({ host, getState, run, saveBundle, notify, expor
     if (b.id === 'csv-prev') { page = Math.max(0, page - 1); preview(); }
     if (b.id === 'csv-next') { page = Math.min(Math.ceil(plan.rows.length / 40) - 1, page + 1); preview(); }
     if (b.id === 'csv-commit') return run(async () => {
-      if (!plan) throw new Error('請先產生匯入預覽。');
+      if (!plan) throw new Error('請先預覽並確認本批來源。');
       const state = getState(), result = buildCSVImport(plan, state.bundle, state.device);
       if (!confirm(`確認保存 ${result.summary.sourceSnapshots} 份原始 CSV Source Snapshot，並匯入 ${result.summary.rows} 列？\n新增 ${result.summary.stores} 間門市、${result.summary.notes} 筆備註；更新 ${result.summary.updatedNotes} 筆版本。\n補上 ${result.summary.filledFields} 個空白欄位。\n原始 CSV 完整 bytes 不會被分析結果回寫；Google 缺少備註時保留舊文。`)) return;
       await saveBundle(result.bundle);
