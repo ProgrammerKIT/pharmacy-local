@@ -420,8 +420,15 @@ export function buildCSVImport(plan, bundle, device) {
   const sop = sop1Report(plan, bundle);
   if (!sop.ready) throw new Error('SOP1 尚未通過：' + sop.blockers[0].message + '。這批尚未寫入 App 或關聯圖。');
   const next = structuredClone(bundle), initial = project(bundle), states = new Map(initial.filter(r => r.type === 'store').map(r => [r.id, { data: structuredClone(r.heads[0].data), parents: r.heads.map(h => h.id), invalid: r.deleted || r.conflict }])); next.schema = 2;
-  const resolution = new Map(), at = new Date().toISOString(), batch = uuid(), changed = new Set(), visitOps = [], addedBlobs = new Set();
-  const summary = { stores: 0, linked: 0, notes: 0, updatedNotes: 0, missingNotes: 0, restoredNotes: 0, unchangedNotes: 0, duplicateNotes: 0, filledFields: 0, skipped: 0, rows: 0 };
+  const resolution = new Map(), at = new Date().toISOString(), batch = uuid(), changed = new Set(), visitOps = [], sourceOps = [], sourceSnapshotIds = plan.files.map(() => uuid());
+  const summary = { sourceSnapshots: 0, stores: 0, linked: 0, notes: 0, updatedNotes: 0, missingNotes: 0, restoredNotes: 0, unchangedNotes: 0, duplicateNotes: 0, filledFields: 0, skipped: 0, rows: 0 };
+  for (const [index, f] of plan.files.entries()) {
+    const encoded = b64(f.bytes);
+    if (Object.hasOwn(next.blobs, f.blob) && next.blobs[f.blob] !== encoded) throw new Error('原始 CSV 雜湊相同但內容不同，停止匯入。');
+    next.blobs[f.blob] = encoded;
+    const data = { file: f.file, list: f.list, batch, blob: f.blob, rows: f.rows.length, headers: [...f.headers], encoding: f.encoding || 'auto', delimiter: f.delimiter || 'auto', ...(plan.reviewPackageId ? { reviewPackageId: plan.reviewPackageId } : {}) };
+    sourceOps.push(revision('source', sourceSnapshotIds[index], data, [], device)); summary.sourceSnapshots++;
+  }
   const visitsByStream = new Map();
   for (const visit of initial.filter(r => r.type === 'visit' && !r.deleted)) {
     const stream = visitStream(visit);
@@ -468,13 +475,12 @@ export function buildCSVImport(plan, bundle, device) {
       if (!state.data[field]?.trim()) { state.data[field] = row.data[field]; summary.filledFields++; }
     }
     if (state.parents.length && !changed.has(id)) summary.linked++;
-    const source = { fingerprint: row.fingerprint, batch, file: f.file, line: row.line, list: f.list, at, blob: f.blob, headers: [...f.headers], cells: [...raw.cells], sop1Version: SOP1_VERSION, supplements: row.textFields.filter(field => field.kind === 'supplement'), disposition: row.choice, supplementReviewed: !!row.sop1?.extraAccepted, manualReviewed: !!row.sop1?.manualAccepted };
+    const source = { fingerprint: row.fingerprint, sourceSnapshot: sourceSnapshotIds[row.fileIndex], batch, file: f.file, line: row.line, list: f.list, at, blob: f.blob, headers: [...f.headers], cells: [...raw.cells], sop1Version: SOP1_VERSION, supplements: row.textFields.filter(field => field.kind === 'supplement'), disposition: row.choice, supplementReviewed: !!row.sop1?.extraAccepted, manualReviewed: !!row.sop1?.manualAccepted };
     if (row.review) source.review = structuredClone(row.review);
     state.data.csvSources = [...(state.data.csvSources || []), source];
     state.data.lists = [...new Set([...(state.data.lists || []), ...(f.list ? [f.list] : [])])];
     // Existing profiles are not overwritten, including their names, addresses and map URLs.
     changed.add(id); summary.rows++;
-    if (!addedBlobs.has(f.blob)) { next.blobs[f.blob] = b64(f.bytes); addedBlobs.add(f.blob); }
     const stream = csvStream(id, f.list), current = visitsByStream.get(stream) || [];
     if (current.length > 1) throw new Error(`第 ${row.line} 行：同一 Google 備註來源已有多筆舊紀錄，為避免錯誤合併，請先在 App 檢查。`);
     const existing = current[0];
@@ -498,7 +504,7 @@ export function buildCSVImport(plan, bundle, device) {
     }
   }
   for (const id of changed) { const s = states.get(id); next.ops.push(revision('store', id, s.data, s.parents, device)); }
-  next.ops.push(...visitOps); validateBundle(next);
+  next.ops.push(...sourceOps, ...visitOps); validateBundle(next);
   if (utf8.encode(JSON.stringify(next)).length > MAX_BYTES - 65536) throw new Error('匯入後超過資料庫 24 MB 上限。這批尚未寫入，請減少檔案或分庫。');
   return { bundle: next, summary, batch };
 }

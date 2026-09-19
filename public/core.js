@@ -41,7 +41,7 @@ export async function openRebuiltSnapshot(paired, currentVaultId, password, devi
   if (bundle.vaultId !== meta.vaultId) throw new Error('新資料庫身分不符。');
   return { key, meta, payload: { schema: 1, device: paired.id, deviceName, token: paired.token, bundle, dirty: false, serverVersion: remote.version, lastSync: new Date().toISOString() } };
 }
-const types = ['store', 'visit', 'topic', 'person'];
+const types = ['store', 'visit', 'topic', 'person', 'source'];
 const plain = x => x !== null && typeof x === 'object' && !Array.isArray(x);
 const str = (s, max = 20000) => typeof s === 'string' && s.length <= max;
 const ids = a => Array.isArray(a) && a.length <= 100 && a.every(x => str(x, 100));
@@ -57,7 +57,8 @@ export function validData(type, d) {
   if (d.googleText !== undefined && !str(d.googleText)) return false;
   if (d.sourceMissing !== undefined && typeof d.sourceMissing !== 'boolean') return false;
   if (d.googleUpdatePending !== undefined && typeof d.googleUpdatePending !== 'boolean') return false;
-  if (d.csvSources !== undefined && (!Array.isArray(d.csvSources) || d.csvSources.length > 20000 || !d.csvSources.every(s => plain(s) && str(s.file, 500) && str(s.fingerprint, 64) && str(s.batch, 100) && str(s.list, 200) && str(s.at, 40) && str(s.blob, 64) && Number.isInteger(s.line) && s.line > 0 && Array.isArray(s.headers) && Array.isArray(s.cells) && s.headers.length === s.cells.length && s.headers.length <= 100 && s.headers.every(h => str(h, 20000)) && s.cells.every(c => str(c, 2097152))))) return false;
+  if (d.csvSources !== undefined && (!Array.isArray(d.csvSources) || d.csvSources.length > 20000 || !d.csvSources.every(s => plain(s) && str(s.file, 500) && str(s.fingerprint, 64) && str(s.batch, 100) && str(s.list, 200) && str(s.at, 40) && str(s.blob, 64) && (s.sourceSnapshot === undefined || str(s.sourceSnapshot, 100)) && Number.isInteger(s.line) && s.line > 0 && Array.isArray(s.headers) && Array.isArray(s.cells) && s.headers.length === s.cells.length && s.headers.length <= 100 && s.headers.every(h => str(h, 20000)) && s.cells.every(c => str(c, 2097152))))) return false;
+  if (type === 'source') return str(d.file, 500) && !!d.file.trim() && str(d.list, 200) && /^[a-f0-9]{64}$/.test(d.blob || '') && str(d.batch, 100) && !!d.batch && Number.isInteger(d.rows) && d.rows >= 0 && d.rows <= 1500 && Array.isArray(d.headers) && d.headers.length <= 100 && d.headers.every(h => str(h, 20000)) && str(d.encoding, 20) && str(d.delimiter, 10) && (d.reviewPackageId === undefined || str(d.reviewPackageId, 100));
   if (type === 'visit') return str(d.store, 100) && str(d.date, 20) && (d.date === '' || /^\d{4}-\d{2}-\d{2}$/.test(d.date)) && str(d.text) && str(d.next) && str(d.source, 100) && ids(d.topics) && ids(d.people) && Array.isArray(d.attachments) && d.attachments.length <= 20 && d.attachments.every(a => plain(a) && str(a.blob, 100) && str(a.name, 200) && str(a.mime, 100));
   if (!str(d.name, 200) || !d.name.trim()) return false;
   if (type === 'store') return ['district', 'city', 'channel', 'attr', 'contact'].every(k => str(d[k], 500)) && ['address', 'mapUrl'].every(k => d[k] === undefined || str(d[k], 2000)) && (d.lists === undefined || Array.isArray(d.lists) && d.lists.length <= 2000 && d.lists.every(x => str(x, 200)));
@@ -66,9 +67,11 @@ export function validData(type, d) {
 }
 export function validateBundle(b) {
   if (!plain(b) || ![1, 2].includes(b.schema) || !str(b.vaultId, 100) || !Array.isArray(b.ops) || b.ops.length > 30000 || !plain(b.blobs)) throw new Error('資料庫格式不符，或需要更新至支援此資料的程式版本。');
-  const seen = new Map();
+  const seen = new Map(), sourceEntities = new Map();
   for (const o of b.ops) {
     if (!plain(o) || !str(o.id, 100) || !o.id || seen.has(o.id) || !types.includes(o.type) || !str(o.entity, 100) || !ids(o.parents) || new Set(o.parents).size !== o.parents.length || !str(o.device, 100) || !str(o.at, 40) || typeof o.deleted !== 'boolean' || !validData(o.type, o.data)) throw new Error('紀錄或版本資訊不完整。');
+    if (o.type === 'source' && (o.deleted || o.parents.length || sourceEntities.has(o.entity))) throw new Error('原始來源快照只能新增一次，不能修改或刪除。');
+    if (o.type === 'source') sourceEntities.set(o.entity, o);
     seen.set(o.id, o);
   }
   for (const o of b.ops) for (const p of o.parents) {
@@ -83,7 +86,11 @@ export function validateBundle(b) {
   if (count !== b.ops.length) throw new Error('版本鏈結形成循環。');
   for (const [id, blob] of Object.entries(b.blobs)) if (!/^[a-f0-9]{64}$/.test(id) || typeof blob !== 'string' || blob.length > 4200000 || !/^[A-Za-z0-9+/]*={0,2}$/.test(blob)) throw new Error('附件格式或大小不符。');
   for (const o of b.ops) if (o.type === 'visit') for (const a of o.data.attachments) if (!Object.hasOwn(b.blobs, a.blob)) throw new Error('附件不完整，停止合併。');
-  for (const o of b.ops) for (const s of o.data.csvSources || []) if (!Object.hasOwn(b.blobs, s.blob)) throw new Error('匯入原始 CSV 不完整，停止合併。');
+  for (const o of b.ops) for (const s of o.data.csvSources || []) {
+    if (!Object.hasOwn(b.blobs, s.blob)) throw new Error('匯入原始 CSV 不完整，停止合併。');
+    if (s.sourceSnapshot !== undefined) { const snapshot = sourceEntities.get(s.sourceSnapshot); if (!snapshot || snapshot.data.blob !== s.blob) throw new Error('來源列與原始 CSV 快照連結不完整，停止合併。'); }
+  }
+  for (const o of b.ops) if (o.type === 'source' && !Object.hasOwn(b.blobs, o.data.blob)) throw new Error('原始 CSV 快照缺少檔案內容，停止合併。');
   return b;
 }
 export function merge(a, b) {

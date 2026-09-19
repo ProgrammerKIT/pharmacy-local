@@ -15,7 +15,7 @@ async function packet(texts, partition) {
 const read = p => prepareReviewedCSV(JSON.stringify(p));
 const split = () => packet([`Title,Note,URL\n虛構甲藥局,甲原文,${url}\n虛構乙藥局,乙原文,${url}`],[{label:'虛構甲藥局',pending:true,rows:['0:0']},{label:'虛構乙藥局',pending:true,rows:['0:1']}]);
 
-test('review partition retains same-ID stores separately, preserves raw text and repeat is a no-op',async()=>{
+test('review partition retains same-ID stores separately, preserves raw text and repeat only adds a source snapshot',async()=>{
   const input=await split(), review=await read(input), b=emptyBundle('r');
   const p=await planReviewedCSV(review,b), result=buildCSVImport(p,b,'mac');
   assert.equal(result.summary.stores,2);
@@ -23,7 +23,7 @@ test('review partition retains same-ID stores separately, preserves raw text and
   assert.equal(stores.filter(storeIdentityPending).length,2);
   assert.deepEqual(stores.map(s=>s.csvSources[0].cells[1]),['甲原文','乙原文']);
   const again=buildCSVImport(await planReviewedCSV(await read(input),result.bundle),result.bundle,'phone');
-  assert.deepEqual(again.bundle,result.bundle); assert.equal(again.summary.rows,0);
+  assert.equal(again.summary.rows,0); assert.equal(again.summary.sourceSnapshots,1); assert.equal(project(again.bundle).filter(r=>r.type==='source').length,project(result.bundle).filter(r=>r.type==='source').length+1);
   const note=project(result.bundle).find(r=>r.type==='visit');
   assert.equal(relationVisitAllowed(note,stores),false);
 });
@@ -115,8 +115,8 @@ test('review decisions survive encrypted merge and a later identity confirmation
   const meta={...newMeta(),vaultId:'r'},key=await derive('test-only',meta), transported=await unseal(await seal(first,key,meta),key);
   const merged=merge(b,transported);assert.equal(project(merged).filter(storeIdentityPending).length,2);
   const s=project(merged).find(r=>r.type==='store');merged.ops.push(revision('store',s.id,{...s.heads[0].data,csvIdentityPending:false},[s.heads[0].id],'phone'));
-  const result=buildCSVImport(await planReviewedCSV(review,merged),merged,'mac').bundle;
-  assert.deepEqual(result,merged);assert.equal(storeIdentityPending(project(result).find(r=>r.id===s.id)),false);
+  const repeat=buildCSVImport(await planReviewedCSV(review,merged),merged,'mac'), result=repeat.bundle;
+  assert.equal(repeat.summary.rows,0);assert.equal(repeat.summary.sourceSnapshots,1);assert.equal(project(result).filter(r=>r.type==='source').length,project(merged).filter(r=>r.type==='source').length+1);assert.equal(storeIdentityPending(project(result).find(r=>r.id===s.id)),false);
   assert.throws(()=>validateBundle({...merged,ops:[{...merged.ops[0],data:{...merged.ops[0].data,csvIdentityPending:'false'}}]}),/不完整/);
 });
 test('local preview is read-only, exports current conflicts, and stale preview cannot commit',async()=>{

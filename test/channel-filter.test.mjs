@@ -78,8 +78,9 @@ test('real CSV import, manual edits, repeat upload and encrypted transport retai
   const result = filterStoreDirectory(stores, records.filter(r => r.type === 'visit'), { groups: ['you-chuan'] });
   assert.equal(result.entries.length, 2); assert.equal(new Set(ids(result)).size, 2); assert.equal(JSON.stringify(first), before);
   assert.equal(Buffer.from(first.blobs[file.blob], 'base64').toString('utf8'), raw);
-  const repeated = buildCSVImport(await planCSV([file], first), first, 'phone').bundle;
-  assert.deepEqual(repeated, first);
+  const repeatResult = buildCSVImport(await planCSV([file], first), first, 'phone'), repeated = repeatResult.bundle;
+  assert.equal(repeatResult.summary.rows, 0); assert.equal(repeatResult.summary.sourceSnapshots, 1);
+  assert.deepEqual(project(repeated).filter(r => r.type === 'store' || r.type === 'visit').map(r => [r.type, r.id]), project(first).filter(r => r.type === 'store' || r.type === 'visit').map(r => [r.type, r.id]));
   const key = await derive('fictional-test-only', meta), transported = merge(base, await unseal(await seal(first, key, meta), key));
   const remote = project(transported).filter(r => r.type === 'store');
   assert.deepEqual(ids(filterStoreDirectory(remote, [], { groups: ['you-chuan'] })).sort(), ids(result).sort());

@@ -42,7 +42,7 @@ test('Finder download suffixes map to one Google note stream and changes create 
   assert.equal(normalizeListName('CS清單(17).csv'), 'CS清單');
   const base = emptyBundle('test'), firstFile = await fixture(csv, 'CS清單(3).csv'), first = buildCSVImport(await planCSV([firstFile], base), base, 'mac');
   const again = await planCSV([await fixture(csv, 'CS清單(4).csv')], first.bundle); assert.equal(again.rows[0].choice, 'skip');
-  const noChange = buildCSVImport(again, first.bundle, 'mac'); assert.equal(noChange.bundle.ops.length, first.bundle.ops.length);
+  const noChange = buildCSVImport(again, first.bundle, 'mac'); assert.equal(noChange.summary.rows, 0); assert.equal(noChange.summary.sourceSnapshots, 1); assert.equal(project(noChange.bundle).filter(r => r.type === 'source').length, project(first.bundle).filter(r => r.type === 'source').length + 1);
   const changed = await planCSV([await fixture(csv.replace('再追蹤', '下次再確認'), 'CS清單(4).csv')], first.bundle);
   assert.ok(changed.rows[0].choice.startsWith('store:'));
   const second = buildCSVImport(changed, first.bundle, 'mac'); assert.equal(second.summary.stores, 0); assert.equal(second.summary.notes, 0); assert.equal(second.summary.updatedNotes, 1);

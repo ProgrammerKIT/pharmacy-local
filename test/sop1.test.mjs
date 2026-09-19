@@ -39,13 +39,13 @@ test('SOP1 accounts for every extra text field and never infers people or topics
   assert.equal(records.filter(r => ['person','topic'].includes(r.type)).length, 0);
   assert.equal(records.find(r=>r.type==='visit').csvSources[0].supplements[0].text, '未核對的留言');
 });
-test('SOP1 date corrections produce versions; repeated imports add no operations', async () => {
+test('SOP1 date corrections produce versions; repeated imports add only source snapshots', async () => {
   const b = emptyBundle('sop1'), raw = date => `Title,Note,Visit Date,URL\n虛構藥局,原文,${date},${url}`;
   const first = buildCSVImport(await planCSV([await file(raw('2026-01-01'))], b), b, 'mac').bundle;
   const changed = await file(raw('2026-01-02'));
   const second = buildCSVImport(await planCSV([changed], first), first, 'mac').bundle;
   const visit = project(second).find(r=>r.type==='visit'); assert.equal(visit.date, '2026-01-02'); assert.equal(visit.versions.length, 2);
-  const third = buildCSVImport(await planCSV([changed], second), second, 'mac').bundle; assert.equal(third.ops.length, second.ops.length);
+  const repeated = buildCSVImport(await planCSV([changed], second), second, 'mac'); const third = repeated.bundle; assert.equal(repeated.summary.rows, 0); assert.equal(repeated.summary.sourceSnapshots, 1); assert.equal(project(third).filter(r=>r.type==='source').length, project(second).filter(r=>r.type==='source').length + 1);
 });
 test('evidence grouping preserves all records and never merges different events, stores or manual edits', () => {
   const visit = overrides => ({ id: 'a', store: 's', text: '全文', googleText: '全文', date: '', csvSources: [{list:'甲'}], topics:[],people:[],attachments:[], ...overrides });

@@ -1,11 +1,13 @@
 import { FIELD_NAMES, prepareCSV, planCSV, buildCSVImport, normalizeListName, CSV_LIMIT, profileChanges, csvStream, sop1Report, REVIEW_LIMIT, prepareReviewedCSV, planReviewedCSV, setReviewedGroupChoice, csvTargetChoice, exportCSVPreview } from './csv.js';
 import { project } from './core.js';
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-export function createCSVImport({ host, getState, run, saveBundle, notify, exportReport }) {
+export function createCSVImport({ host, getState, run, saveBundle, notify, exportReport, downloadSource }) {
   let files = [], plan = null, page = 0, generation = 0, filter = 'all', review = null;
   const find = s => host.querySelector(s);
   function shell() {
-    host.innerHTML = `<div class="section-row"><div><h2>從 Google Maps CSV 匯入</h2><p class="muted">在這台裝置讀取、預覽並加密儲存。原始 CSV 不會送到外部服務。</p></div><button id="csv-choose" class="primary">選取 CSV 檔案</button><button id="csv-review-choose">載入已核對資料包</button></div><input id="csv-files" type="file" accept=".csv,text/csv" multiple hidden><input id="csv-review-file" type="file" accept=".pharmareview,application/json" hidden><div class="csv-intro"><p>① 選取檔案　② 核對欄位　③ 確認門市　④ 加密匯入</p><p class="muted">可多檔選取，每個 2 MB、合計 5 MB，每批最多 1,500 列。建議在 Mac 操作。請先匯出加密備份；兩台都更新到 1.5.1 版後再使用已核對資料包。</p></div><div id="csv-file-settings"></div><p id="csv-error" class="error" role="alert"></p><div id="csv-preview"></div><div id="csv-result" class="result" role="status"></div>`;
+    const snapshots = getState() ? project(getState().bundle).filter(r => r.type === 'source').sort((a, b) => (b.heads?.[0]?.at || '').localeCompare(a.heads?.[0]?.at || '')) : [];
+    const saved = snapshots.length ? '<article class="panel"><div class="section-row"><div><h3>已保存原始 CSV · ' + snapshots.length + ' 份</h3><p class="muted">Source Snapshot 只新增、不由分析或門市整理改寫。以下顯示最近 20 份；相同 SHA 可共用同一份檔案 bytes。</p></div></div>' + snapshots.slice(0, 20).map(s => '<div class="section-row"><div><strong>' + esc(s.file) + '</strong><p class="muted">' + esc(s.list || '未命名清單') + ' · ' + s.rows + ' 列 · SHA-256 ' + esc(s.blob.slice(0, 12)) + '…</p></div><button class="text-button" data-csv-source-snapshot="' + esc(s.id) + '">下載原始 CSV</button></div>').join('') + '</article>' : '<article class="panel"><h3>已保存原始 CSV · 0 份</h3><p class="muted">第一次確認提交 CSV 後，完整原檔會以 Source Snapshot 加密保存在資料庫。</p></article>';
+    host.innerHTML = `<div class="section-row"><div><h2>從 Google Maps CSV 匯入</h2><p class="muted">在這台裝置讀取、預覽並加密儲存。原始 CSV 不會送到外部服務。</p></div><button id="csv-choose" class="primary">選取 CSV 檔案</button><button id="csv-review-choose">載入已核對資料包</button></div><input id="csv-files" type="file" accept=".csv,text/csv" multiple hidden><input id="csv-review-file" type="file" accept=".pharmareview,application/json" hidden><div class="csv-intro"><p>① 選取檔案　② 核對欄位　③ 確認門市　④ 保存來源並加密匯入</p><p class="muted">可多檔選取，每個 2 MB、合計 5 MB，每批最多 1,500 列。建議在 Mac 操作。請先匯出加密備份；Mac 與 iPhone 都更新到支援 Source Snapshot 的版本後再提交新批次。</p></div>${saved}<div id="csv-file-settings"></div><p id="csv-error" class="error" role="alert"></p><div id="csv-preview"></div><div id="csv-result" class="result" role="status"></div>`;
   }
   function reset() { generation++; files = []; plan = null; review = null; page = 0; filter = 'all'; shell(); }
   function fileSettings() {
@@ -49,8 +51,8 @@ export function createCSVImport({ host, getState, run, saveBundle, notify, expor
     const start = page * 40, rows = filtered.slice(start, start + 40);
     const newRows = selected.filter(r => r.choice === 'new').length, linkedRows = selected.filter(r => /^(store|row):/.test(r.choice)).length;
     const fills = selected.reduce((n, r) => n + r.fillFields.length, 0);
-    let html = '<div class="csv-summary"><div><strong>' + plan.rows.length + ' 列 · 選取 ' + selected.length + ' 列 · 略過 ' + (plan.rows.length - selected.length) + ' 列 · 待處理 ' + unresolved + ' 列</strong><p>新增門市列 ' + newRows + ' · 連結列 ' + linkedRows + ' · 已選補值 ' + fills + ' 項</p></div><button id="csv-commit" class="primary" ' + (!selected.length || unresolved ? 'disabled' : '') + '>確認並加密匯入</button></div>';
-    html += '<p class="muted">同一門市與來源清單的備註會建立新版本。選取補值只填空白欄位；既有欄位與原始 CSV 都會保留。</p><p class="muted">含匯入列的整份原始 CSV 也會加密保存，因此原檔仍包含略過的列。</p>';
+    let html = '<div class="csv-summary"><div><strong>' + plan.rows.length + ' 列 · 選取 ' + selected.length + ' 列 · 略過 ' + (plan.rows.length - selected.length) + ' 列 · 待處理 ' + unresolved + ' 列</strong><p>新增門市列 ' + newRows + ' · 連結列 ' + linkedRows + ' · 已選補值 ' + fills + ' 項</p></div><button id="csv-commit" class="primary" ' + (unresolved ? 'disabled' : '') + '>確認保存來源並加密匯入</button></div>';
+    html += '<p class="muted">同一門市與來源清單的備註會建立新版本。選取補值只填空白欄位；既有欄位與原始 CSV 都會保留。</p><p class="muted">本批每一份原始 CSV 都會先建立唯讀 Source Snapshot；即使所有列都略過，完整原檔仍會加密保存。相同檔案可共用同一份 bytes，但每次確認提交仍保留本次來源快照。</p>';
     if (review) html += '<p class="conflict-card">待確認門市會標記「需要後續的確認」。原文仍可在客戶與拜訪紀錄查看，身分核實前不列入關聯分析。同組來源一起指定，已裁定分開的組不能指向同一間現有門市。</p>';
     html += '<section class="conflict-card" aria-live="polite"><h3>SOP1 · 匯入前整理閘門</h3><p>' + (sop.ready ? '本批已通過檢查；按確認後才寫入 App。' : '尚有待處理事項；整批不會寫入 App 或關聯圖。請切換「待核對門市」篩選。') + '</p><p>檔案原文與來源逐列保留；同店同來源重傳不新增拜訪。不同清單的完全相同文字整合顯示，來源分別留存。</p><p>備註未變 ' + (sop.counts.unchanged || 0) + ' 列 · 來源新版 ' + (sop.counts['new-version'] || 0) + ' 列 · 清單標籤行 ' + (sop.counts.metadata || 0) + ' 列</p></section>';
     html += '<label class="quality-filter">檢查篩選<select id="csv-filter">' + [['all', '全部列'], ['review', '待核對門市'], ['errors', '無法匯入的列'], ['warnings', '缺漏或提醒'], ['selected', '選取匯入的列']].map(([key, label]) => '<option value="' + key + '" ' + (filter === key ? 'selected' : '') + '>' + label + '</option>').join('') + '</select></label>';
@@ -113,19 +115,20 @@ export function createCSVImport({ host, getState, run, saveBundle, notify, expor
   });
   host.addEventListener('click', event => {
     const b = event.target.closest('button'); if (!b || !getState()) return;
+    if (b.dataset?.csvSourceSnapshot) { const snapshot = project(getState().bundle).find(r => r.type === 'source' && r.id === b.dataset.csvSourceSnapshot); if (!snapshot) return notify('找不到這份原始 CSV Source Snapshot。'); if (!downloadSource) return notify('此介面尚未支援下載原始來源。'); return downloadSource(snapshot.blob, snapshot.file); }
     if (b.id === 'csv-choose') return find('#csv-files').click();
     if (b.id === 'csv-review-choose') return find('#csv-review-file').click();
-    if (b.id === 'csv-export-preview') return run(async () => { if (!plan) throw new Error('請先產生匯入預覽。'); if (!exportReport) throw new Error('此介面尚未支援匯出核對結果。'); exportReport(exportCSVPreview(plan, getState().bundle)); }, 'csv-error');
+    if (b.id === 'csv-export-preview') return run(async () => { if (!plan) throw new Error('請先預覽並確認本批來源。'); if (!exportReport) throw new Error('此介面尚未支援匯出核對結果。'); exportReport(exportCSVPreview(plan, getState().bundle)); }, 'csv-error');
     if (b.id === 'csv-cancel') { reset(); notify('已取消未完成的匯入；已保存的客戶資料不受影響。'); return; }
     if (b.id === 'csv-preview-button') return run(async () => { if (files.some(f => f.error)) throw new Error('請先解決檔案的編碼或格式問題。'); const active = generation, bundle = getState().bundle; plan = null; preview(); const parsed = review ? await planReviewedCSV(review, bundle) : await planCSV(files, bundle); if (active !== generation || !getState()) return; plan = parsed; page = 0; preview(); }, 'csv-error');
     if (b.id === 'csv-prev') { page = Math.max(0, page - 1); preview(); }
     if (b.id === 'csv-next') { page = Math.min(Math.ceil(plan.rows.length / 40) - 1, page + 1); preview(); }
     if (b.id === 'csv-commit') return run(async () => {
-      if (!plan || !plan.rows.some(r => r.choice !== 'skip')) throw new Error('請先預覽並選取要匯入的列。');
+      if (!plan) throw new Error('請先預覽並確認本批來源。');
       const state = getState(), result = buildCSVImport(plan, state.bundle, state.device);
-      if (!confirm(`確認匯入 ${result.summary.rows} 列？\n新增 ${result.summary.stores} 間門市、${result.summary.notes} 筆備註；更新 ${result.summary.updatedNotes} 筆版本。\n補上 ${result.summary.filledFields} 個空白欄位。\nGoogle 缺少備註時保留舊文。已選空白欄位會補值，原本已有的欄位保留。`)) return;
+      if (!confirm(`確認保存 ${result.summary.sourceSnapshots} 份原始 CSV Source Snapshot，並匯入 ${result.summary.rows} 列？\n新增 ${result.summary.stores} 間門市、${result.summary.notes} 筆備註；更新 ${result.summary.updatedNotes} 筆版本。\n補上 ${result.summary.filledFields} 個空白欄位。\n原始 CSV 完整 bytes 不會被分析結果回寫；Google 缺少備註時保留舊文。`)) return;
       await saveBundle(result.bundle);
-      const s = result.summary; reset(); find('#csv-result').textContent = `匯入完成：新增 ${s.stores} 間門市，連結 ${s.linked} 間現有門市，新增 ${s.notes} 筆備註，更新 ${s.updatedNotes} 筆版本，補上 ${s.filledFields} 個空白欄位；${s.missingNotes} 筆最新匯出缺少備註但舊文已保留，${s.restoredNotes} 筆重新出現，${s.unchangedNotes} 筆未變，${s.skipped} 列略過。已加密儲存於本機，Mac 可連線時會交換。`;
+      const s = result.summary; reset(); find('#csv-result').textContent = `完成：已保存 ${s.sourceSnapshots} 份原始 CSV Source Snapshot；新增 ${s.stores} 間門市，連結 ${s.linked} 間現有門市，新增 ${s.notes} 筆備註，更新 ${s.updatedNotes} 筆版本，補上 ${s.filledFields} 個空白欄位；${s.missingNotes} 筆最新匯出缺少備註但舊文已保留，${s.restoredNotes} 筆重新出現，${s.unchangedNotes} 筆未變，${s.skipped} 列略過。已加密儲存於本機，Mac 可連線時會交換。`;
       notify('CSV 已加密匯入，可到客戶門市與拜訪紀錄查看。');
     }, 'csv-error');
   });
