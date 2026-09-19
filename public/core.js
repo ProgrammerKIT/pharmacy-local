@@ -48,6 +48,8 @@ const ids = a => Array.isArray(a) && a.length <= 100 && a.every(x => str(x, 100)
 export function validData(type, d) {
   if (!plain(d)) return false;
   if (d.csvIdentityPending !== undefined && (type !== 'store' || typeof d.csvIdentityPending !== 'boolean')) return false;
+  if (d.mergedInto !== undefined && (type !== 'store' || !str(d.mergedInto, 100) || !d.mergedInto)) return false;
+  if (d.mergeDecision !== undefined && (type !== 'store' || !str(d.mergeDecision, 200) || !d.mergeDecision)) return false;
   if (d.csvDecisionGroups !== undefined && (type !== 'store' || !Array.isArray(d.csvDecisionGroups) || d.csvDecisionGroups.length > 200 || !d.csvDecisionGroups.every(v => str(v, 200)))) return false;
   if (d.csvAliases !== undefined && (type !== 'store' || !Array.isArray(d.csvAliases) || d.csvAliases.length > 100 || !d.csvAliases.every(v => str(v, 200)))) return false;
   if (d.csvIdentityRules !== undefined && (type !== 'store' || !Array.isArray(d.csvIdentityRules) || d.csvIdentityRules.length > 200 || !d.csvIdentityRules.every(r => plain(r) && r.decision === 'same' && str(r.mapKey, 500) && r.mapKey && str(r.label, 200) && r.label.trim() && str(r.source, 200) && str(r.decidedAt, 40) && Array.isArray(r.names) && r.names.length > 1 && r.names.length <= 100 && r.names.every(v => str(v, 200) && v.trim()) && Array.isArray(r.addresses) && r.addresses.length <= 100 && r.addresses.every(v => str(v, 2000) && v.trim())))) return false;
