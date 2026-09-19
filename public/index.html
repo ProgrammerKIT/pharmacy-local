@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="#152d41"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default"><title>藥局關係筆記</title><link rel="icon" href="/icon.svg" type="image/svg+xml"><link rel="apple-touch-icon" sizes="1200x1200" href="/icon-192.png?v=1.5.3"><link rel="manifest" href="/manifest.webmanifest"><link rel="stylesheet" href="/style.css"><script type="module" src="/app.js"></script></head>
+<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="#152d41"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default"><title>藥局關係筆記</title><link rel="icon" href="/icon.svg" type="image/svg+xml"><link rel="apple-touch-icon" sizes="1200x1200" href="/icon-192.png?v=1.5.5"><link rel="manifest" href="/manifest.webmanifest"><link rel="stylesheet" href="/style.css"><script type="module" src="/app.js"></script></head>
 <body>
 <section id="gate" class="gate">
   <div class="welcome"><img src="/icon.svg" width="64" height="64" alt=""><p class="eyebrow">PHARMACY · LOCAL</p><h1>藥局關係筆記</h1><p>每次拜訪，留下可追溯的線索。</p><div class="local-label">本機加密 · 碰面同步</div></div>
@@ -12,10 +12,10 @@
   </form><button id="gate-restore" class="text-button">從加密備份還原至這台裝置</button><p class="muted">配對後不需每日登入。密碼不會傳給 Mac 服務；加密備份仍需原密碼還原，請離線保存。</p><p class="muted" id="secure-state"></p></div>
 </section>
 <div id="workspace" hidden>
-  <aside class="rail"><a href="/" class="brand"><img src="/icon.svg" width="36" height="36" alt=""><span>藥局關係筆記<small id="app-version">CS EDITION · 1.5.3</small></span></a><nav aria-label="主選單"><button data-view="explore" class="active">◎ 關聯探索</button><button data-view="visits">▤ 拜訪紀錄</button><button data-view="stores">▦ 客戶門市</button><button data-view="entities">◇ 人物與主題</button><button data-view="quality">☷ 資料整理</button><button data-view="csv">⇩ 匯入 CSV</button><button data-view="sync">⇄ 同步與備份</button><button data-view="trash">↶ 回收桶</button></nav><div class="rail-bottom"><span id="device-label"></span><small>由裝置鎖定保護</small></div></aside>
+  <aside class="rail"><a href="/" class="brand"><img src="/icon.svg" width="36" height="36" alt=""><span>藥局關係筆記<small id="app-version">CS EDITION · 1.5.5</small></span></a><nav aria-label="主選單"><button data-view="explore" class="active">◎ 關聯探索</button><button data-view="visits">▤ 拜訪紀錄</button><button data-view="stores">▦ 客戶門市</button><button data-view="entities">◇ 人物與主題</button><button data-view="quality">☷ 資料整理</button><button data-view="csv">⇩ 匯入 CSV</button><button data-view="sync">⇄ 同步與備份</button><button data-view="trash">↶ 回收桶</button></nav><div class="rail-bottom"><span id="device-label"></span><small>由裝置鎖定保護</small></div></aside>
   <main><header class="topbar"><div><p class="eyebrow">PRIVATE FIELD NOTES</p><h1 id="page-title">關聯探索</h1></div><div class="top-actions"><button id="sync-button" class="secondary">同步</button><button id="new-note" class="primary">＋ 新增拜訪</button></div></header>
     <div class="statusline"><span id="save-state">已儲存於本機</span><span id="sync-state">尚未同步</span><button id="conflict-link" class="text-button" hidden></button></div>
-    <p id="update-state" class="update-state" role="status">程式 v1.5.3 · 等待檢查本機服務</p>
+    <p id="update-state" class="update-state" role="status">程式 v1.5.5 · 等待檢查本機服務</p>
     <section id="explore-view" class="explore-grid">
       <aside class="store-pane"><div class="section-row"><h2>探索起點</h2><button class="text-button" data-add="store">＋ 門市</button></div>
         <label class="sr-only" for="search">搜尋門市與拜訪原文</label><input id="search" type="search" placeholder="搜尋門市、客群、拜訪原文">
