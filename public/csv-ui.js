@@ -118,7 +118,7 @@ export function createCSVImport({ host, getState, run, saveBundle, notify, expor
     if (b.dataset?.csvSourceSnapshot) { const snapshot = project(getState().bundle).find(r => r.type === 'source' && r.id === b.dataset.csvSourceSnapshot); if (!snapshot) return notify('找不到這份原始 CSV Source Snapshot。'); if (!downloadSource) return notify('此介面尚未支援下載原始來源。'); return downloadSource(snapshot.blob, snapshot.file); }
     if (b.id === 'csv-choose') return find('#csv-files').click();
     if (b.id === 'csv-review-choose') return find('#csv-review-file').click();
-    if (b.id === 'csv-export-preview') return run(async () => { if (!plan) throw new Error('請先產生匯入預覽。'); if (!exportReport) throw new Error('此介面尚未支援匯出核對結果。'); exportReport(exportCSVPreview(plan, getState().bundle)); }, 'csv-error');
+    if (b.id === 'csv-export-preview') return run(async () => { if (!plan) throw new Error('請先預覽並確認本批來源。'); if (!exportReport) throw new Error('此介面尚未支援匯出核對結果。'); exportReport(exportCSVPreview(plan, getState().bundle)); }, 'csv-error');
     if (b.id === 'csv-cancel') { reset(); notify('已取消未完成的匯入；已保存的客戶資料不受影響。'); return; }
     if (b.id === 'csv-preview-button') return run(async () => { if (files.some(f => f.error)) throw new Error('請先解決檔案的編碼或格式問題。'); const active = generation, bundle = getState().bundle; plan = null; preview(); const parsed = review ? await planReviewedCSV(review, bundle) : await planCSV(files, bundle); if (active !== generation || !getState()) return; plan = parsed; page = 0; preview(); }, 'csv-error');
     if (b.id === 'csv-prev') { page = Math.max(0, page - 1); preview(); }
