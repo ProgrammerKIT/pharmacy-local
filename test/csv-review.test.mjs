@@ -115,8 +115,8 @@ test('review decisions survive encrypted merge and a later identity confirmation
   const meta={...newMeta(),vaultId:'r'},key=await derive('test-only',meta), transported=await unseal(await seal(first,key,meta),key);
   const merged=merge(b,transported);assert.equal(project(merged).filter(storeIdentityPending).length,2);
   const s=project(merged).find(r=>r.type==='store');merged.ops.push(revision('store',s.id,{...s.heads[0].data,csvIdentityPending:false},[s.heads[0].id],'phone'));
-  const result=buildCSVImport(await planReviewedCSV(review,merged),merged,'mac').bundle;
-  assert.deepEqual(result,merged);assert.equal(storeIdentityPending(project(result).find(r=>r.id===s.id)),false);
+  const repeat=buildCSVImport(await planReviewedCSV(review,merged),merged,'mac'), result=repeat.bundle;
+  assert.equal(repeat.summary.rows,0);assert.equal(repeat.summary.sourceSnapshots,1);assert.equal(project(result).filter(r=>r.type==='source').length,project(merged).filter(r=>r.type==='source').length+1);assert.equal(storeIdentityPending(project(result).find(r=>r.id===s.id)),false);
   assert.throws(()=>validateBundle({...merged,ops:[{...merged.ops[0],data:{...merged.ops[0].data,csvIdentityPending:'false'}}]}),/不完整/);
 });
 test('local preview is read-only, exports current conflicts, and stale preview cannot commit',async()=>{
