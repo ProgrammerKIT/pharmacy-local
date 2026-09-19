@@ -67,11 +67,11 @@ export function validData(type, d) {
 }
 export function validateBundle(b) {
   if (!plain(b) || ![1, 2].includes(b.schema) || !str(b.vaultId, 100) || !Array.isArray(b.ops) || b.ops.length > 30000 || !plain(b.blobs)) throw new Error('資料庫格式不符，或需要更新至支援此資料的程式版本。');
-  const seen = new Map(), sourceEntities = new Set();
+  const seen = new Map(), sourceEntities = new Map();
   for (const o of b.ops) {
     if (!plain(o) || !str(o.id, 100) || !o.id || seen.has(o.id) || !types.includes(o.type) || !str(o.entity, 100) || !ids(o.parents) || new Set(o.parents).size !== o.parents.length || !str(o.device, 100) || !str(o.at, 40) || typeof o.deleted !== 'boolean' || !validData(o.type, o.data)) throw new Error('紀錄或版本資訊不完整。');
     if (o.type === 'source' && (o.deleted || o.parents.length || sourceEntities.has(o.entity))) throw new Error('原始來源快照只能新增一次，不能修改或刪除。');
-    if (o.type === 'source') sourceEntities.add(o.entity);
+    if (o.type === 'source') sourceEntities.set(o.entity, o);
     seen.set(o.id, o);
   }
   for (const o of b.ops) for (const p of o.parents) {
@@ -86,7 +86,10 @@ export function validateBundle(b) {
   if (count !== b.ops.length) throw new Error('版本鏈結形成循環。');
   for (const [id, blob] of Object.entries(b.blobs)) if (!/^[a-f0-9]{64}$/.test(id) || typeof blob !== 'string' || blob.length > 4200000 || !/^[A-Za-z0-9+/]*={0,2}$/.test(blob)) throw new Error('附件格式或大小不符。');
   for (const o of b.ops) if (o.type === 'visit') for (const a of o.data.attachments) if (!Object.hasOwn(b.blobs, a.blob)) throw new Error('附件不完整，停止合併。');
-  for (const o of b.ops) for (const s of o.data.csvSources || []) if (!Object.hasOwn(b.blobs, s.blob)) throw new Error('匯入原始 CSV 不完整，停止合併。');
+  for (const o of b.ops) for (const s of o.data.csvSources || []) {
+    if (!Object.hasOwn(b.blobs, s.blob)) throw new Error('匯入原始 CSV 不完整，停止合併。');
+    if (s.sourceSnapshot !== undefined) { const snapshot = sourceEntities.get(s.sourceSnapshot); if (!snapshot || snapshot.data.blob !== s.blob) throw new Error('來源列與原始 CSV 快照連結不完整，停止合併。'); }
+  }
   for (const o of b.ops) if (o.type === 'source' && !Object.hasOwn(b.blobs, o.data.blob)) throw new Error('原始 CSV 快照缺少檔案內容，停止合併。');
   return b;
 }
