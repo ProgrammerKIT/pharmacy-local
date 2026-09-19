@@ -200,7 +200,13 @@ export function identity(data) {
   if (key && !key.startsWith('short:')) return `map:${key}`;
   return data.name.trim() && data.address?.trim() ? `address:${comparisonText(data.name)}\n${comparisonText(data.address)}` : '';
 }
-export const SOP1_VERSION = '1.0.0';
+export function identityRuleAllows(store, incoming) {
+  const key = mapKey(incoming.mapUrl || '');
+  if (!key || key.startsWith('short:')) return false;
+  const name = comparisonText(incoming.name), address = comparisonText(incoming.address);
+  return (store.csvIdentityRules || []).some(rule => rule.decision === 'same' && rule.mapKey === key && rule.names.some(alias => comparisonText(alias) === name) && (!address || !rule.addresses.length || rule.addresses.some(value => comparisonText(value) === address)));
+}
+export const SOP1_VERSION = '1.0.1';
 export const sourceListKey = list => normalizeListName(list).normalize('NFKC').trim().toLocaleLowerCase('zh-Hant');
 export function sourceTextFields(file, raw) {
   const mapped = new Set(Object.values(file.mapping).filter(i => i >= 0));
@@ -238,7 +244,7 @@ function prepareSOP1(plan, records) {
     if (row.errors.length) { row.choice = 'review'; continue; }
     if (row.choice === 'skip') continue;
     const other = row.choice.startsWith('store:') ? stores.get(row.choice.slice(6)) : row.choice.startsWith('row:') ? rows.get(row.choice.slice(4))?.data : null;
-    const contradictions = other ? profileContradictions(row.data, other) : [];
+    const contradictions = other && !identityRuleAllows(other, row.data) ? profileContradictions(row.data, other) : [];
     // Name-only classification is a review aid, not a deletion or customer judgment.
     const scopeQuestion = !/藥|醫|診所|健康|保健/.test(row.data.name) && /咖啡|餐廳|餐館|飯店|旅館|酒店|民宿|公園|機場|牛排|麵店|早午餐|烤肉|餐酒|牛肉麵|車站|咖哩|拉麵/.test(row.data.name);
     const weakIdentity = !identity(row.data);
@@ -349,7 +355,14 @@ export async function planCSV(files, bundle) {
   const records = project(bundle), stores = records.filter(r => r.type === 'store'), visits = records.filter(r => r.type === 'visit' && !r.deleted && !r.conflict), seenBatch = new Set();
   const rows = [], batchIdentities = new Map(), batchNames = new Map(), storeIndex = new Map(), rowIndex = new Map(), exactIndex = new Map();
   const add = (index, key, item) => { if (!key) return; const group = index.get(key) || []; group.push(item); index.set(key, group); };
-  for (const store of stores) { add(exactIndex, identity(store), store); for (const key of profileKeys(store)) add(storeIndex, key, store); }
+  for (const store of stores) {
+    add(exactIndex, identity(store), store);
+    for (const key of profileKeys(store)) add(storeIndex, key, store);
+    const primaryName = comparisonText(store.name), aliasKeys = new Set((store.csvAliases || []).map(comparisonText).filter(name => name && name !== primaryName));
+    // A saved alias with changed identity evidence is a review signal only. It must
+    // never silently create a second store or reuse the old adjudication.
+    for (const name of aliasKeys) add(storeIndex, 'name:' + name, store);
+  }
   for (let fi = 0; fi < files.length; fi++) {
     const f = files[fi];
     validateMapping(f);
@@ -441,6 +454,12 @@ export function buildCSVImport(plan, bundle, device) {
         if (row.review.pending) state.data.csvIdentityPending = true;
       }
       state.data.csvAliases = [...new Set([...(state.data.csvAliases || []), ...row.review.names])];
+      if (row.review.identityRule) {
+        const rules = state.data.csvIdentityRules || [], incoming = row.review.identityRule;
+        const priorRule = rules.find(rule => rule.mapKey === incoming.mapKey);
+        if (priorRule && JSON.stringify(priorRule) !== JSON.stringify(incoming)) throw new Error('既有門市的身分裁定證據不同，請重新核對後再匯入。');
+        if (!priorRule) state.data.csvIdentityRules = [...rules, structuredClone(incoming)];
+      }
     }
     for (const field of row.fillFields || []) {
       const original = initial.find(s => s.type === 'store' && s.id === id);
@@ -518,7 +537,13 @@ export async function prepareReviewedCSV(text) {
     if (members.some(r => r.sop1.metadata || r.errors.length)) fail();
     const names = [...new Set(members.map(r => r.data.name))];
     if (names.length > 100) fail();
-    groups.push({ id: g.id, label: g.label, pending: g.pending, rows: members.map(r => r.key), names });
+    let identityRule;
+    if (g.identityRule !== undefined) {
+      const rule = g.identityRule, memberKeys = [...new Set(members.map(r => mapKey(r.data.mapUrl || '')).filter(Boolean))];
+      if (!rule || rule.decision !== 'same' || typeof rule.mapKey !== 'string' || !rule.mapKey || rule.mapKey.startsWith('short:') || memberKeys.length !== 1 || memberKeys[0] !== rule.mapKey || typeof rule.label !== 'string' || rule.label !== g.label || typeof rule.source !== 'string' || !rule.source || rule.source.length > 200 || typeof rule.decidedAt !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(rule.decidedAt) || !Array.isArray(rule.names) || rule.names.length < 2 || rule.names.length > 100 || rule.names.some(n => typeof n !== 'string' || !n.trim() || n.length > 200 || !names.includes(n)) || new Set(rule.names).size !== names.length || !names.every(n => rule.names.includes(n)) || !Array.isArray(rule.addresses) || rule.addresses.length > 100 || rule.addresses.some(a => typeof a !== 'string' || !a.trim() || a.length > 2000)) fail();
+      identityRule = structuredClone(rule);
+    }
+    groups.push({ id: g.id, label: g.label, pending: g.pending, rows: members.map(r => r.key), names, ...(identityRule ? { identityRule } : {}) });
   }
   const excluded = input.excluded.map(ref => member(ref).key);
   if (seen.size !== base.rows.length) fail();
@@ -551,7 +576,7 @@ export async function planReviewedCSV(review, bundle) {
     const chosen = matches.length === 1 && !matches[0].deleted && !matches[0].conflict ? 'store:' + matches[0].id : matches.length || related.length ? 'review' : 'new';
     g.candidates = [...new Set([...known, ...sourced, ...exact, ...related])].map(s => s.id);
     for (const row of members) {
-      row.review = { key: decisionKey, group: g.id, pending: g.pending, label: g.label, names: g.names };
+      row.review = { key: decisionKey, group: g.id, pending: g.pending, label: g.label, names: g.names, ...(g.identityRule ? { identityRule: structuredClone(g.identityRule) } : {}) };
       row.data.name = g.label; // Display label only. CSV cells/fingerprints are never changed.
       row.reason = chosen === 'review' ? '與App既有門市有可能重疊或衝突，請對照原文後指定整組去向' : chosen === 'new' ? '依已核對分組新增；仍須確認本機匯入預覽' : '依原始來源或地點與名稱對照App既有門市；既有名稱保持不變';
     }

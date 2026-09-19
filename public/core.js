@@ -50,6 +50,7 @@ export function validData(type, d) {
   if (d.csvIdentityPending !== undefined && (type !== 'store' || typeof d.csvIdentityPending !== 'boolean')) return false;
   if (d.csvDecisionGroups !== undefined && (type !== 'store' || !Array.isArray(d.csvDecisionGroups) || d.csvDecisionGroups.length > 200 || !d.csvDecisionGroups.every(v => str(v, 200)))) return false;
   if (d.csvAliases !== undefined && (type !== 'store' || !Array.isArray(d.csvAliases) || d.csvAliases.length > 100 || !d.csvAliases.every(v => str(v, 200)))) return false;
+  if (d.csvIdentityRules !== undefined && (type !== 'store' || !Array.isArray(d.csvIdentityRules) || d.csvIdentityRules.length > 200 || !d.csvIdentityRules.every(r => plain(r) && r.decision === 'same' && str(r.mapKey, 500) && r.mapKey && str(r.label, 200) && r.label.trim() && str(r.source, 200) && str(r.decidedAt, 40) && Array.isArray(r.names) && r.names.length > 1 && r.names.length <= 100 && r.names.every(v => str(v, 200) && v.trim()) && Array.isArray(r.addresses) && r.addresses.length <= 100 && r.addresses.every(v => str(v, 2000) && v.trim())))) return false;
   if (d.qualityDistinct !== undefined && (type !== 'store' || !Array.isArray(d.qualityDistinct) || d.qualityDistinct.length > 200 || !d.qualityDistinct.every(r => plain(r) && str(r.store, 100) && str(r.self, 6000) && str(r.other, 6000)))) return false;
   if (['ruleKey', 'csvTag', 'mentionTerm'].some(k => d[k] !== undefined && !str(d[k], 200))) return false;
   if (d.csvStream !== undefined && !str(d.csvStream, 500)) return false;

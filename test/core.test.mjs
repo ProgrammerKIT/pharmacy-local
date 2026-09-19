@@ -50,3 +50,14 @@ test('attachments merge with history and missing bytes fail closed', async () =>
   assert.equal(project(merge(a, fixture())).length, 2);
   const bad = structuredClone(a); delete bad.blobs[hash]; assert.throws(() => validateBundle(bad));
 });
+test('store identity rulings require exact, bounded adjudication evidence', () => {
+  const base={...store,address:'',mapUrl:''};
+  const valid={decision:'same',mapKey:'feature:0x1:0x2',label:'虛構藥局',names:['虛構藥局','虛構大藥局'],addresses:[],source:'使用者裁定',decidedAt:'2026-09-19'};
+  assert.doesNotThrow(()=>revision('store','s',{...base,csvIdentityRules:[valid]},[],'mac'));
+  for(const change of [
+    r=>{r.decision='automatic';},
+    r=>{r.names=['虛構藥局'];},
+    r=>{r.addresses=[''];},
+    r=>{r.mapKey='';}
+  ]) { const rule=structuredClone(valid);change(rule);assert.throws(()=>revision('store','s',{...base,csvIdentityRules:[rule]},[],'mac'),/不完整/); }
+});

@@ -23,7 +23,7 @@ export async function compileReviewedPackage(decisions, sourceDirectory) {
     if(!['擬納入','擬納入・待確認'].includes(g.status)) throw new Error('仍有未裁定組。');
     const members=g.rows.map(key=>rows.get(key));
     if(members.some(r=>!r||r.status!==g.status)) throw new Error('組與來源列的裁定不同。');
-    groups.push({id:'g_'+(await hashBytes(new TextEncoder().encode(g.key))).slice(0,32),label:g.displayName||g.names.join('／'),pending:g.status==='擬納入・待確認',rows:members.map(ref)});
+    groups.push({id:'g_'+(await hashBytes(new TextEncoder().encode(g.key))).slice(0,32),label:g.displayName||g.names.join('／'),pending:g.status==='擬納入・待確認',rows:members.map(ref),...(g.identityRule?{identityRule:g.identityRule}:{})});
   }
   if(decisions.rows.some(r=>!['擬納入','擬納入・待確認','本批排除'].includes(r.status))) throw new Error('仍有未裁定來源列。');
   const result={format:REVIEW_FORMAT,files,groups,excluded:decisions.rows.filter(r=>r.status==='本批排除').map(ref),decisions:decisions.rulings?.map(r=>({item:r.item,decision:r.decision,originalDecision:r.originalDecision,source:r.decisionSource,refs:r.refs}))};

@@ -72,6 +72,28 @@ test('combined aliases are one candidate, but existing conflicting store heads b
   const merged=merge(first,remote), plan=await planReviewedCSV(review,merged);
   assert.equal(plan.reviewGroups[0].choice,'review');assert.throws(()=>buildCSVImport(plan,merged,'mac'),/SOP1/);
 });
+test('a first-time identity ruling is reused only for the same map evidence and approved names',async()=>{
+  const featureURL='https://www.google.com/maps/place/example/data=!4m2!3m1!1s0xabc:0xdef';
+  const identityRule={decision:'same',mapKey:'feature:0xabc:0xdef',label:'健康人生藥局 信義吳興店',names:['健康人生藥局','健康人生藥局 信義吳興店'],addresses:[],source:'使用者裁定',decidedAt:'2026-09-19'};
+  const input=await packet([
+    `Title,Note,URL\n健康人生藥局,A,${featureURL}`,
+    `Title,Note,URL\n健康人生藥局 信義吳興店,B,${featureURL}`
+  ],[{label:identityRule.label,pending:false,identityRule,rows:['0:0','1:0']}]);
+  const b=emptyBundle('r'), review=await read(input), first=buildCSVImport(await planReviewedCSV(review,b),b,'mac').bundle;
+  const store=project(first).find(r=>r.type==='store');
+  assert.equal(project(first).filter(r=>r.type==='store').length,1);
+  assert.deepEqual(store.csvIdentityRules,[identityRule]);
+  assert.deepEqual(store.csvAliases,identityRule.names);
+
+  const known=await prepareCSV('後續.csv',enc.encode(`Title,Note,URL\n健康人生藥局,C,${featureURL}`));
+  const knownPlan=await planCSV([known],first);
+  assert.equal(knownPlan.rows[0].choice,`store:${store.id}`);
+
+  const newName=await prepareCSV('後續.csv',enc.encode(`Title,Note,URL\n健康人生藥局 新名稱,C,${featureURL}`));
+  assert.equal((await planCSV([newName],first)).rows[0].choice,'review');
+  const changedID=await prepareCSV('後續.csv',enc.encode('Title,Note,URL\n健康人生藥局,C,https://maps.google.com/?cid=123'));
+  assert.equal((await planCSV([changedID],first)).rows[0].choice,'review');
+});
 test('manual and legacy App text require acknowledgement and are retained in the new version',async()=>{
   const raw=note=>`Title,Note,URL\n虛構藥局,${note},${url}`;
   for(const legacy of [false,true]) {
