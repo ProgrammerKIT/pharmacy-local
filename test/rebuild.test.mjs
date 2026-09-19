@@ -101,9 +101,9 @@ test('adopting a rebuilt snapshot never merges old data and a reviewed import st
   const packet={format:'pharmacy-csv-review-1',files:[{file:file.file,list:file.list,sha256:file.blob,content:b64(file.bytes)}],groups:[{id:'g',label:'虛構新門市',pending:true,rows:[{sha256:file.blob,line:r.line,fingerprint:r.fingerprint}]}],excluded:[]};
   const review=await prepareReviewedCSV(JSON.stringify(packet));
   const imported=buildCSVImport(await planReviewedCSV(review,next.payload.bundle),next.payload.bundle,'mac').bundle;
-  assert.deepEqual(project(imported).map(r=>r.type).sort(),['store','visit']);assert.equal(JSON.stringify(imported).includes('舊庫獨有'),false);
+  assert.deepEqual(project(imported).map(r=>r.type).sort(),['source','store','visit']);assert.equal(JSON.stringify(imported).includes('舊庫獨有'),false);
   assert.equal(project(imported).find(r=>r.type==='store').csvIdentityPending,true);
-  assert.deepEqual(buildCSVImport(await planReviewedCSV(review,imported),imported,'mac').bundle,imported);
+  const repeated=buildCSVImport(await planReviewedCSV(review,imported),imported,'mac');assert.equal(repeated.summary.rows,0);assert.equal(repeated.summary.sourceSnapshots,1);assert.equal(project(repeated.bundle).filter(r=>r.type==='source').length,2);
   const phone=await openRebuiltSnapshot({...paired,snapshot:{...paired.snapshot,envelope:await seal(imported,fresh.key,fresh.meta)}},old.meta.vaultId,PASSWORD,'phone');
   assert.deepEqual(phone.payload.bundle,imported);
 });
