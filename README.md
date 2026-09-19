@@ -1,8 +1,18 @@
-# 藥局關係筆記 v1.5.4 · 門市身分裁定沿用
+# 藥局關係筆記 v1.5.5 · 原始 CSV Source Snapshot
 
 iPhone PWA ＋ Mac 本機 HTTPS 服務。這個公開儲存庫只保存程式，不提供線上客戶資料庫，也不使用 GitHub Pages。先閱讀 UPDATE-GUIDE.txt。已接通 v1.4 自動更新來源的裝置，沿用原 App 即可取得相容更新；尚未安裝更新器才使用 07-Upgrade-v1.4.command。
 
 本交付包是純程式，不附客戶 CSV、加密客戶資料包、客戶備份、裝置憑證或發布私鑰。它會沿用你的 Mac 已有資料與資料格式，新增可選的門市核對紀錄。不能直接雙擊 public/index.html 當成 App 使用。
+
+## v1.5.5 原始 CSV Source Snapshot
+
+- 每次確認提交 CSV 時，每一份原始檔都先建立 append-only Source Snapshot，完整 bytes 以 SHA-256 為鍵加密保存；後續門市合併、人工裁定、文字整理與關聯圖不得回寫來源快照。
+- 即使整份 CSV 的資料列最後全數略過或排除，原始檔仍會保存。相同 bytes 可共用同一 blob，但每次確認提交仍保留一次來源事件。
+- 被納入門市／拜訪的來源列仍保存原始 headers、cells、實體行號與 row fingerprint，並指回本次 Source Snapshot。
+- 「匯入 CSV」頁可查看最近保存的 Source Snapshot 並下載原始 CSV；下載前仍提示明文檔案風險。
+- 相同 CSV 重傳不新增客戶門市或拜訪版本，但會留下新的 Source Snapshot 事件；新 CSV 版本與舊 CSV 版本並存。
+- Source Snapshot record 不允許建立修改版本或刪除版本。現有資料 schema 維持 2；舊資料可直接讀取，但 Mac 與 iPhone 必須先更新到 v1.5.5，再提交新的 Source Snapshot。
+- 資料庫總容量仍為 24 MB；達上限時整批提交失敗，不會自動刪除舊來源。詳細不變條件見 `SOURCE-SNAPSHOT.md`。
 
 ## v1.5.4 門市身分裁定沿用
 
