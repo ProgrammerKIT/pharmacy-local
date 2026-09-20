@@ -64,15 +64,16 @@ function draftState(message, state = '') {
 }
 function recentStores(limit = 6) {
   const latest = new Map();
+  const availableStores = all('store').filter(store => !store.conflict);
   for (const visit of all('visit')) {
     const at = Math.max(0, ...(visit.versions || []).map(v => Date.parse(v.at) || 0));
     latest.set(visit.store, Math.max(latest.get(visit.store) || 0, at));
   }
-  for (const store of all('store')) {
+  for (const store of availableStores) {
     const at = Math.max(0, ...(store.versions || []).map(v => Date.parse(v.at) || 0));
     if (!latest.has(store.id)) latest.set(store.id, at);
   }
-  return all('store').sort((a, b) => (latest.get(b.id) || 0) - (latest.get(a.id) || 0) || a.name.localeCompare(b.name, 'zh-Hant')).slice(0, limit);
+  return availableStores.sort((a, b) => (latest.get(b.id) || 0) - (latest.get(a.id) || 0) || a.name.localeCompare(b.name, 'zh-Hant')).slice(0, limit);
 }
 function captureVisitDraft() {
   const ctx = editorContext; if (!ctx || ctx.type !== 'visit' || !$('editor').open) return null;
@@ -484,6 +485,11 @@ function openSources(type, id) {
 const input = (id, label, value = '', max = 500, required = false) => `<label>${label}<input id="${id}" maxlength="${max}" value="${esc(value)}" ${required ? 'required' : ''} autocomplete="off"></label>`;
 const textarea = (id, label, value = '') => `<label>${label}<textarea id="${id}" maxlength="20000">${esc(value)}</textarea></label>`;
 function openEditor(type, id = null, restoreDraft = null) {
+  if (type === 'visit' && !restoreDraft && payload?.draft?.format === 'visit-draft-1') {
+    const draft = payload.draft;
+    if (id && draft.baseData && id !== draft.id) toast('先開啟尚未完成的草稿，避免覆蓋；完成後再編輯另一筆拜訪。');
+    return openEditor('visit', draft.baseData ? draft.id : null, draft);
+  }
   const old = id ? by(type, id) : null; if (old?.conflict) { openReview(type, id, true); return; }
   editorContext = { type, id: id || uuid(), parents: old?.heads.map(h => h.id) || [], oldData: old ? structuredClone(old.heads[0].data) : null, draftTouched: false };
   const d = editorContext.oldData || {};
@@ -491,10 +497,14 @@ function openEditor(type, id = null, restoreDraft = null) {
   if (type === 'visit') {
     if (restoreDraft?.format === 'visit-draft-1') editorContext = { type, id: restoreDraft.id, parents: [...(restoreDraft.parents || [])], oldData: restoreDraft.baseData ? structuredClone(restoreDraft.baseData) : null, draftTouched: false };
     const base = editorContext.oldData || d;
-    const selectedStore = restoreDraft?.fields?.store || base.store || (focus.type === 'store' ? focus.id : recentStores(1)[0]?.id || all('store')[0]?.id || '__new__');
-    const orderedStores = [...recentStores(6), ...all('store').filter(s => !recentStores(6).some(r => r.id === s.id))];
+    const selectedStore = restoreDraft?.fields?.store || base.store || (focus.type === 'store' && by('store', focus.id) && !by('store', focus.id).conflict ? focus.id : recentStores(1)[0]?.id || '__new__');
+    const recent = recentStores(6), recentIds = new Set(recent.map(s => s.id));
+    const orderedStores = [...recent, ...all('store').filter(s => !s.conflict && !recentIds.has(s.id))];
     const pick = (kind, selected) => all(kind).map(r => `<label class="check"><input type="checkbox" name="${kind}" value="${esc(r.id)}" ${selected?.includes(r.id) ? 'checked' : ''}>${esc(r.name)}</label>`).join('') || '<p class="muted">先到「人物與主題」新增。</p>';
-    const storeOptions = orderedStores.concat(base.store && by('store', base.store)?.deleted ? [by('store', base.store)] : []).map(s => `<option value="${esc(s.id)}" ${selectedStore === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('') + `<option value="__new__" ${selectedStore === '__new__' ? 'selected' : ''}>＋ 快速新增門市</option>`;
+    const selectedRecord = selectedStore !== '__new__' ? by('store', selectedStore) : null;
+    const selectedUnavailable = selectedStore !== '__new__' && (!selectedRecord || selectedRecord.deleted || selectedRecord.conflict);
+    const unavailableOption = selectedUnavailable ? `<option value="${esc(selectedStore)}" selected disabled>原門市目前不可使用或有衝突，請重新選擇</option>` : '';
+    const storeOptions = unavailableOption + orderedStores.map(s => `<option value="${esc(s.id)}" ${!selectedUnavailable && selectedStore === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('') + `<option value="__new__" ${selectedStore === '__new__' ? 'selected' : ''}>＋ 快速新增門市</option>`;
     $('editor-fields').innerHTML = `<div class="field-grid"><label>門市<select id="f-store">${storeOptions}</select></label><label>拜訪日期（未知可留空）<input type="date" id="f-date" value="${esc(base.date ?? new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10))}"></label></div><div id="quick-store-fields" class="quick-store" hidden><h3>快速新增門市</h3>${input('f-new-store-name', '門市名稱（必要）', '', 200)}${input('f-new-store-district', '地區（可稍後補）', '', 500)}${input('f-new-store-map-url', 'Google Maps 網址（可稍後補）', '', 2000)}<label class="check"><input id="f-new-store-pending" type="checkbox" checked> 身分待確認；先保存門市與拜訪，不自動合併</label><p class="muted">除名稱外都可稍後補。待確認門市不參與關聯分析，之後可在門市資料核實。</p></div><label>資訊來源<select id="f-source">${[...new Set(['藥師主動提及', '詢問後回覆', '現場觀察', '其他', ...(base.source ? [base.source] : [])])].map(x => `<option ${x === base.source ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></label>${textarea('f-text', '原始拜訪內容', base.text)}${textarea('f-next', '下次跟進', base.next)}<label>相關主題</label><div class="check-grid">${pick('topic', base.topics)}</div><label>提及人物</label><div class="check-grid">${pick('person', base.people)}</div><label>附件（每個上限 3 MB）<input type="file" id="f-files" multiple accept="image/jpeg,image/png,image/webp,image/heic,application/pdf"></label><p class="muted">支援圖片與 PDF。新選的附件檔案無法靠草稿跨 App 關閉／重新開啟保存；完成紀錄前若 App 被系統終止，請重新選擇附件。舊附件取消勾選可從此版本移除，歷史仍保留。</p><div class="check-grid">${(base.attachments || []).map((a, i) => `<label class="check"><input type="checkbox" name="keep-attachment" value="${i}" checked>${esc(a.name)}</label>`).join('')}</div><p id="draft-save-state" class="draft-state" role="status">尚未變更</p><p class="muted">文字與欄位變更會自動加密保存為本機草稿；「完成紀錄」才建立／更新正式拜訪版本。</p>`;
     $('editor-save').textContent = '完成紀錄';
     toggleQuickStoreFields();
