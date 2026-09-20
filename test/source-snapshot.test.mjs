@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { emptyBundle, project, validateBundle, revision, b64 } from '../public/core.js';
 import { prepareCSV, planCSV, buildCSVImport } from '../public/csv.js';
+import { createCSVImport } from '../public/csv-ui.js';
 
 const enc = new TextEncoder();
 const raw = 'Title,Note,URL\n虛構藥局,原始內容,https://maps.google.com/?cid=1234567';
@@ -58,4 +59,31 @@ test('reconfirming identical CSV keeps customer data idempotent but records the 
   assert.equal(Object.keys(second.blobs).length, Object.keys(first.blobs).length);
   assert.equal(secondResult.summary.rows, 0);
   assert.equal(secondResult.summary.sourceSnapshots, 1);
+});
+
+
+test('Source Snapshot panel refreshes after encrypted state becomes available', async () => {
+  let state = null;
+  const host = {
+    innerHTML: '',
+    addEventListener() {},
+    querySelector() { return null; }
+  };
+  const ui = createCSVImport({
+    host,
+    getState: () => state,
+    run: async fn => fn(),
+    saveBundle: async () => {},
+    notify: () => {}
+  });
+  assert.match(host.innerHTML, /已保存原始 CSV · 0 份/);
+
+  const b = emptyBundle('refresh-source'), f = await file();
+  const first = buildCSVImport(await planCSV([f], b), b, 'mac').bundle;
+  state = { bundle: first, device: 'mac' };
+  ui.refresh();
+
+  assert.match(host.innerHTML, /已保存原始 CSV · 1 份/);
+  assert.match(host.innerHTML, /虛構清單\.csv/);
+  assert.match(host.innerHTML, new RegExp(f.blob.slice(0, 12)));
 });
