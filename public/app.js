@@ -96,7 +96,8 @@ function applyVisitDraft(draft) {
   set('f-new-store-name', f.newStoreName); set('f-new-store-district', f.newStoreDistrict); set('f-new-store-map-url', f.newStoreMapUrl);
   if ($('f-new-store-pending')) $('f-new-store-pending').checked = f.newStorePending !== false;
   for (const name of ['topic', 'person', 'keep-attachment']) {
-    const selected = new Set(f[name === 'keep-attachment' ? 'keepAttachments' : name + 's'] || []);
+    const field = name === 'topic' ? 'topics' : name === 'person' ? 'people' : 'keepAttachments';
+    const selected = new Set(f[field] || []);
     document.querySelectorAll(`#editor [name="${name}"]`).forEach(el => { el.checked = selected.has(el.value); });
   }
   toggleQuickStoreFields();
