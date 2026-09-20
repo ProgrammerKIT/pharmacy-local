@@ -66,6 +66,19 @@ test('matching rows across distinct source lists join one store but keep one not
   assert.equal(project(r.bundle).filter(x => x.type === 'visit').length, 2);
   assert.equal(project(r.bundle).find(x => x.type === 'store').lists.length, 2);
 });
+test('unchanged Google source never overwrites or duplicates an App manual edit', async () => {
+  const base = emptyBundle('test'), first = buildCSVImport(await planCSV([await fixture(csv, 'CS清單.csv')], base), base, 'mac');
+  const bundle = structuredClone(first.bundle), old = project(bundle).find(r => r.type === 'visit');
+  bundle.ops.push(revision('visit', old.id, { ...old.heads[0].data, text: 'App 日常補充後的有效文字' }, old.heads.map(h => h.id), 'phone'));
+  const before = project(bundle).find(r => r.type === 'visit');
+  assert.equal(before.googleText, old.googleText); assert.equal(before.versions.length, 2);
+  const plan = await planCSV([await fixture(csv, 'CS清單(2).csv')], bundle);
+  const repeated = buildCSVImport(plan, bundle, 'mac'), current = project(repeated.bundle).find(r => r.type === 'visit');
+  assert.equal(repeated.summary.sourceSnapshots, 1);
+  assert.equal(repeated.summary.updatedNotes, 0); assert.equal(repeated.summary.notes, 0);
+  assert.equal(current.id, old.id); assert.equal(current.text, 'App 日常補充後的有效文字');
+  assert.equal(current.googleText, old.googleText); assert.equal(current.versions.length, 2);
+});
 test('a Google update does not overwrite text manually edited in the App', async () => {
   const base = emptyBundle('test'), first = buildCSVImport(await planCSV([await fixture(csv, 'CS清單.csv')], base), base, 'mac');
   const bundle = structuredClone(first.bundle), old = project(bundle).find(r => r.type === 'visit');
