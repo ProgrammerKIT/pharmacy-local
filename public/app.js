@@ -24,7 +24,7 @@ const name = (type, id) => by(type, id)?.name || (type === 'store' ? '已刪除�
 const dateText = at => at ? new Date(at).toLocaleString('zh-TW', { hour12: false }) : '尚未同步';
 function toast(message) { $('toast').textContent = message; $('toast').classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').classList.remove('show'), 6500); }
 function buttons(disabled) {
-  document.querySelectorAll('button, #csv-view input, #csv-view select').forEach(el => {
+  document.querySelectorAll('button, #csv-view input, #csv-view select, #editor input, #editor select, #editor textarea').forEach(el => {
     if (el.dataset.close) return;
     if (disabled) { el.dataset.busyDisabled = el.disabled ? '1' : '0'; el.disabled = true; }
     else if (el.dataset.busyDisabled !== undefined) { el.disabled = el.dataset.busyDisabled === '1'; delete el.dataset.busyDisabled; }
