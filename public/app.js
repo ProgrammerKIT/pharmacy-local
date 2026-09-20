@@ -115,6 +115,7 @@ async function persistVisitDraftNow() {
   try {
     await persist({ ...payload, draft });
     if (editorContext?.type === 'visit' && editorContext.id === draft.id) editorContext.draftTouched = false;
+    status();
     draftState('已存於本機 · ' + dateText(draft.savedAt), 'saved');
   } catch (e) {
     $('save-state').textContent = '手機保存失敗：' + e.message;
@@ -205,7 +206,7 @@ function lockNow(reopen = !document.hidden) {
   resetStoreFilters();
   for (const u of objectURLs) URL.revokeObjectURL(u); objectURLs = [];
   document.querySelectorAll('dialog').forEach(d => d.close());
-  for (const id of ['quality-content', 'focus-header', 'graph', 'graph-pager', 'focus-detail', 'evidence-list', 'store-list', 'visit-list', 'customer-list', 'entity-list', 'trash-list', 'review-body', 'editor-fields', 'conflict-list', 'connection-detail', 'program-detail', 'sync-success-detail', 'sync-failure-detail', 'connection-check', 'device-label', 'sync-result', 'storage-detail']) $(id).replaceChildren();
+  for (const id of ['quality-content', 'focus-header', 'graph', 'graph-pager', 'focus-detail', 'evidence-list', 'store-list', 'visit-list', 'recent-store-list', 'draft-banner-text', 'customer-list', 'entity-list', 'trash-list', 'review-body', 'editor-fields', 'conflict-list', 'connection-detail', 'program-detail', 'local-save-detail', 'mac-ack-detail', 'sync-success-detail', 'sync-failure-detail', 'connection-check', 'device-label', 'sync-result', 'storage-detail']) $(id).replaceChildren();
   $('connection-check').hidden = true;
   $('editor-form').reset(); $('gate-form').reset(); $('rebuild-connect-form').reset(); $('password').value = ''; $('backup-file').value = '';
   $('workspace').hidden = true; $('gate').hidden = false;
@@ -278,14 +279,14 @@ function status() {
   const conflicts = records.filter(r => r.conflict).length;
   const lastSuccess = payload.lastSync ? dateText(payload.lastSync) : '尚未成功同步';
   $('save-state').textContent = '手機已保存：本機加密資料可用' + (payload.draft ? ' · 有未完成草稿' : '');
-  const macAck = payload.dirty ? `Mac 尚未確認收到這次已完成的變更 · 最近成功同步：${lastSuccess}` : `Mac 已確認收到已完成紀錄 · 資料版本 ${payload.serverVersion || 0} · 最近成功同步：${lastSuccess}`;
+  const macAck = !payload.lastSync ? 'Mac 尚未確認收到' : payload.dirty ? `Mac 尚未確認收到這次已完成的變更 · 最近成功同步：${lastSuccess}` : `Mac 已確認收到已完成紀錄 · 資料版本 ${payload.serverVersion || 0} · 最近成功同步：${lastSuccess}`;
   $('sync-state').textContent = lastError ? `Mac 同步未完成：${lastError} · 最近成功同步：${lastSuccess}` : macAck + (payload.draft ? '；未完成草稿僅存手機' : '');
   $('conflict-link').hidden = !conflicts; $('conflict-link').textContent = `${conflicts} 筆衝突待確認`;
   $('device-label').textContent = payload.deviceName;
   $('connection-detail').textContent = payload.deviceName + ' · ' + location.hostname + ' · 本機已確認的資料版本 ' + (payload.serverVersion || 0);
   $('program-detail').textContent = programDetail();
   $('local-save-detail').textContent = '手機已保存：' + (payload.draft ? '有 1 份未完成草稿；' : '') + (payload.dirty ? '有已完成紀錄等待 Mac 確認。' : '沒有已完成紀錄等待傳送。');
-  $('mac-ack-detail').textContent = payload.dirty ? `Mac 已確認收到至資料版本 ${payload.serverVersion || 0}；本機仍有變更尚未確認。` : `Mac 已確認收到目前資料版本 ${payload.serverVersion || 0}。`;
+  $('mac-ack-detail').textContent = !payload.lastSync ? 'Mac 尚未確認收到此裝置的資料。' : payload.dirty ? `Mac 已確認收到至資料版本 ${payload.serverVersion || 0}；本機仍有變更尚未確認。` : `Mac 已確認收到目前資料版本 ${payload.serverVersion || 0}。`;
   $('sync-success-detail').textContent = (payload.lastSync ? '最近成功同步：' + lastSuccess : '尚未成功同步') + (payload.dirty ? '；另有本機變更等待同步。' : '') + (syncWarning ? '；同步提醒：' + syncWarning : '');
   $('sync-failure-detail').textContent = lastSyncFailure ? dateText(lastSyncFailure.at) + ' · ' + lastSyncFailure.message + (!lastError ? '（之後已成功同步）' : '') : '本次開啟尚無同步失敗紀錄。';
   $('storage-detail').textContent = `離線介面：${offlineReady ? '已備妥' : '尚待確認，請先保持連線'}。持久儲存：${storagePersistent ? '已獲允許' : '瀏覽器尚未允許，請定期同步及備份'}。資料 ${(new TextEncoder().encode(JSON.stringify(payload.bundle)).length / 1048576).toFixed(2)} / 24 MB（包含歷史與附件）。`;
@@ -674,7 +675,7 @@ document.addEventListener('click', event => {
   if (b.dataset.close) {
     if (b.dataset.close === 'rebuild-dialog' && busy) return;
     if (b.dataset.close === 'editor' && editorContext?.type === 'visit') return run(async () => {
-      await flushVisitDraft(); $('editor').close(); editorContext = null;
+      await flushVisitDraft(); $('editor').close(); editorContext = null; render();
     }, 'editor-error');
     $(b.dataset.close).close(); if (b.dataset.close === 'rebuild-dialog') $('rebuild-connect-form').reset(); if (b.dataset.close === 'editor') editorContext = null; return;
   }
