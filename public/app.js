@@ -10,12 +10,13 @@ const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const titles = { explore: '關聯探索', visits: '拜訪紀錄', stores: '客戶門市', entities: '人物與主題', csv: '匯入 CSV', quality: '資料整理', sync: '同步與備份', trash: '回收桶' };
 const kinds = { store: '門市', visit: '拜訪', person: '人物', topic: '主題' };
-let key = null, meta = null, payload = null, slot = null, localRevision = 0, busy = false, pendingLock = false, activeView = 'explore';
+let key = null, meta = null, payload = null, slot = null, localRevision = 0, busy = false, pendingLock = false, activeView = 'visits';
 let focus = { type: 'topic', id: '' }, graphPage = 0, trail = [], records = [], editorContext = null, toastTimer, autoTimer, objectURLs = [];
 let lastError = '', offlineReady = false, storagePersistent = false, autoFetching = false, gateOpening = false;
 let qualityTab = 'duplicates', qualityField = '', qualityPage = 0, qualityCache = null, qualityReview = null;
 let storeFilters = { query: '', district: '', kind: '', groups: [] };
 let updateHolding = false, macProgram = null, lastSyncFailure = null, syncWarning = '';
+let draftTimer = null, draftSaveChain = Promise.resolve();
 const csvImport = createCSVImport({ host: $('csv-view'), getState: () => payload, run, saveBundle: async bundle => { await persist({ ...payload, bundle, dirty: true }); render(); }, notify: toast, exportReport: report => download(JSON.stringify({ ...report, appVersion: APP_VERSION }, null, 2), 'pharmacy-import-preview.json', 'application/json'), downloadSource: (blob, filename) => { if (!confirm('原始 CSV 是明文檔案。請確認下載到自己的本機資料夾，避開 iCloud Drive。')) return; download(unb64(payload.bundle.blobs[blob]), filename.replace(/[\/\\]/g, '_'), 'application/octet-stream'); } });
 const all = type => records.filter(r => r.type === type && (!r.deleted || r.conflict));
 const by = (type, id) => records.find(r => r.type === type && r.id === id);
@@ -55,7 +56,86 @@ async function persist(next) {
   const envelope = await seal(next, key, meta, 'device');
   const rev = await writeLocal(envelope, localRevision, key);
   localRevision = rev; slot = { envelope, revision: rev, unlockKey: key }; payload = next;
-  $('save-state').textContent = '已加密儲存於本機';
+  $('save-state').textContent = '手機已保存：已加密儲存於本機';
+}
+function draftState(message, state = '') {
+  const el = $('draft-save-state'); if (!el) return;
+  el.textContent = message; el.dataset.state = state;
+}
+function recentStores(limit = 6) {
+  const latest = new Map();
+  for (const visit of all('visit')) {
+    const at = Math.max(0, ...(visit.versions || []).map(v => Date.parse(v.at) || 0));
+    latest.set(visit.store, Math.max(latest.get(visit.store) || 0, at));
+  }
+  for (const store of all('store')) {
+    const at = Math.max(0, ...(store.versions || []).map(v => Date.parse(v.at) || 0));
+    if (!latest.has(store.id)) latest.set(store.id, at);
+  }
+  return all('store').sort((a, b) => (latest.get(b.id) || 0) - (latest.get(a.id) || 0) || a.name.localeCompare(b.name, 'zh-Hant')).slice(0, limit);
+}
+function captureVisitDraft() {
+  const ctx = editorContext; if (!ctx || ctx.type !== 'visit' || !$('editor').open) return null;
+  const val = id => $(id)?.value ?? '';
+  const checked = name => [...document.querySelectorAll(`#editor [name="${name}"]:checked`)].map(el => el.value);
+  return {
+    format: 'visit-draft-1', savedAt: new Date().toISOString(), id: ctx.id, parents: [...ctx.parents],
+    baseData: ctx.oldData ? structuredClone(ctx.oldData) : null,
+    fields: {
+      store: val('f-store'), date: val('f-date'), source: val('f-source'), text: $('f-text')?.value ?? '', next: $('f-next')?.value ?? '',
+      topics: checked('topic'), people: checked('person'), keepAttachments: checked('keep-attachment'),
+      newStoreName: val('f-new-store-name'), newStoreDistrict: val('f-new-store-district'), newStoreMapUrl: val('f-new-store-map-url'),
+      newStorePending: $('f-new-store-pending')?.checked !== false
+    }
+  };
+}
+function applyVisitDraft(draft) {
+  if (!draft || draft.format !== 'visit-draft-1' || !draft.fields) return;
+  const f = draft.fields, set = (id, value) => { const el = $(id); if (el && value !== undefined) el.value = value; };
+  set('f-store', f.store); set('f-date', f.date); set('f-source', f.source); set('f-text', f.text); set('f-next', f.next);
+  set('f-new-store-name', f.newStoreName); set('f-new-store-district', f.newStoreDistrict); set('f-new-store-map-url', f.newStoreMapUrl);
+  if ($('f-new-store-pending')) $('f-new-store-pending').checked = f.newStorePending !== false;
+  for (const name of ['topic', 'person', 'keep-attachment']) {
+    const selected = new Set(f[name === 'keep-attachment' ? 'keepAttachments' : name + 's'] || []);
+    document.querySelectorAll(`#editor [name="${name}"]`).forEach(el => { el.checked = selected.has(el.value); });
+  }
+  toggleQuickStoreFields();
+  draftState('已存於本機 · ' + dateText(draft.savedAt), 'saved');
+}
+function toggleQuickStoreFields() {
+  const box = $('quick-store-fields'), select = $('f-store'); if (!box || !select) return;
+  box.hidden = select.value !== '__new__';
+}
+async function persistVisitDraftNow() {
+  clearTimeout(draftTimer); draftTimer = null;
+  const draft = captureVisitDraft(); if (!draft || !payload) return;
+  draftState('儲存中…', 'saving');
+  try {
+    await persist({ ...payload, draft });
+    draftState('已存於本機 · ' + dateText(draft.savedAt), 'saved');
+  } catch (e) {
+    draftState('儲存失敗：' + e.message, 'error');
+    throw e;
+  }
+}
+function scheduleVisitDraftSave() {
+  if (!editorContext || editorContext.type !== 'visit') return;
+  draftState('儲存中…', 'saving'); clearTimeout(draftTimer);
+  draftTimer = setTimeout(() => {
+    draftSaveChain = draftSaveChain.catch(() => {}).then(persistVisitDraftNow).catch(() => {});
+  }, 350);
+}
+function flushVisitDraft() {
+  if (!editorContext || editorContext.type !== 'visit') return Promise.resolve();
+  clearTimeout(draftTimer); draftTimer = null;
+  draftSaveChain = draftSaveChain.catch(() => {}).then(persistVisitDraftNow);
+  return draftSaveChain;
+}
+function resumeVisitDraft() {
+  const draft = payload?.draft;
+  if (!draft || draft.format !== 'visit-draft-1') return toast('目前沒有可恢復的草稿。');
+  const id = draft.baseData ? draft.id : null;
+  openEditor('visit', id, draft);
 }
 async function initializeOrUnlock(event) {
   event.preventDefault(); await run(async () => {
@@ -93,7 +173,7 @@ async function openWorkspace() {
   $('gate').hidden = true; $('workspace').hidden = false;
   document.body.classList.toggle('privacy-veil', pendingLock);
   try { storagePersistent = await navigator.storage?.persist?.() || false; } catch {}
-  render(); clearInterval(autoTimer);
+  switchView('visits'); clearInterval(autoTimer);
   autoTimer = setInterval(autoSync, 15000);
 }
 async function autoSync() {
@@ -191,13 +271,17 @@ function recordSyncFailure(error) {
 function status() {
   if (!payload) return;
   const conflicts = records.filter(r => r.conflict).length;
-  const lastSuccess = payload.lastSync ? `最近成功同步：${dateText(payload.lastSync)}` : '尚未成功同步';
-  $('sync-state').textContent = lastError ? `同步未完成：${lastError} ${lastSuccess}` : payload.dirty ? `本機有變更，等待同步。${lastSuccess}` : lastSuccess;
+  const lastSuccess = payload.lastSync ? dateText(payload.lastSync) : '尚未成功同步';
+  $('save-state').textContent = '手機已保存：本機加密資料可用' + (payload.draft ? ' · 有未完成草稿' : '');
+  const macAck = payload.dirty ? `Mac 尚未確認收到這次變更 · 上次成功 ${lastSuccess}` : `Mac 已確認收到 · 資料版本 ${payload.serverVersion || 0} · ${lastSuccess}`;
+  $('sync-state').textContent = lastError ? `Mac 同步未完成：${lastError} · 上次成功 ${lastSuccess}` : macAck;
   $('conflict-link').hidden = !conflicts; $('conflict-link').textContent = `${conflicts} 筆衝突待確認`;
   $('device-label').textContent = payload.deviceName;
   $('connection-detail').textContent = payload.deviceName + ' · ' + location.hostname + ' · 本機已確認的資料版本 ' + (payload.serverVersion || 0);
   $('program-detail').textContent = programDetail();
-  $('sync-success-detail').textContent = lastSuccess + (payload.dirty ? '；另有本機變更等待同步。' : '') + (syncWarning ? '；同步提醒：' + syncWarning : '');
+  $('local-save-detail').textContent = '手機已保存：' + (payload.draft ? '有 1 份未完成草稿；' : '') + (payload.dirty ? '有已完成紀錄等待 Mac 確認。' : '沒有已完成紀錄等待傳送。');
+  $('mac-ack-detail').textContent = payload.dirty ? `Mac 已確認收到至資料版本 ${payload.serverVersion || 0}；本機仍有變更尚未確認。` : `Mac 已確認收到目前資料版本 ${payload.serverVersion || 0}。`;
+  $('sync-success-detail').textContent = (payload.lastSync ? '最近成功同步：' + lastSuccess : '尚未成功同步') + (payload.dirty ? '；另有本機變更等待同步。' : '') + (syncWarning ? '；同步提醒：' + syncWarning : '');
   $('sync-failure-detail').textContent = lastSyncFailure ? dateText(lastSyncFailure.at) + ' · ' + lastSyncFailure.message + (!lastError ? '（之後已成功同步）' : '') : '本次開啟尚無同步失敗紀錄。';
   $('storage-detail').textContent = `離線介面：${offlineReady ? '已備妥' : '尚待確認，請先保持連線'}。持久儲存：${storagePersistent ? '已獲允許' : '瀏覽器尚未允許，請定期同步及備份'}。資料 ${(new TextEncoder().encode(JSON.stringify(payload.bundle)).length / 1048576).toFixed(2)} / 24 MB（包含歷史與附件）。`;
 }
@@ -377,7 +461,14 @@ function drawGraph() {
   });
   $('graph').innerHTML = `<title>${esc(r.name)}的相關節點</title>${edges}${shapes}<g class="node center"><rect x="${cx - 82}" y="${cy - 30}" width="164" height="60" rx="10"/><text class="sub" x="${cx}" y="${cy - 8}" text-anchor="middle">目前中心 · ${kinds[r.type]}</text><text x="${cx}" y="${cy + 13}" text-anchor="middle">${esc(r.name.slice(0, 11))}</text></g>`;
 }
-function renderVisits() { const q = $('visit-search').value.trim().toLowerCase(); $('visit-list').innerHTML = all('visit').sort((a, b) => b.date.localeCompare(a.date)).filter(v => !q || `${v.text}${v.next}${name('store', v.store)}${v.topics.map(id => name('topic', id)).join()}${v.people.map(id => name('person', id)).join()}`.toLowerCase().includes(q)).map(noteHTML).join('') || '<p class="empty">沒有符合的拜訪紀錄。</p>'; }
+function renderVisits() {
+  const recent = recentStores();
+  $('recent-store-list').innerHTML = recent.map(store => `<button type="button" class="recent-store" data-quick-visit="${esc(store.id)}"><strong>${esc(store.name)}</strong><small>${esc(store.district || '地區未提供')}</small></button>`).join('') || '<p class="muted">完成第一筆拜訪後，最近使用門市會出現在這裡。</p>';
+  $('draft-banner').hidden = !payload?.draft;
+  if (payload?.draft) $('draft-banner-text').textContent = '有一份已成功保存於本機的未完成草稿' + (payload.draft.savedAt ? ' · ' + dateText(payload.draft.savedAt) : '') + '。';
+  const q = $('visit-search').value.trim().toLowerCase();
+  $('visit-list').innerHTML = all('visit').sort((a, b) => b.date.localeCompare(a.date)).filter(v => !q || `${v.text}${v.next}${name('store', v.store)}${v.topics.map(id => name('topic', id)).join()}${v.people.map(id => name('person', id)).join()}`.toLowerCase().includes(q)).map(noteHTML).join('') || '<p class="empty">沒有符合的拜訪紀錄。</p>';
+}
 function sourceButton(r) { return (r.csvSources?.length || r.versions?.some(v => v.data.csvSources?.length)) ? `<button class="text-button" data-csv-source="${r.type}:${esc(r.id)}">查看匯入原始來源</button>` : ''; }
 function openSources(type, id) {
   const r = by(type, id); if (!r) return;
@@ -388,17 +479,25 @@ function openSources(type, id) {
 }
 const input = (id, label, value = '', max = 500, required = false) => `<label>${label}<input id="${id}" maxlength="${max}" value="${esc(value)}" ${required ? 'required' : ''} autocomplete="off"></label>`;
 const textarea = (id, label, value = '') => `<label>${label}<textarea id="${id}" maxlength="20000">${esc(value)}</textarea></label>`;
-function openEditor(type, id = null) {
+function openEditor(type, id = null, restoreDraft = null) {
   const old = id ? by(type, id) : null; if (old?.conflict) { openReview(type, id, true); return; }
   if (type === 'visit' && !all('store').length) { toast('請先新增一間門市。'); openEditor('store'); return; }
   editorContext = { type, id: id || uuid(), parents: old?.heads.map(h => h.id) || [], oldData: old ? structuredClone(old.heads[0].data) : null };
   const d = editorContext.oldData || {};
   $('editor-title').textContent = `${old ? '編輯' : '新增'}${kinds[type]}`; $('editor-error').textContent = '';
   if (type === 'visit') {
-    const selectedStore = d.store || (focus.type === 'store' ? focus.id : all('store')[0]?.id);
+    if (restoreDraft?.format === 'visit-draft-1') editorContext = { type, id: restoreDraft.id, parents: [...(restoreDraft.parents || [])], oldData: restoreDraft.baseData ? structuredClone(restoreDraft.baseData) : null };
+    const base = editorContext.oldData || d;
+    const selectedStore = restoreDraft?.fields?.store || base.store || (focus.type === 'store' ? focus.id : recentStores(1)[0]?.id || all('store')[0]?.id || '__new__');
+    const orderedStores = [...recentStores(6), ...all('store').filter(s => !recentStores(6).some(r => r.id === s.id))];
     const pick = (kind, selected) => all(kind).map(r => `<label class="check"><input type="checkbox" name="${kind}" value="${esc(r.id)}" ${selected?.includes(r.id) ? 'checked' : ''}>${esc(r.name)}</label>`).join('') || '<p class="muted">先到「人物與主題」新增。</p>';
-    $('editor-fields').innerHTML = `<div class="field-grid"><label>門市<select id="f-store">${all('store').concat(d.store && by('store', d.store)?.deleted ? [by('store', d.store)] : []).map(s => `<option value="${esc(s.id)}" ${selectedStore === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select></label><label>拜訪日期（未知可留空）<input type="date" id="f-date" value="${esc(d.date ?? new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10))}"></label></div><label>資訊來源<select id="f-source">${[...new Set(['藥師主動提及', '詢問後回覆', '現場觀察', '其他', ...(d.source ? [d.source] : [])])].map(x => `<option ${x === d.source ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></label>${textarea('f-text', '原始拜訪內容', d.text)}${textarea('f-next', '下次跟進', d.next)}<label>相關主題</label><div class="check-grid">${pick('topic', d.topics)}</div><label>提及人物</label><div class="check-grid">${pick('person', d.people)}</div><label>附件（每個上限 3 MB）<input type="file" id="f-files" multiple accept="image/jpeg,image/png,image/webp,image/heic,application/pdf"></label><p class="muted">支援圖片與 PDF。選擇已在雲端相簿的照片，無法讓既有雲端副本消失。舊附件取消勾選可從此版本移除，歷史仍保留。</p><div class="check-grid">${(d.attachments || []).map((a, i) => `<label class="check"><input type="checkbox" name="keep-attachment" value="${i}" checked>${esc(a.name)}</label>`).join('')}</div>`;
+    const storeOptions = orderedStores.concat(base.store && by('store', base.store)?.deleted ? [by('store', base.store)] : []).map(s => `<option value="${esc(s.id)}" ${selectedStore === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('') + `<option value="__new__" ${selectedStore === '__new__' ? 'selected' : ''}>＋ 快速新增門市</option>`;
+    $('editor-fields').innerHTML = `<div class="field-grid"><label>門市<select id="f-store">${storeOptions}</select></label><label>拜訪日期（未知可留空）<input type="date" id="f-date" value="${esc(base.date ?? new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10))}"></label></div><div id="quick-store-fields" class="quick-store" hidden><h3>快速新增門市</h3>${input('f-new-store-name', '門市名稱（必要）', '', 200)}${input('f-new-store-district', '地區（可稍後補）', '', 500)}${input('f-new-store-map-url', 'Google Maps 網址（可稍後補）', '', 2000)}<label class="check"><input id="f-new-store-pending" type="checkbox" checked> 身分待確認；先保存門市與拜訪，不自動合併</label><p class="muted">除名稱外都可稍後補。待確認門市不參與關聯分析，之後可在門市資料核實。</p></div><label>資訊來源<select id="f-source">${[...new Set(['藥師主動提及', '詢問後回覆', '現場觀察', '其他', ...(base.source ? [base.source] : [])])].map(x => `<option ${x === base.source ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></label>${textarea('f-text', '原始拜訪內容', base.text)}${textarea('f-next', '下次跟進', base.next)}<label>相關主題</label><div class="check-grid">${pick('topic', base.topics)}</div><label>提及人物</label><div class="check-grid">${pick('person', base.people)}</div><label>附件（每個上限 3 MB）<input type="file" id="f-files" multiple accept="image/jpeg,image/png,image/webp,image/heic,application/pdf"></label><p class="muted">支援圖片與 PDF。新選的附件檔案無法靠草稿跨 App 關閉／重新開啟保存；完成紀錄前若 App 被系統終止，請重新選擇附件。舊附件取消勾選可從此版本移除，歷史仍保留。</p><div class="check-grid">${(base.attachments || []).map((a, i) => `<label class="check"><input type="checkbox" name="keep-attachment" value="${i}" checked>${esc(a.name)}</label>`).join('')}</div><p id="draft-save-state" class="draft-state" role="status">尚未變更</p><p class="muted">文字與欄位變更會自動加密保存為本機草稿；「完成紀錄」才建立／更新正式拜訪版本。</p>`;
+    $('editor-save').textContent = '完成紀錄';
+    toggleQuickStoreFields();
+    if (restoreDraft) applyVisitDraft(restoreDraft);
   } else {
+    $('editor-save').textContent = '儲存';
     let fields = input('f-name', `${kinds[type]}名稱`, d.name, 200, true);
     if (type === 'store') fields += `<div class="field-grid">${input('f-city', '縣市', d.city)}${input('f-district', '地區', d.district)}</div><label>通路<select id="f-channel">${[...new Set(['', '連鎖', '獨立', '加盟', '診所', '其他', ...(d.channel ? [d.channel] : [])])].map(c => `<option value="${esc(c)}" ${c === d.channel ? 'selected' : ''}>${esc(c || '未分類')}</option>`).join('')}</select></label>${input('f-address', '地址', d.address, 2000)}${input('f-map-url', 'Google Maps 網址（只保存，不自動開啟）', d.mapUrl, 2000)}${input('f-attr', '門市屬性／客群', d.attr)}${input('f-contact', '拜訪窗口', d.contact)}`;
     if (type === 'store' && d.csvIdentityPending) fields += '<label class="check"><input type="checkbox" id="f-identity-reviewed">我已核實此門市身分與來源，解除待確認標記並允許關聯分析</label>';
@@ -423,10 +522,17 @@ async function saveEditor(event) {
       await persist({ ...payload, bundle, dirty: true }); $('editor').close(); editorContext = null; render(); toast('欄位已補登，已保留歷史並等待同步。'); return;
     }
     const value = id => $(id).value.trim(); let d, blobs = {};
+    let quickStore = null;
     if (ctx.type === 'visit') {
       if (!value('f-text')) throw new Error('請填寫拜訪內容。');
       const checked = n => [...document.querySelectorAll(`#editor [name="${n}"]:checked`)].map(c => c.value);
-      d = { store: value('f-store'), date: value('f-date'), source: value('f-source'), text: $('f-text').value, next: $('f-next').value, topics: checked('topic'), people: checked('person'), attachments: checked('keep-attachment').map(i => ctx.oldData.attachments[Number(i)]) };
+      let storeId = value('f-store');
+      if (storeId === '__new__') {
+        const storeName = value('f-new-store-name'); if (!storeName) throw new Error('快速新增門市至少需要門市名稱。');
+        storeId = uuid();
+        quickStore = { id: storeId, data: { name: storeName, city: '', district: value('f-new-store-district'), channel: '', attr: '', contact: '', address: '', mapUrl: value('f-new-store-map-url'), csvIdentityPending: $('f-new-store-pending').checked } };
+      }
+      d = { store: storeId, date: value('f-date'), source: value('f-source'), text: $('f-text').value, next: $('f-next').value, topics: checked('topic'), people: checked('person'), attachments: checked('keep-attachment').map(i => ctx.oldData?.attachments?.[Number(i)]).filter(Boolean) };
       // Keep unresolved references in old notes, even if the referenced entity is now in the trash.
       for (const [field, type] of [['topics', 'topic'], ['people', 'person']]) for (const old of ctx.oldData?.[field] || []) if (!all(type).some(r => r.id === old) && !d[field].includes(old)) d[field].push(old);
       for (const f of $('f-files').files) {
@@ -445,6 +551,13 @@ async function saveEditor(event) {
     d = { ...(ctx.oldData || {}), ...d };
     if (ctx.type === 'store' && ctx.oldData?.csvIdentityPending && $('f-identity-reviewed')?.checked) d.csvIdentityPending = false;
     if (ctx.type === 'visit' && d.googleUpdatePending && d.text === d.googleText) d.googleUpdatePending = false;
+    if (ctx.type === 'visit') {
+      const bundle = structuredClone(payload.bundle); bundle.schema = 2;
+      if (quickStore) bundle.ops.push(revision('store', quickStore.id, quickStore.data, [], payload.device));
+      bundle.ops.push(revision('visit', ctx.id, d, ctx.parents, payload.device)); Object.assign(bundle.blobs, blobs); validateBundle(bundle);
+      await persist({ ...payload, bundle, dirty: true, draft: null }); render(); clearTimeout(draftTimer); draftTimer = null;
+      $('editor').close(); editorContext = null; toast(quickStore ? '新門市與拜訪已完成並保存於手機；等待 Mac 確認收到。' : '拜訪已完成並保存於手機；等待 Mac 確認收到。'); return;
+    }
     await commitRevision(ctx.type, ctx.id, d, ctx.parents, false, blobs); $('editor').close(); editorContext = null; toast('已加密儲存。Mac 可連線時會自動交換。');
   }, 'editor-error');
 }
@@ -540,12 +653,18 @@ document.addEventListener('click', event => {
   const b = event.target.closest('button');
   const node = event.target.closest('[data-node-type]'); if (node && !busy) return navigate(node.dataset.nodeType, node.dataset.nodeId);
   if (!b) return;
-  if (b.dataset.close) { if (b.dataset.close === 'rebuild-dialog' && busy) return; $(b.dataset.close).close(); if (b.dataset.close === 'rebuild-dialog') $('rebuild-connect-form').reset(); if (b.dataset.close === 'editor') editorContext = null; return; }
+  if (b.dataset.close) {
+    if (b.dataset.close === 'rebuild-dialog' && busy) return;
+    if (b.dataset.close === 'editor' && editorContext?.type === 'visit') scheduleVisitDraftSave();
+    $(b.dataset.close).close(); if (b.dataset.close === 'rebuild-dialog') $('rebuild-connect-form').reset(); if (b.dataset.close === 'editor') editorContext = null; return;
+  }
   if (updateHolding || busy || !payload) return;
   if (b.id === 'connect-rebuilt') { if (editorContext || csvImport.hasPending()) return toast('請先儲存編輯或取消匯入預覽。'); $('rebuild-connect-form').reset(); $('rebuild-connect-error').textContent = ''; $('rebuild-dialog').showModal(); return; }
   if (b.id === 'view-archives') return run(openArchives);
   if (b.dataset.exportArchive) return run(() => exportArchive(b.dataset.exportArchive));
   if (b.dataset.view) return switchView(b.dataset.view);
+  if (b.dataset.quickVisit) { focus = { type: 'store', id: b.dataset.quickVisit }; return openEditor('visit'); }
+  if (b.id === 'resume-draft') return resumeVisitDraft();
   if (b.dataset.retailGroup !== undefined) return changeStoreFilter('groups', b.dataset.retailGroup);
   if (b.dataset.clearStoreFilters !== undefined) return changeStoreFilter('clear');
   if (b.dataset.add) return openEditor(b.dataset.add);
@@ -578,14 +697,16 @@ document.addEventListener('click', event => {
 });
 document.addEventListener('keydown', e => { const n = e.target.closest('.node[role="button"]'); if (n && ['Enter', ' '].includes(e.key) && !busy) { e.preventDefault(); navigate(n.dataset.nodeType, n.dataset.nodeId); } });
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) { document.body.classList.add('privacy-veil'); if (payload || busy) lockNow(false); }
+  if (document.hidden) { if (editorContext?.type === 'visit') void flushVisitDraft(); document.body.classList.add('privacy-veil'); if (payload || busy) lockNow(false); }
   else if (pendingLock || !payload) { pendingLock = false; document.body.classList.remove('privacy-veil'); showGate(); }
   else document.body.classList.remove('privacy-veil');
 });
-window.addEventListener('pagehide', () => { if (payload || busy) lockNow(false); });
+window.addEventListener('pagehide', () => { if (editorContext?.type === 'visit') void flushVisitDraft(); if (payload || busy) lockNow(false); });
 window.addEventListener('pageshow', () => { if (!payload && !document.hidden) { document.body.classList.remove('privacy-veil'); showGate(); } });
 $('gate-form').addEventListener('submit', initializeOrUnlock); $('editor-form').addEventListener('submit', saveEditor);
 $('editor').addEventListener('close', () => editorContext = null);
+$('editor-fields').addEventListener('input', event => { if (editorContext?.type === 'visit' && !['f-files'].includes(event.target.id)) scheduleVisitDraftSave(); });
+$('editor-fields').addEventListener('change', event => { if (event.target.id === 'f-store') toggleQuickStoreFields(); if (editorContext?.type === 'visit' && event.target.id !== 'f-files') scheduleVisitDraftSave(); });
 $('quality-content').addEventListener('change', e => { if (e.target.id === 'quality-field') { qualityField = e.target.value; qualityPage = 0; renderQuality(); } });
 $('gate-restore').addEventListener('click', () => { if (!$('password').value) { $('gate-error').textContent = '請先在密碼欄填寫備份密碼。'; return; } $('backup-file').click(); });
 $('backup-file').addEventListener('change', () => { const f = $('backup-file').files[0]; if (f) run(() => importBackup(f), payload ? null : 'gate-error'); $('backup-file').value = ''; });
