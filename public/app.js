@@ -481,7 +481,6 @@ const input = (id, label, value = '', max = 500, required = false) => `<label>${
 const textarea = (id, label, value = '') => `<label>${label}<textarea id="${id}" maxlength="20000">${esc(value)}</textarea></label>`;
 function openEditor(type, id = null, restoreDraft = null) {
   const old = id ? by(type, id) : null; if (old?.conflict) { openReview(type, id, true); return; }
-  if (type === 'visit' && !all('store').length) { toast('請先新增一間門市。'); openEditor('store'); return; }
   editorContext = { type, id: id || uuid(), parents: old?.heads.map(h => h.id) || [], oldData: old ? structuredClone(old.heads[0].data) : null };
   const d = editorContext.oldData || {};
   $('editor-title').textContent = `${old ? '編輯' : '新增'}${kinds[type]}`; $('editor-error').textContent = '';
@@ -655,7 +654,9 @@ document.addEventListener('click', event => {
   if (!b) return;
   if (b.dataset.close) {
     if (b.dataset.close === 'rebuild-dialog' && busy) return;
-    if (b.dataset.close === 'editor' && editorContext?.type === 'visit') scheduleVisitDraftSave();
+    if (b.dataset.close === 'editor' && editorContext?.type === 'visit') return run(async () => {
+      await flushVisitDraft(); $('editor').close(); editorContext = null;
+    }, 'editor-error');
     $(b.dataset.close).close(); if (b.dataset.close === 'rebuild-dialog') $('rebuild-connect-form').reset(); if (b.dataset.close === 'editor') editorContext = null; return;
   }
   if (updateHolding || busy || !payload) return;
