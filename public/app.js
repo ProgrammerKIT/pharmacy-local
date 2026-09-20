@@ -113,21 +113,24 @@ async function persistVisitDraftNow() {
   draftState('儲存中…', 'saving');
   try {
     await persist({ ...payload, draft });
+    if (editorContext?.type === 'visit' && editorContext.id === draft.id) editorContext.draftTouched = false;
     draftState('已存於本機 · ' + dateText(draft.savedAt), 'saved');
   } catch (e) {
+    $('save-state').textContent = '手機保存失敗：' + e.message;
     draftState('儲存失敗：' + e.message, 'error');
     throw e;
   }
 }
 function scheduleVisitDraftSave() {
   if (!editorContext || editorContext.type !== 'visit') return;
+  editorContext.draftTouched = true;
   draftState('儲存中…', 'saving'); clearTimeout(draftTimer);
   draftTimer = setTimeout(() => {
     draftSaveChain = draftSaveChain.catch(() => {}).then(persistVisitDraftNow).catch(() => {});
   }, 350);
 }
 function flushVisitDraft() {
-  if (!editorContext || editorContext.type !== 'visit') return Promise.resolve();
+  if (!editorContext || editorContext.type !== 'visit' || !editorContext.draftTouched) return draftSaveChain.catch(() => {});
   clearTimeout(draftTimer); draftTimer = null;
   draftSaveChain = draftSaveChain.catch(() => {}).then(persistVisitDraftNow);
   return draftSaveChain;
@@ -274,8 +277,8 @@ function status() {
   const conflicts = records.filter(r => r.conflict).length;
   const lastSuccess = payload.lastSync ? dateText(payload.lastSync) : '尚未成功同步';
   $('save-state').textContent = '手機已保存：本機加密資料可用' + (payload.draft ? ' · 有未完成草稿' : '');
-  const macAck = payload.dirty ? `Mac 尚未確認收到這次變更 · 上次成功 ${lastSuccess}` : `Mac 已確認收到 · 資料版本 ${payload.serverVersion || 0} · ${lastSuccess}`;
-  $('sync-state').textContent = lastError ? `Mac 同步未完成：${lastError} · 上次成功 ${lastSuccess}` : macAck;
+  const macAck = payload.dirty ? `Mac 尚未確認收到這次已完成的變更 · 上次成功 ${lastSuccess}` : `Mac 已確認收到已完成紀錄 · 資料版本 ${payload.serverVersion || 0} · ${lastSuccess}`;
+  $('sync-state').textContent = lastError ? `Mac 同步未完成：${lastError} · 上次成功 ${lastSuccess}` : macAck + (payload.draft ? '；未完成草稿僅存手機' : '');
   $('conflict-link').hidden = !conflicts; $('conflict-link').textContent = `${conflicts} 筆衝突待確認`;
   $('device-label').textContent = payload.deviceName;
   $('connection-detail').textContent = payload.deviceName + ' · ' + location.hostname + ' · 本機已確認的資料版本 ' + (payload.serverVersion || 0);
@@ -482,11 +485,11 @@ const input = (id, label, value = '', max = 500, required = false) => `<label>${
 const textarea = (id, label, value = '') => `<label>${label}<textarea id="${id}" maxlength="20000">${esc(value)}</textarea></label>`;
 function openEditor(type, id = null, restoreDraft = null) {
   const old = id ? by(type, id) : null; if (old?.conflict) { openReview(type, id, true); return; }
-  editorContext = { type, id: id || uuid(), parents: old?.heads.map(h => h.id) || [], oldData: old ? structuredClone(old.heads[0].data) : null };
+  editorContext = { type, id: id || uuid(), parents: old?.heads.map(h => h.id) || [], oldData: old ? structuredClone(old.heads[0].data) : null, draftTouched: false };
   const d = editorContext.oldData || {};
   $('editor-title').textContent = `${old ? '編輯' : '新增'}${kinds[type]}`; $('editor-error').textContent = '';
   if (type === 'visit') {
-    if (restoreDraft?.format === 'visit-draft-1') editorContext = { type, id: restoreDraft.id, parents: [...(restoreDraft.parents || [])], oldData: restoreDraft.baseData ? structuredClone(restoreDraft.baseData) : null };
+    if (restoreDraft?.format === 'visit-draft-1') editorContext = { type, id: restoreDraft.id, parents: [...(restoreDraft.parents || [])], oldData: restoreDraft.baseData ? structuredClone(restoreDraft.baseData) : null, draftTouched: false };
     const base = editorContext.oldData || d;
     const selectedStore = restoreDraft?.fields?.store || base.store || (focus.type === 'store' ? focus.id : recentStores(1)[0]?.id || all('store')[0]?.id || '__new__');
     const orderedStores = [...recentStores(6), ...all('store').filter(s => !recentStores(6).some(r => r.id === s.id))];
@@ -524,9 +527,14 @@ async function saveEditor(event) {
     const value = id => $(id).value.trim(); let d, blobs = {};
     let quickStore = null;
     if (ctx.type === 'visit') {
+      await flushVisitDraft();
       if (!value('f-text')) throw new Error('請填寫拜訪內容。');
       const checked = n => [...document.querySelectorAll(`#editor [name="${n}"]:checked`)].map(c => c.value);
       let storeId = value('f-store');
+      if (storeId !== '__new__') {
+        const selected = by('store', storeId);
+        if (!selected || selected.deleted || selected.conflict) throw new Error('草稿原本的門市目前不可使用或有同步衝突，請重新選擇門市後再完成紀錄。');
+      }
       if (storeId === '__new__') {
         const storeName = value('f-new-store-name'); if (!storeName) throw new Error('快速新增門市至少需要門市名稱。');
         storeId = uuid();
@@ -707,7 +715,7 @@ window.addEventListener('pagehide', () => { if (editorContext?.type === 'visit')
 window.addEventListener('pageshow', () => { if (!payload && !document.hidden) { document.body.classList.remove('privacy-veil'); showGate(); } });
 $('gate-form').addEventListener('submit', initializeOrUnlock); $('editor-form').addEventListener('submit', saveEditor);
 $('editor').addEventListener('close', () => editorContext = null);
-$('editor-fields').addEventListener('input', event => { if (editorContext?.type === 'visit' && !['f-files'].includes(event.target.id)) scheduleVisitDraftSave(); });
+$('editor-fields').addEventListener('input', event => { if (editorContext?.type === 'visit' && event.target.id !== 'f-files') scheduleVisitDraftSave(); });
 $('editor-fields').addEventListener('change', event => { if (event.target.id === 'f-store') toggleQuickStoreFields(); if (editorContext?.type === 'visit' && event.target.id !== 'f-files') scheduleVisitDraftSave(); });
 $('quality-content').addEventListener('change', e => { if (e.target.id === 'quality-field') { qualityField = e.target.value; qualityPage = 0; renderQuality(); } });
 $('gate-restore').addEventListener('click', () => { if (!$('password').value) { $('gate-error').textContent = '請先在密碼欄填寫備份密碼。'; return; } $('backup-file').click(); });
