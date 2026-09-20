@@ -278,8 +278,8 @@ function status() {
   const conflicts = records.filter(r => r.conflict).length;
   const lastSuccess = payload.lastSync ? dateText(payload.lastSync) : '尚未成功同步';
   $('save-state').textContent = '手機已保存：本機加密資料可用' + (payload.draft ? ' · 有未完成草稿' : '');
-  const macAck = payload.dirty ? `Mac 尚未確認收到這次已完成的變更 · 上次成功 ${lastSuccess}` : `Mac 已確認收到已完成紀錄 · 資料版本 ${payload.serverVersion || 0} · ${lastSuccess}`;
-  $('sync-state').textContent = lastError ? `Mac 同步未完成：${lastError} · 上次成功 ${lastSuccess}` : macAck + (payload.draft ? '；未完成草稿僅存手機' : '');
+  const macAck = payload.dirty ? `Mac 尚未確認收到這次已完成的變更 · 最近成功同步：${lastSuccess}` : `Mac 已確認收到已完成紀錄 · 資料版本 ${payload.serverVersion || 0} · 最近成功同步：${lastSuccess}`;
+  $('sync-state').textContent = lastError ? `Mac 同步未完成：${lastError} · 最近成功同步：${lastSuccess}` : macAck + (payload.draft ? '；未完成草稿僅存手機' : '');
   $('conflict-link').hidden = !conflicts; $('conflict-link').textContent = `${conflicts} 筆衝突待確認`;
   $('device-label').textContent = payload.deviceName;
   $('connection-detail').textContent = payload.deviceName + ' · ' + location.hostname + ' · 本機已確認的資料版本 ' + (payload.serverVersion || 0);
