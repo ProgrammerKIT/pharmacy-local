@@ -134,5 +134,5 @@ export function createCSVImport({ host, getState, run, saveBundle, notify, expor
       notify('CSV 已加密匯入，可到客戶門市與拜訪紀錄查看。');
     }, 'csv-error');
   });
-  shell(); return { reset, hasPending: () => files.length > 0 };
+  shell(); return { reset, refresh: () => { if (!files.length) shell(); }, hasPending: () => files.length > 0 };
 }

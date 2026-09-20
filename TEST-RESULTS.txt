@@ -1,3 +1,17 @@
+v1.5.7 Source Snapshot 顯示刷新｜2026-09-20
+
+GitHub Actions PR 驗證：125 項通過，0 項失敗、取消或略過。
+命令：node --test test/*.test.mjs
+Run #27：35518257542，head ba9bc67d78b9606954ac4fa177ea48aa210b830c，結論 success。
+
+新增驗證：
+- 「匯入 CSV」介面可先在資料庫尚未解鎖時顯示 0 份；加密 state 隨後可用時，refresh 會重新讀取當下 bundle，正確顯示 Source Snapshot 數量、檔名與 SHA-256 前綴。
+- App render 在目前檢視為「匯入 CSV」時會要求刷新；因此進入頁面、解鎖後重繪、成功同步或合併備份後都會重新計算來源快照顯示。
+- 若有未完成的 CSV／裁定資料包預覽，refresh 不會重建 shell，因此不會清掉使用中的核對內容。
+- 本版不建立、刪除或改寫 Source Snapshot；schema 與 SOP1 維持不變。
+
+限制：PR #8 仍是 draft，尚未合併 main、尚未發布 v1.5.7，也尚未在 Mac／iPhone 真機確認「5 份」重新顯示。
+
 v1.5.6 已裁定既有門市整併｜2026-09-19
 
 GitHub Actions PR 執行：124 項通過，0 項失敗、取消或略過。
