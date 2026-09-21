@@ -47,7 +47,7 @@ function lineEvidence(line, rule) {
     const before = line.slice(Math.max(0, index - 12), index);
     const after = line.slice(index + term.length, index + term.length + 12);
     return /(?:沒有|沒遇到|沒有遇到|未遇到|未觀察到|無相關|無此|不需要|未有)\s*$/u.test(before) ||
-      /^(?:沒有需求|無需求|不需要|未遇到|沒有遇到|未觀察到)/u.test(after);
+      /(?:沒有需求|無需求|不需要|未遇到|沒有遇到|沒遇到|未觀察到)/u.test(after);
   });
   if (negative) return { label: '否定／未遇到', kind: 'negative', line };
   if (/[？?]/u.test(line) || /怎麼用|如何使用|可不可以|能不能|是否|詢問|問我|想了解/u.test(line)) return { label: '詢問／待釐清', kind: 'question', line };
