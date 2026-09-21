@@ -21,6 +21,7 @@ test('Google Chinese notes are preferred to comments; multiline source and heade
 test('relationship matching preserves negative, mixed, question and name-comparison evidence',()=>{
   const rule=TOPIC_RULES.find(r=>r.key==='ortho');
   assert.equal(evidenceKind('沒有角膜塑型片的小朋友',rule).kind,'negative');
+  assert.equal(evidenceKind('角膜塑型片他說沒遇到',rule).kind,'negative');
   assert.equal(evidenceKind('這裡有角膜塑型客群\n目前沒有角膜塑型片需求',rule).kind,'mixed');
   assert.equal(evidenceKind('角膜塑型片小朋友怎麼用？',rule).kind,'question');
   assert.equal(evidenceKind('戴塑形片的也有',rule).kind,'mention');
