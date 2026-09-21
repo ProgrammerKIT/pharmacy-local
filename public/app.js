@@ -387,7 +387,7 @@ function openCandidateDetail(key, storeId = '') {
     : '近 60 天沒有足夠的「有拜訪日期」紀錄可比較；未提供日期的原文仍保留在證據列表。';
   $('review-title').textContent = overview.name + ' · ' + (overview.sourceMode === 'explicit' ? '明確記錄' : '系統候選');
   $('review-body').innerHTML = `<div class="candidate-disclaimer"><strong>${esc(overview.category)}</strong><p>${esc(provenance)}</p></div><div class="candidate-metrics"><span>${overview.storeCount} 間門市</span><span>${overview.visitCount} 筆相關紀錄</span><span>最近：${esc(relationDate(overview.latestDate))}</span></div>${current}<h3>時間比較</h3><p>${esc(dated)}</p>${cross}`;
-  $('review').showModal();
+  if (!$('review').open) $('review').showModal();
 }
 function openCandidateOverview() {
   const overview = relationOverview();
