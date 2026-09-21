@@ -27,6 +27,11 @@ test('mobile-first runtime files are valid JavaScript and expose the daily captu
   assert.match(html, /手機已保存/);
   assert.match(html, /Mac 已確認收到/);
   assert.match(html, /不假設仍會持續同步/);
+  assert.match(app, /id="f-store-search"/);
+  assert.match(app, /function refreshVisitStoreOptions\(/);
+  assert.match(app, /data-new-visit-store=/);
+  assert.match(app, /function openVisitForStore\(/);
+  assert.match(app, /event\.target\.id === 'f-store-search'/);
 });
 
 test('a local draft survives encryption without creating a formal visit revision', async () => {
