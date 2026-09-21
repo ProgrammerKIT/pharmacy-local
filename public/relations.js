@@ -9,7 +9,7 @@ export function relationVisitAllowed(visit, stores) {
 export const TOPIC_RULES = [
   { key: 'ortho', name: '角膜塑型片', category: '產品／品類', terms: ['角膜塑型', '角膜塑形', '塑形片', '塑型片'] },
   { key: 'ha', name: '玻尿酸／HA', category: '產品／品類', terms: ['玻尿酸', 'HA', 'HAUD', 'HAMD'] },
-  { key: 'price', name: '價格與毛利', category: '疑慮／阻力', terms: ['價格', '比價', '便宜', '毛利', '太貴', '很貴'] },
+  { key: 'price', name: '價格與毛利', category: '主題／需求', terms: ['價格', '比價', '便宜', '毛利', '太貴', '很貴'], candidateTerms: ['價格', '比價', '便宜', '毛利'] },
   { key: 'display', name: '陳列', category: '主題／需求', terms: ['陳列'] },
   { key: 'training', name: '課程與訓練', category: '主題／需求', terms: ['上課', '課程', '訓練', 'CME'] },
   { key: 'sample', name: '試用品', category: '產品／品類', terms: ['試用', 'Sample'] },
@@ -19,10 +19,14 @@ export const TOPIC_RULES = [
   { key: 'laser', name: '近視雷射', category: '主題／需求', terms: ['雷射', '雷視'] },
   { key: 'dryeye', name: '乾眼', category: '主題／需求', terms: ['乾眼'] },
   { key: 'rx', name: '處方與診所', category: '主題／需求', terms: ['處方', '眼科', '診所'] },
-  { key: 'stock', name: '缺貨與常備', category: '疑慮／阻力', terms: ['缺貨', '常備'] },
+  { key: 'stock', name: '缺貨與常備', category: '主題／需求', terms: ['缺貨', '常備'], candidateTerms: ['常備'] },
   { key: 'elderly', name: '年長客群', category: '主題／需求', terms: ['老人', '年長', '長輩', '老人家'] }
 ];
-const reEscape = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const EXTRA_CANDIDATE_RULES = [
+  { key: 'price-resistance', name: '價格阻力', category: '疑慮／阻力', terms: ['太貴', '很貴'] },
+  { key: 'stock-shortage', name: '缺貨', category: '疑慮／阻力', terms: ['缺貨'] }
+];
+const reEscape = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\const reEscape = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');');
 export function termFound(text, term) {
   return /^[a-z0-9 ]+$/i.test(term)
     ? new RegExp(`(?<![a-z0-9])${reEscape(term)}(?![a-z0-9])`, 'i').test(text)
@@ -86,13 +90,14 @@ export function candidateRelationsForStore(storeId, visits, stores, people = [])
   if (!store || storeIdentityPending(store)) return [];
   const eligible = visits.filter(visit => visit.store === storeId && !visit.deleted && !visit.conflict && relationVisitAllowed(visit, stores));
   const output = [];
-  for (const rule of TOPIC_RULES) {
+  for (const baseRule of [...TOPIC_RULES, ...EXTRA_CANDIDATE_RULES]) {
+    const rule = baseRule.candidateTerms ? { ...baseRule, terms: baseRule.candidateTerms } : baseRule;
     const evidence = [];
     for (const visit of eligible) {
       const found = evidenceKind(visit.text || '', rule);
       for (const item of found.items || []) evidence.push({ visitId: visit.id, date: visit.date || '', source: visit.source || '', field: 'text', line: item.line, label: item.label, kind: item.kind });
     }
-    if (evidence.length) output.push(summarizeCandidate({ key: 'topic:' + rule.key, name: rule.name, category: rule.category, ruleKey: rule.key, sourceMode: 'candidate' }, evidence));
+    if (evidence.length) output.push(summarizeCandidate({ key: 'topic:' + rule.key, name: rule.name, category: rule.category, ruleKey: TOPIC_RULES.some(item => item.key === rule.key) ? rule.key : undefined, sourceMode: 'candidate' }, evidence));
   }
   const followups = eligible.filter(visit => String(visit.next || '').trim()).map(visit => ({
     visitId: visit.id, date: visit.date || '', source: visit.source || '', field: 'next', line: visit.next.trim(), label: '已明確填寫', kind: 'explicit'
