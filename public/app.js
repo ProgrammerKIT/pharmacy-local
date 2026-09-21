@@ -2,7 +2,7 @@ import { newMeta, derive, seal, unseal, uuid, emptyBundle, revision, project, me
 import { readLocal, writeLocal, archiveAndReplaceLocal, listLocalArchives, readLocalArchive } from './db.js';
 import { createCSVImport } from './csv-ui.js';
 import { PROFILE_FIELDS, FILL_FIELDS, scanQuality, setDistinctReview, sourceSuggestions, fillProfile } from './csv.js';
-import { entityRule, evidenceKind, sourceTags, groupCSVNotes, storeIdentityPending, relationVisitAllowed, retailChannel, filterStoreDirectory } from './relations.js';
+import { entityRule, evidenceKind, sourceTags, groupCSVNotes, storeIdentityPending, relationVisitAllowed, retailChannel, filterStoreDirectory, candidateRelationsForStore, candidateOverview, candidateTrend } from './relations.js';
 import { APP_VERSION } from './version.js';
 import { startUpdates, requestLocal, diagnoseConnection } from './update-client.js';
 
@@ -358,6 +358,48 @@ function navigate(type, id, remember = true) {
   if (remember && (focus.id !== id || focus.type !== type)) trail.push({ ...focus });
   focus = { type, id }; graphPage = 0; switchView('explore');
 }
+const relationDate = value => value || '拜訪日期未提供';
+function relationCandidates(storeId) {
+  return candidateRelationsForStore(storeId, all('visit'), all('store'), all('person'));
+}
+function relationOverview() {
+  return candidateOverview(all('visit'), all('store'), all('person'));
+}
+function candidateEvidenceHTML(evidence, limit = 12) {
+  const shown = (evidence || []).slice().sort((a, b) => (b.date || '').localeCompare(a.date || '')).slice(0, limit);
+  return shown.map(item => `<article class="candidate-evidence"><div><span class="pill candidate-status ${esc(item.kind)}">${esc(item.label)}</span><span class="muted">${esc(relationDate(item.date))} · ${esc(item.field === 'next' ? '下次跟進' : item.source || '原始拜訪內容')}</span></div><blockquote>${esc(item.line)}</blockquote></article>`).join('') || '<p class="muted">目前沒有可顯示的原文證據。</p>';
+}
+function openCandidateDetail(key, storeId = '') {
+  const overview = relationOverview().find(item => item.key === key);
+  if (!overview) return toast('這個候選關聯已因資料變更而不存在，請重新開啟關聯探索。');
+  const selectedStore = storeId ? overview.stores.find(item => item.storeId === storeId) : null;
+  const trend = candidateTrend(overview);
+  const provenance = overview.sourceMode === 'explicit'
+    ? '這個節點來自你明確填寫的「下次跟進」欄位，不是系統推論。'
+    : overview.category === '人物提及'
+      ? '這是原文中的同名／稱呼線索；不代表已確認人物身分或人際關係。'
+      : '這是依可稽核字詞規則從原始拜訪文字找出的系統候選；不代表已確認需求、偏好或商業判斷。';
+  const current = selectedStore ? `<h3>這間門市的證據</h3><p><strong>${esc(selectedStore.storeName)}</strong> · ${selectedStore.visitCount} 筆相關紀錄 · 最近：${esc(relationDate(selectedStore.latestDate))}</p>${candidateEvidenceHTML(selectedStore.evidence, 20)}` : '';
+  const others = overview.stores.filter(item => !storeId || item.storeId !== storeId).slice().sort((a, b) => b.visitCount - a.visitCount || (b.latestDate || '').localeCompare(a.latestDate || '')).slice(0, 20);
+  const cross = others.length ? `<h3>跨店覆盤</h3><p class="muted">下列只是相同候選規則在其他門市的原文證據；共同提及不等於相同需求。</p><div class="candidate-store-list">${others.map(item => `<article class="candidate-store"><div><strong>${esc(item.storeName)}</strong><span class="muted">${item.visitCount} 筆 · 最近：${esc(relationDate(item.latestDate))}</span></div><p>${esc(item.evidence.slice().sort((a, b) => (b.date || '').localeCompare(a.date || ''))[0]?.line || '')}</p><button type="button" class="text-button" data-candidate-store="${esc(item.storeId)}">查看這間門市</button></article>`).join('')}</div>` : '<h3>跨店覆盤</h3><p class="muted">目前沒有其他門市命中這個候選關聯。</p>';
+  const dated = trend.currentVisits || trend.previousVisits
+    ? `最近 30 天：${trend.currentVisits} 筆／${trend.currentStores} 間；前 30 天：${trend.previousVisits} 筆／${trend.previousStores} 間。`
+    : '近 60 天沒有足夠的「有拜訪日期」紀錄可比較；未提供日期的原文仍保留在證據列表。';
+  $('review-title').textContent = overview.name + ' · ' + (overview.sourceMode === 'explicit' ? '明確記錄' : '系統候選');
+  $('review-body').innerHTML = `<div class="candidate-disclaimer"><strong>${esc(overview.category)}</strong><p>${esc(provenance)}</p></div><div class="candidate-metrics"><span>${overview.storeCount} 間門市</span><span>${overview.visitCount} 筆相關紀錄</span><span>最近：${esc(relationDate(overview.latestDate))}</span></div>${current}<h3>時間比較</h3><p>${esc(dated)}</p>${cross}`;
+  if (!$('review').open) $('review').showModal();
+}
+function openCandidateOverview() {
+  const overview = relationOverview();
+  $('review-title').textContent = '跨店候選關聯摘要';
+  if (!overview.length) {
+    $('review-body').innerHTML = '<p class="empty">目前沒有任何可稽核的候選關聯。系統不會為了填滿關聯圖而猜測。</p>';
+  } else {
+    const categories = [...new Set(overview.map(item => item.category))];
+    $('review-body').innerHTML = '<p class="candidate-disclaimer">以下是從原始拜訪文字或明確「下次跟進」欄位建立的唯讀索引。系統候選不是已確認事實；點開後可一路查看原文。</p>' + categories.map(category => `<section class="candidate-overview-group"><h3>${esc(category)}</h3><div class="candidate-overview-list">${overview.filter(item => item.category === category).map(item => `<button type="button" class="candidate-summary" data-candidate-key="${esc(item.key)}"><strong>${esc(item.name)}</strong><span>${item.storeCount} 間門市 · ${item.visitCount} 筆 · 最近：${esc(relationDate(item.latestDate))}</span></button>`).join('')}</div></section>`).join('');
+  }
+  $('review').showModal();
+}
 function canonicalPerson(id) { const seen = new Set(); let r = by('person', id); while (r?.sameAs && !r.conflict && !seen.has(r.id)) { seen.add(r.id); r = by('person', r.sameAs); } return r?.id || id; }
 function related(f = focus) {
   const tag = by(f.type, f.id)?.csvTag;
@@ -493,10 +535,12 @@ function renderFocus() {
   const r = by(focus.type, focus.id);
   if (!r) { $('focus-header').innerHTML = '<h2>建立第一個探索起點</h2><p>先新增門市，再記錄拜訪。</p>'; $('focus-detail').innerHTML = ''; $('graph').innerHTML = ''; $('evidence-list').innerHTML = ''; $('evidence-count').textContent = '0'; return; }
   const vv = related(), storeIDs = r.csvTag ? all('store').filter(s => !storeIdentityPending(s) && sourceTags(s).includes(r.csvTag)).map(s => s.id) : [...new Set(vv.map(v => v.store))];
-  $('focus-header').innerHTML = `<div class="focus-top"><span class="pill ${r.type === 'person' && !r.confirmed ? 'warn' : ''}">${kinds[r.type]}${r.type === 'person' ? r.confirmed ? ' · 已核對' : ' · 待確認' : ''}</span>${trail.length ? '<button id="back-node" class="text-button">← 上一個節點</button>' : ''}</div><h2>${esc(r.name)}</h2><p class="muted">${esc(r.type === 'store' ? `${r.city} ${r.district} · ${r.channel}` : r.type === 'person' ? r.role : r.desc)}</p>${r.conflict ? `<button class="danger" data-review="${r.type}:${esc(r.id)}">先處理這個節點的衝突</button>` : ''}`;
+  $('focus-header').innerHTML = `<div class="focus-top"><span class="pill ${r.type === 'person' && !r.confirmed ? 'warn' : ''}">${kinds[r.type]}${r.type === 'person' ? r.confirmed ? ' · 已核對' : ' · 待確認' : ''}</span><div class="focus-actions">${trail.length ? '<button id="back-node" class="text-button">← 上一個節點</button>' : ''}<button id="candidate-overview" class="text-button">跨店候選摘要</button></div></div><h2>${esc(r.name)}</h2><p class="muted">${esc(r.type === 'store' ? `${r.city} ${r.district} · ${r.channel}` : r.type === 'person' ? r.role : r.desc)}</p>${r.conflict ? `<button class="danger" data-review="${r.type}:${esc(r.id)}">先處理這個節點的衝突</button>` : ''}`;
   const pendingIdentity = storeIdentityPending(r), topics = pendingIdentity ? [] : [...new Set(vv.flatMap(v => v.topics))], people = pendingIdentity ? [] : [...new Set(vv.flatMap(v => v.people))];
   if (r.type === 'store' && !pendingIdentity) topics.push(...all('topic').filter(t => t.csvTag && sourceTags(r).includes(t.csvTag)).map(t => t.id));
-  $('focus-detail').innerHTML = `<div class="metrics"><div><strong>${storeIDs.length}</strong><span>相關門市</span></div><div><strong>${vv.length}</strong><span>相關原文</span></div><div><strong>${vv.filter(v => v.csvSources?.length).length}</strong><span>可追溯 CSV</span></div></div>${r.type === 'store' ? `<h3>門市窗口</h3><p>${esc(r.contact)}</p><p class="muted">${esc(r.attr)}</p><p>${esc(r.address || '')}</p><p class="muted">${esc((r.lists || []).join('、'))}</p><p>${sourceTags(r).map(t => `<span class="pill">${esc(t)}</span>`).join(' ')}</p>${sourceButton(r)}` : ''}${r.type === 'person' ? `<p>${esc(r.desc)}</p>${r.sameAs ? `<p>已確認連到 ${chip('person', r.sameAs)}</p>` : ''}` : ''}<h3>相關主題</h3><div class="chips">${topics.map(id => chip('topic', id)).join('') || '<span class="muted">尚未標記主題</span>'}</div><h3>提及人物</h3><div class="chips">${people.map(id => chip('person', id)).join('') || '<span class="muted">尚未標記人物</span>'}</div><div class="insight"><h3>從證據判斷</h3><p>共同主題代表值得追問的線索。對照原文、日期及提問方式，再判斷是否為市場需求；同名人物請先核對身分。</p></div>`;
+  const candidates = r.type === 'store' && !pendingIdentity ? relationCandidates(r.id) : [];
+  const candidateHTML = r.type === 'store' ? `<h3>原文候選關聯</h3><p class="muted">系統只建立可追溯到原文的唯讀候選，不會把候選當成已確認需求。點節點可查看原句、日期與其他門市。</p><div class="candidate-chip-list">${candidates.map(item => `<button type="button" class="candidate-chip ${esc(item.statusKind)}" data-candidate-key="${esc(item.key)}" data-candidate-store="${esc(r.id)}"><strong>${esc(item.name)}</strong><span>${esc(item.category)} · ${esc(item.statusLabel)} · ${item.visitCount} 筆${item.latestDate ? ' · ' + esc(item.latestDate) : ''}</span></button>`).join('') || '<span class="muted">目前原文沒有命中可稽核規則；系統不會為了填滿關聯圖而猜測。</span>'}</div>` : '';
+  $('focus-detail').innerHTML = `<div class="metrics"><div><strong>${storeIDs.length}</strong><span>相關門市</span></div><div><strong>${vv.length}</strong><span>相關原文</span></div><div><strong>${vv.filter(v => v.csvSources?.length).length}</strong><span>可追溯 CSV</span></div>${r.type === 'store' ? `<div><strong>${candidates.length}</strong><span>候選關聯</span></div>` : ''}</div>${r.type === 'store' ? `<h3>門市窗口</h3><p>${esc(r.contact)}</p><p class="muted">${esc(r.attr)}</p><p>${esc(r.address || '')}</p><p class="muted">${esc((r.lists || []).join('、'))}</p><p>${sourceTags(r).map(t => `<span class="pill">${esc(t)}</span>`).join(' ')}</p>${sourceButton(r)}` : ''}${r.type === 'person' ? `<p>${esc(r.desc)}</p>${r.sameAs ? `<p>已確認連到 ${chip('person', r.sameAs)}</p>` : ''}` : ''}<h3>已明確連結的主題</h3><div class="chips">${topics.map(id => chip('topic', id)).join('') || '<span class="muted">尚未手動連結主題</span>'}</div><h3>已明確連結的人物</h3><div class="chips">${people.map(id => chip('person', id)).join('') || '<span class="muted">尚未手動連結人物</span>'}</div>${candidateHTML}<div class="insight"><h3>證據層級</h3><p>「已明確連結」與「系統候選」分開顯示。原文提及、否定／未遇到、詢問／待釐清都保留各自狀態；共同提及不能直接當成市場需求或人際關係。</p></div>`;
   if (pendingIdentity) $('focus-detail').innerHTML = '<p class="conflict-card">需要後續的確認：原文保留，門市身分核實前暫不建立關聯。請到編輯門市核實名稱與來源後，明確勾選已核對身分。</p>' + sourceButton(r);
   $('evidence-list').innerHTML = vv.map(noteHTML).join('') || '<p class="empty">尚無相關拜訪紀錄。</p>'; $('evidence-count').textContent = vv.length;
   drawGraph();
@@ -506,9 +550,17 @@ function drawGraph() {
   const r = by(focus.type, focus.id); if (!r) return;
   if (storeIdentityPending(r)) { $('graph').innerHTML = ''; $('graph-pager').textContent = '門市身分待確認，暫不呈現關聯'; return; }
   const visits = related(), links = [];
-  function add(type, id) { if ((type === focus.type && id === focus.id) || links.some(x => x.type === type && x.id === id) || !by(type, id)) return; links.push({ type, id }); }
-  if (focus.type === 'store') { visits.forEach(v => v.topics.forEach(id => add('topic', id))); visits.forEach(v => v.people.forEach(id => add('person', id))); all('topic').filter(t => t.csvTag && sourceTags(r).includes(t.csvTag)).forEach(t => add('topic', t.id)); }
-  else if (r.csvTag) all('store').filter(s => !storeIdentityPending(s) && sourceTags(s).includes(r.csvTag)).forEach(s => add('store', s.id));
+  function add(type, id) { if ((type === focus.type && id === focus.id) || links.some(x => !x.candidate && x.type === type && x.id === id) || !by(type, id)) return; links.push({ type, id, candidate: false }); }
+  if (focus.type === 'store') {
+    visits.forEach(v => v.topics.forEach(id => add('topic', id))); visits.forEach(v => v.people.forEach(id => add('person', id))); all('topic').filter(t => t.csvTag && sourceTags(r).includes(t.csvTag)).forEach(t => add('topic', t.id));
+    const confirmedRules = new Set(links.filter(item => item.type === 'topic').map(item => entityRule(by('topic', item.id))?.key).filter(Boolean));
+    const confirmedPeople = new Set(links.filter(item => item.type === 'person').map(item => item.id));
+    for (const candidate of relationCandidates(r.id)) {
+      if (candidate.ruleKey && confirmedRules.has(candidate.ruleKey)) continue;
+      if (candidate.personId && confirmedPeople.has(candidate.personId)) continue;
+      links.push({ ...candidate, candidate: true, storeId: r.id });
+    }
+  } else if (r.csvTag) all('store').filter(s => !storeIdentityPending(s) && sourceTags(s).includes(r.csvTag)).forEach(s => add('store', s.id));
   else visits.forEach(v => add('store', v.store));
   if (focus.type === 'person') all('person').filter(p => p.id !== focus.id && (p.name.includes(r.name.replace('（待確認）', '')) || r.name.includes(p.name.replace('（待確認）', '')))).forEach(p => add('person', p.id));
   graphPage = Math.min(graphPage, Math.max(0, Math.ceil(links.length / 8) - 1));
@@ -517,10 +569,14 @@ function drawGraph() {
   $('graph').setAttribute('viewBox', `0 0 ${w} ${h}`); $('graph-wrap').style.height = `${h}px`;
   const positions = [[w * .25, 43], [w * .75, 43], [w * .25, 121], [w * .75, 121], [w * .25, 299], [w * .75, 299], [w * .25, 377], [w * .75, 377]];
   let edges = '', shapes = '';
-  nodes.forEach((n, i) => { const e = by(n.type, n.id), [x, y] = positions[i], pending = n.type === 'person' && !e.confirmed || r.type === 'person' && !r.confirmed;
-    edges += `<path class="edge ${pending ? 'pending' : ''}" d="M${cx} ${cy} Q${cx} ${y} ${x} ${y}"/>`;
+  nodes.forEach((n, i) => {
+    const e = n.candidate ? n : by(n.type, n.id), [x, y] = positions[i];
+    const pending = n.candidate || n.type === 'person' && !e.confirmed || r.type === 'person' && !r.confirmed;
+    edges += `<path class="edge ${n.candidate ? 'candidate' : pending ? 'pending' : ''}" d="M${cx} ${cy} Q${cx} ${y} ${x} ${y}"/>`;
     const label = e.name.length > 10 ? e.name.slice(0, 9) + '…' : e.name;
-    shapes += `<g class="node ${pending ? 'pending' : ''}" role="button" tabindex="0" aria-label="探索${esc(e.name)}" data-node-type="${n.type}" data-node-id="${esc(n.id)}"><title>${esc(e.name)}</title><rect x="${x - nw / 2}" y="${y - 27}" width="${nw}" height="54" rx="9"/><text x="${x}" y="${y - 2}" text-anchor="middle">${esc(label)}</text><text class="sub" x="${x}" y="${y + 16}" text-anchor="middle">${pending ? '同名待核對' : r.csvTag ? '原始標籤相同' : focus.type === 'topic' ? esc(evidenceKind(visits.filter(v => v.store === n.id).map(v => v.text).join('\n'), entityRule(r)).label) : kinds[n.type]}</text></g>`;
+    const subtitle = n.candidate ? `${n.statusLabel} · ${n.visitCount}筆` : pending ? '同名待核對' : r.csvTag ? '原始標籤相同' : focus.type === 'topic' ? evidenceKind(visits.filter(v => v.store === n.id).map(v => v.text).join('\n'), entityRule(r)).label : kinds[n.type];
+    const attrs = n.candidate ? `data-candidate-key="${esc(n.key)}" data-candidate-store="${esc(n.storeId)}"` : `data-node-type="${n.type}" data-node-id="${esc(n.id)}"`;
+    shapes += `<g class="node ${n.candidate ? 'candidate' : pending ? 'pending' : ''}" role="button" tabindex="0" aria-label="${n.candidate ? '查看候選關聯' : '探索'}${esc(e.name)}" ${attrs}><title>${esc(e.name)} · ${esc(n.candidate ? n.category + ' · ' + n.statusLabel + '；系統候選不是已確認事實' : subtitle)}</title><rect x="${x - nw / 2}" y="${y - 27}" width="${nw}" height="54" rx="9"/><text x="${x}" y="${y - 2}" text-anchor="middle">${esc(label)}</text><text class="sub" x="${x}" y="${y + 16}" text-anchor="middle">${esc(subtitle)}</text></g>`;
   });
   $('graph').innerHTML = `<title>${esc(r.name)}的相關節點</title>${edges}${shapes}<g class="node center"><rect x="${cx - 82}" y="${cy - 30}" width="164" height="60" rx="10"/><text class="sub" x="${cx}" y="${cy - 8}" text-anchor="middle">目前中心 · ${kinds[r.type]}</text><text x="${cx}" y="${cy + 13}" text-anchor="middle">${esc(r.name.slice(0, 11))}</text></g>`;
 }
@@ -729,6 +785,7 @@ async function repairPair() {
 }
 document.addEventListener('click', event => {
   const b = event.target.closest('button');
+  const candidate = event.target.closest('[data-candidate-key]'); if (candidate && !busy) return openCandidateDetail(candidate.dataset.candidateKey, candidate.dataset.candidateStore || '');
   const node = event.target.closest('[data-node-type]'); if (node && !busy) return navigate(node.dataset.nodeType, node.dataset.nodeId);
   if (!b) return;
   if (b.dataset.close) {
@@ -771,6 +828,8 @@ document.addEventListener('click', event => {
   if (b.dataset.graphPage) { graphPage = Math.max(0, graphPage + Number(b.dataset.graphPage)); drawGraph(); return; }
   if (b.id === 'new-note') return openEditor('visit');
   if (b.id === 'back-node') { const previous = trail.pop(); if (previous) navigate(previous.type, previous.id, false); return; }
+  if (b.id === 'candidate-overview') return openCandidateOverview();
+  if (b.dataset.candidateStore) { $('review').close(); return navigate('store', b.dataset.candidateStore); }
   if (b.id === 'conflict-link') return switchView('sync');
   if (['sync-button', 'sync-now'].includes(b.id)) return run(async () => { try { await synchronize(); toast(`同步成功：${dateText(payload.lastSync)}。另一台裝置連線同步後會接收更新。`); } catch (e) { recordSyncFailure(e); throw e; } });
   if (b.id === 'check-connection') return run(checkConnection);
@@ -778,7 +837,7 @@ document.addEventListener('click', event => {
   if (b.id === 'import-backup') return $('backup-file').click();
   if (b.id === 'repair-pair') return run(async () => { try { await repairPair(); } catch (e) { recordSyncFailure(e); throw e; } });
 });
-document.addEventListener('keydown', e => { const n = e.target.closest('.node[role="button"]'); if (n && ['Enter', ' '].includes(e.key) && !busy) { e.preventDefault(); navigate(n.dataset.nodeType, n.dataset.nodeId); } });
+document.addEventListener('keydown', e => { const n = e.target.closest('.node[role="button"]'); if (n && ['Enter', ' '].includes(e.key) && !busy) { e.preventDefault(); if (n.dataset.candidateKey) openCandidateDetail(n.dataset.candidateKey, n.dataset.candidateStore || ''); else navigate(n.dataset.nodeType, n.dataset.nodeId); } });
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { if (editorContext?.type === 'visit') void flushVisitDraft(); document.body.classList.add('privacy-veil'); if (payload || busy) lockNow(false); }
   else if (pendingLock || !payload) { pendingLock = false; document.body.classList.remove('privacy-veil'); showGate(); }
