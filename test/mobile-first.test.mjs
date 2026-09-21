@@ -33,6 +33,9 @@ test('mobile-first runtime files are valid JavaScript and expose the daily captu
   assert.match(app, /function openVisitForStore\(/);
   assert.match(app, /event\.target\.id === 'f-store-search'/);
   assert.match(app, /async function discardVisitDraft\(/);
+  assert.match(app, /function openCandidateDetail\(/);
+  assert.match(app, /function openCandidateOverview\(/);
+  assert.match(app, /系統候選不是已確認事實/);
   assert.match(app, /確認捨棄這份未完成草稿/);
   assert.match(app, /既有門市、正式拜訪或歷史版本/);
   assert.match(html, /id="discard-draft-banner"/);
@@ -78,7 +81,7 @@ test('a local draft survives encryption without creating a formal visit revision
 });
 
 test('SOP1 explicitly separates App daily notes from Google CSV imports and keeps retention undecided', () => {
-  assert.equal(SOP1_VERSION, '1.1.1');
+  assert.equal(SOP1_VERSION, '1.2.0');
   assert.match(sop, /### A\. App 日常記錄/);
   assert.match(sop, /### B\. Google CSV 外部資料匯入/);
   assert.match(sop, /### C\. 同步與備份/);
@@ -86,6 +89,9 @@ test('SOP1 explicitly separates App daily notes from Google CSV imports and keep
   assert.match(sop, /不得宣稱絕對零遺失/);
   assert.match(sop, /捨棄草稿/);
   assert.match(sop, /不得刪除或修改任何既有門市、正式拜訪、revision/);
+  assert.match(sop, /拜訪前的記憶提示/);
+  assert.match(sop, /候選不能冒充已確認需求/);
+  assert.match(sop, /時間比較只使用明確的拜訪日期欄位/);
   assert.match(sop, /目前程式保留最近 30 份 Mac 自動快照/);
   assert.match(sop, /未經使用者裁定不得自行更改/);
 });
