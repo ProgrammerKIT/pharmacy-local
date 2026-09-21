@@ -79,10 +79,11 @@ const dateKey = value => /^\d{4}-\d{2}-\d{2}$/.test(String(value || '')) ? Strin
 const candidateSort = (a, b) => (b.latestDate || '').localeCompare(a.latestDate || '') || b.visitCount - a.visitCount || a.name.localeCompare(b.name, 'zh-Hant');
 function summarizeCandidate(meta, evidence) {
   const visits = new Set(evidence.map(item => item.visitId));
-  const statuses = [...new Set(evidence.map(item => item.kind))];
-  const statusLabel = statuses.length > 1 ? '多種原文狀態' : evidence[0]?.label || '原文提及';
+  const statuses = [...new Set(evidence.map(item => item.kind))], labels = [...new Set(evidence.map(item => item.label))];
+  const mixed = statuses.length > 1 || labels.length > 1;
+  const statusLabel = mixed ? '多種原文狀態' : evidence[0]?.label || '原文提及';
   const latestDate = evidence.map(item => dateKey(item.date)).filter(Boolean).sort().at(-1) || '';
-  return { ...meta, evidence, visitCount: visits.size, lineCount: evidence.length, latestDate, statusLabel, statusKind: statuses.length > 1 ? 'mixed' : evidence[0]?.kind || 'mention' };
+  return { ...meta, evidence, visitCount: visits.size, lineCount: evidence.length, latestDate, statusLabel, statusKind: mixed ? 'mixed' : evidence[0]?.kind || 'mention' };
 }
 // Read-only candidate relations. They are display-time evidence indexes, never stored as confirmed entities.
 export function candidateRelationsForStore(storeId, visits, stores, people = []) {
