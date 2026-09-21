@@ -32,6 +32,11 @@ test('mobile-first runtime files are valid JavaScript and expose the daily captu
   assert.match(app, /data-new-visit-store=/);
   assert.match(app, /function openVisitForStore\(/);
   assert.match(app, /event\.target\.id === 'f-store-search'/);
+  assert.match(app, /async function discardVisitDraft\(/);
+  assert.match(app, /確認捨棄這份未完成草稿/);
+  assert.match(app, /既有門市、正式拜訪或歷史版本/);
+  assert.match(html, /id="discard-draft-banner"/);
+  assert.match(html, /id="discard-draft"/);
 });
 
 test('a local draft survives encryption without creating a formal visit revision', async () => {
@@ -55,6 +60,13 @@ test('a local draft survives encryption without creating a formal visit revision
   assert.deepEqual(restored.draft, draft);
   assert.equal(project(restored.bundle).filter(r => r.type === 'visit').length, 0);
 
+  const beforeDiscardBundle = structuredClone(restored.bundle);
+  const discardedPayload = await unseal(await seal({ ...restored, draft: null }, key, meta, 'device'), key, 'device');
+  assert.equal(discardedPayload.draft, null);
+  assert.deepEqual(discardedPayload.bundle, beforeDiscardBundle);
+  assert.equal(discardedPayload.dirty, restored.dirty);
+  assert.equal(project(discardedPayload.bundle).filter(r => r.type === 'visit').length, 0);
+
   restored.bundle.ops.push(revision('visit', draft.id, {
     store: 'pending-store', date: draft.fields.date, source: draft.fields.source, text: draft.fields.text,
     next: '', topics: [], people: [], attachments: []
@@ -66,12 +78,14 @@ test('a local draft survives encryption without creating a formal visit revision
 });
 
 test('SOP1 explicitly separates App daily notes from Google CSV imports and keeps retention undecided', () => {
-  assert.equal(SOP1_VERSION, '1.1.0');
+  assert.equal(SOP1_VERSION, '1.1.1');
   assert.match(sop, /### A\. App 日常記錄/);
   assert.match(sop, /### B\. Google CSV 外部資料匯入/);
   assert.match(sop, /### C\. 同步與備份/);
   assert.match(sop, /草稿保存與「完成紀錄」分開/);
   assert.match(sop, /不得宣稱絕對零遺失/);
+  assert.match(sop, /捨棄草稿/);
+  assert.match(sop, /不得刪除或修改任何既有門市、正式拜訪、revision/);
   assert.match(sop, /目前程式保留最近 30 份 Mac 自動快照/);
   assert.match(sop, /未經使用者裁定不得自行更改/);
 });
