@@ -12,10 +12,10 @@
   </form><button id="gate-restore" class="text-button">從加密備份還原至這台裝置</button><p class="muted">配對後不需每日登入。密碼不會傳給 Mac 服務；加密備份仍需原密碼還原，請離線保存。</p><p class="muted" id="secure-state"></p></div>
 </section>
 <div id="workspace" hidden>
-  <aside class="rail"><a href="/" class="brand"><img src="/icon.svg" width="36" height="36" alt=""><span>藥局關係筆記<small id="app-version">CS EDITION · 1.5.9</small></span></a><nav aria-label="主選單"><button data-view="explore">◎ 關聯探索</button><button data-view="visits" class="active">▤ 拜訪紀錄</button><button data-view="stores">▦ 客戶門市</button><button data-view="entities">◇ 人物與主題</button><button data-view="quality">☷ 資料整理</button><button data-view="csv">⇩ 匯入 CSV</button><button data-view="sync">⇄ 同步與備份</button><button data-view="trash">↶ 回收桶</button></nav><div class="rail-bottom"><span id="device-label"></span><small>由裝置鎖定保護</small></div></aside>
+  <aside class="rail"><a href="/" class="brand"><img src="/icon.svg" width="36" height="36" alt=""><span>藥局關係筆記<small id="app-version">CS EDITION · 1.5.10</small></span></a><nav aria-label="主選單"><button data-view="explore">◎ 關聯探索</button><button data-view="visits" class="active">▤ 拜訪紀錄</button><button data-view="stores">▦ 客戶門市</button><button data-view="entities">◇ 人物與主題</button><button data-view="quality">☷ 資料整理</button><button data-view="csv">⇩ 匯入 CSV</button><button data-view="sync">⇄ 同步與備份</button><button data-view="trash">↶ 回收桶</button></nav><div class="rail-bottom"><span id="device-label"></span><small>由裝置鎖定保護</small></div></aside>
   <main><header class="topbar"><div><p class="eyebrow">PRIVATE FIELD NOTES</p><h1 id="page-title">拜訪紀錄</h1></div><div class="top-actions"><button id="sync-button" class="secondary">同步</button><button id="new-note" class="primary">＋ 新增拜訪</button></div></header>
     <div class="statusline"><span id="save-state">手機已保存：讀取中</span><span id="sync-state">Mac 尚未確認收到</span><button id="conflict-link" class="text-button" hidden></button></div>
-    <p id="update-state" class="update-state" role="status">程式 v1.5.9 · 等待檢查本機服務</p>
+    <p id="update-state" class="update-state" role="status">程式 v1.5.10 · 等待檢查本機服務</p>
     <section id="explore-view" class="explore-grid" hidden>
       <aside class="store-pane"><div class="section-row"><h2>探索起點</h2><button class="text-button" data-add="store">＋ 門市</button></div>
         <label class="sr-only" for="search">搜尋門市與拜訪原文</label><input id="search" type="search" placeholder="搜尋門市、客群、拜訪原文">
@@ -35,7 +35,7 @@
       <div class="customer-filters panel"><div class="customer-search-row"><div><label class="sr-only" for="customer-search">搜尋客戶門市與拜訪原文</label><input id="customer-search" type="search" placeholder="搜尋門市、客群、拜訪原文"></div><div class="filter-row"><select id="customer-district" aria-label="客戶門市地區"><option value="">所有地區</option></select><select id="customer-channel" aria-label="客戶門市型態"><option value="">所有門市型態</option></select></div></div>
         <div class="retail-filter"><h3 id="customer-retail-heading">通路分群</h3><p class="muted">依 Google Maps 原始店名分群；可複選通路，再搭配文字、地區與門市型態篩選。手動新增門市依目前名稱分群。</p><div id="customer-retail-options" class="retail-options" role="group" aria-labelledby="customer-retail-heading"></div></div>
         <div class="store-filter-summary"><span id="customer-store-count" role="status"></span><button class="text-button" data-clear-store-filters>清除篩選</button></div>
-      </div><div id="customer-list" class="card-grid"></div></section>
+      </div><p class="muted customer-visit-hint">搜尋到既有門市後，可直接按「＋ 新增拜訪」。要修改既有筆記，請到「拜訪紀錄」搜尋該門市或文字後按「編輯」。</p><div id="customer-list" class="card-grid"></div></section>
     <section id="quality-view" class="page-section" hidden><div class="section-row"><div><h2>資料整理</h2><p class="muted">核對疑似重複、補齊門市資料，保留每次修改的來源與歷史。</p></div><div class="update-actions"><button id="quality-refresh">重新檢查</button><button data-view="csv" class="primary">檢查並匯入 CSV</button></div></div><div id="quality-content"></div></section>
     <section id="csv-view" class="page-section" hidden></section>
     <section id="entities-view" class="page-section" hidden><div class="section-row"><h2>人物與主題</h2><div><button data-add="person" class="secondary">＋ 人物</button> <button data-add="topic" class="primary">＋ 主題</button></div></div><p class="muted">同名只是一條線索。確認姓名與身分後，可將人物連到同一位對象；原始拜訪文字保留。</p><div id="entity-list" class="card-grid"></div></section>
