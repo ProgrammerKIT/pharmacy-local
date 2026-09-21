@@ -16,7 +16,7 @@ let lastError = '', offlineReady = false, storagePersistent = false, autoFetchin
 let qualityTab = 'duplicates', qualityField = '', qualityPage = 0, qualityCache = null, qualityReview = null;
 let storeFilters = { query: '', district: '', kind: '', groups: [] };
 let updateHolding = false, macProgram = null, lastSyncFailure = null, syncWarning = '';
-let draftTimer = null, draftSaveChain = Promise.resolve();
+let draftTimer = null, draftSaveChain = Promise.resolve(), discardingDraft = false;
 const csvImport = createCSVImport({ host: $('csv-view'), getState: () => payload, run, saveBundle: async bundle => { await persist({ ...payload, bundle, dirty: true }); render(); }, notify: toast, exportReport: report => download(JSON.stringify({ ...report, appVersion: APP_VERSION }, null, 2), 'pharmacy-import-preview.json', 'application/json'), downloadSource: (blob, filename) => { if (!confirm('原始 CSV 是明文檔案。請確認下載到自己的本機資料夾，避開 iCloud Drive。')) return; download(unb64(payload.bundle.blobs[blob]), filename.replace(/[\/\\]/g, '_'), 'application/octet-stream'); } });
 const all = type => records.filter(r => r.type === type && (!r.deleted || r.conflict));
 const by = (type, id) => records.find(r => r.type === type && r.id === id);
@@ -127,6 +127,7 @@ function captureVisitDraft() {
 }
 function applyVisitDraft(draft) {
   if (!draft || draft.format !== 'visit-draft-1' || !draft.fields) return;
+  if ($('discard-draft')) $('discard-draft').hidden = false;
   const f = draft.fields, set = (id, value) => { const el = $(id); if (el && value !== undefined) el.value = value; };
   set('f-store', f.store); set('f-date', f.date); set('f-source', f.source); set('f-text', f.text); set('f-next', f.next);
   set('f-new-store-name', f.newStoreName); set('f-new-store-district', f.newStoreDistrict); set('f-new-store-map-url', f.newStoreMapUrl);
@@ -145,6 +146,7 @@ function toggleQuickStoreFields() {
 }
 async function persistVisitDraftNow() {
   clearTimeout(draftTimer); draftTimer = null;
+  if (discardingDraft) return;
   const draft = captureVisitDraft(); if (!draft || !payload) return;
   draftState('儲存中…', 'saving');
   try {
@@ -159,15 +161,16 @@ async function persistVisitDraftNow() {
   }
 }
 function scheduleVisitDraftSave() {
-  if (!editorContext || editorContext.type !== 'visit') return;
+  if (discardingDraft || !editorContext || editorContext.type !== 'visit') return;
   editorContext.draftTouched = true;
+  if ($('discard-draft')) $('discard-draft').hidden = false;
   draftState('儲存中…', 'saving'); clearTimeout(draftTimer);
   draftTimer = setTimeout(() => {
     draftSaveChain = draftSaveChain.catch(() => {}).then(persistVisitDraftNow).catch(() => {});
   }, 350);
 }
 function flushVisitDraft() {
-  if (!editorContext || editorContext.type !== 'visit' || !editorContext.draftTouched) return draftSaveChain.catch(() => {});
+  if (discardingDraft || !editorContext || editorContext.type !== 'visit' || !editorContext.draftTouched) return draftSaveChain.catch(() => {});
   clearTimeout(draftTimer); draftTimer = null;
   draftSaveChain = draftSaveChain.catch(() => {}).then(persistVisitDraftNow);
   return draftSaveChain;
@@ -177,6 +180,25 @@ function resumeVisitDraft() {
   if (!draft || draft.format !== 'visit-draft-1') return toast('目前沒有可恢復的草稿。');
   const id = draft.baseData ? draft.id : null;
   openEditor('visit', id, draft);
+}
+async function discardVisitDraft() {
+  const activeVisit = editorContext?.type === 'visit';
+  const hasSavedDraft = payload?.draft?.format === 'visit-draft-1';
+  const hasPendingInput = activeVisit && editorContext.draftTouched;
+  if (!hasSavedDraft && !hasPendingInput) return toast('目前沒有未完成草稿需要捨棄。');
+  if (!confirm('確認捨棄這份未完成草稿？\n只會刪除這份尚未完成的本機草稿與目前尚未保存的輸入；不會刪除或修改任何既有門市、正式拜訪或歷史版本。')) return;
+  discardingDraft = true;
+  try {
+    clearTimeout(draftTimer); draftTimer = null;
+    if (activeVisit) editorContext.draftTouched = false;
+    await draftSaveChain.catch(() => {});
+    if (payload?.draft?.format === 'visit-draft-1') await persist({ ...payload, draft: null });
+    if (activeVisit) { $('editor').close(); editorContext = null; }
+    render(); status();
+    toast('未完成草稿已從這台裝置捨棄；既有門市、正式拜訪與歷史版本未變更。');
+  } finally {
+    discardingDraft = false;
+  }
 }
 async function initializeOrUnlock(event) {
   event.preventDefault(); await run(async () => {
@@ -542,11 +564,13 @@ function openEditor(type, id = null, restoreDraft = null) {
     const storeOptions = unavailableOption + orderedStores.map(s => `<option value="${esc(s.id)}" ${!selectedUnavailable && selectedStore === s.id ? 'selected' : ''}>${esc(s.name)}${s.district ? ' · ' + esc(s.district) : ''}</option>`).join('') + `<option value="__new__" ${selectedStore === '__new__' ? 'selected' : ''}>＋ 快速新增門市</option>`;
     $('editor-fields').innerHTML = `<div class="visit-store-picker"><label>搜尋既有門市<input id="f-store-search" type="search" placeholder="輸入店名、來源名稱、地區或地址" autocomplete="off"></label><p id="f-store-match-count" class="muted"></p></div><div class="field-grid"><label>門市<select id="f-store">${storeOptions}</select></label><label>拜訪日期（未知可留空）<input type="date" id="f-date" value="${esc(base.date ?? new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10))}"></label></div><div id="quick-store-fields" class="quick-store" hidden><h3>快速新增門市</h3>${input('f-new-store-name', '門市名稱（必要）', '', 200)}${input('f-new-store-district', '地區（可稍後補）', '', 500)}${input('f-new-store-map-url', 'Google Maps 網址（可稍後補）', '', 2000)}<label class="check"><input id="f-new-store-pending" type="checkbox" checked> 身分待確認；先保存門市與拜訪，不自動合併</label><p class="muted">除名稱外都可稍後補。待確認門市不參與關聯分析，之後可在門市資料核實。</p></div><label>資訊來源<select id="f-source">${[...new Set(['藥師主動提及', '詢問後回覆', '現場觀察', '其他', ...(base.source ? [base.source] : [])])].map(x => `<option ${x === base.source ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></label>${textarea('f-text', '原始拜訪內容', base.text)}${textarea('f-next', '下次跟進', base.next)}<label>相關主題</label><div class="check-grid">${pick('topic', base.topics)}</div><label>提及人物</label><div class="check-grid">${pick('person', base.people)}</div><label>附件（每個上限 3 MB）<input type="file" id="f-files" multiple accept="image/jpeg,image/png,image/webp,image/heic,application/pdf"></label><p class="muted">支援圖片與 PDF。新選的附件檔案無法靠草稿跨 App 關閉／重新開啟保存；完成紀錄前若 App 被系統終止，請重新選擇附件。舊附件取消勾選可從此版本移除，歷史仍保留。</p><div class="check-grid">${(base.attachments || []).map((a, i) => `<label class="check"><input type="checkbox" name="keep-attachment" value="${i}" checked>${esc(a.name)}</label>`).join('')}</div><p id="draft-save-state" class="draft-state" role="status">尚未變更</p><p class="muted">文字與欄位變更會自動加密保存為本機草稿；「完成紀錄」才建立／更新正式拜訪版本。</p>`;
     $('editor-save').textContent = '完成紀錄';
+    $('discard-draft').hidden = !(restoreDraft?.format === 'visit-draft-1');
     toggleQuickStoreFields();
     refreshVisitStoreOptions('');
     if (restoreDraft) applyVisitDraft(restoreDraft);
   } else {
     $('editor-save').textContent = '儲存';
+    $('discard-draft').hidden = true;
     let fields = input('f-name', `${kinds[type]}名稱`, d.name, 200, true);
     if (type === 'store') fields += `<div class="field-grid">${input('f-city', '縣市', d.city)}${input('f-district', '地區', d.district)}</div><label>通路<select id="f-channel">${[...new Set(['', '連鎖', '獨立', '加盟', '診所', '其他', ...(d.channel ? [d.channel] : [])])].map(c => `<option value="${esc(c)}" ${c === d.channel ? 'selected' : ''}>${esc(c || '未分類')}</option>`).join('')}</select></label>${input('f-address', '地址', d.address, 2000)}${input('f-map-url', 'Google Maps 網址（只保存，不自動開啟）', d.mapUrl, 2000)}${input('f-attr', '門市屬性／客群', d.attr)}${input('f-contact', '拜訪窗口', d.contact)}`;
     if (type === 'store' && d.csvIdentityPending) fields += '<label class="check"><input type="checkbox" id="f-identity-reviewed">我已核實此門市身分與來源，解除待確認標記並允許關聯分析</label>';
@@ -722,6 +746,7 @@ document.addEventListener('click', event => {
   if (b.dataset.quickVisit) return openVisitForStore(b.dataset.quickVisit);
   if (b.dataset.newVisitStore) return openVisitForStore(b.dataset.newVisitStore);
   if (b.id === 'resume-draft') return resumeVisitDraft();
+  if (b.id === 'discard-draft' || b.id === 'discard-draft-banner') return run(discardVisitDraft, 'editor-error');
   if (b.dataset.retailGroup !== undefined) return changeStoreFilter('groups', b.dataset.retailGroup);
   if (b.dataset.clearStoreFilters !== undefined) return changeStoreFilter('clear');
   if (b.dataset.add) return openEditor(b.dataset.add);
