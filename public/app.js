@@ -75,6 +75,41 @@ function recentStores(limit = 6) {
   }
   return availableStores.sort((a, b) => (latest.get(b.id) || 0) - (latest.get(a.id) || 0) || a.name.localeCompare(b.name, 'zh-Hant')).slice(0, limit);
 }
+function visitStoreSearchText(store) {
+  return [store.name, ...(store.csvAliases || []), store.city, store.district, store.address, store.channel]
+    .filter(Boolean).join(' ').toLocaleLowerCase('zh-Hant');
+}
+function orderedVisitStores() {
+  const recent = recentStores(6), recentIds = new Set(recent.map(store => store.id));
+  const rest = all('store').filter(store => !store.conflict && !recentIds.has(store.id))
+    .sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
+  return [...recent, ...rest];
+}
+function refreshVisitStoreOptions(query = '') {
+  const select = $('f-store'), count = $('f-store-match-count'); if (!select) return;
+  const selected = select.value, needle = query.trim().toLocaleLowerCase('zh-Hant');
+  const matches = orderedVisitStores().filter(store => !needle || visitStoreSearchText(store).includes(needle));
+  const selectedRecord = selected !== '__new__' ? by('store', selected) : null;
+  const selectedUnavailable = selected && selected !== '__new__' && (!selectedRecord || selectedRecord.deleted || selectedRecord.conflict);
+  const shown = selectedRecord && !selectedUnavailable && !matches.some(store => store.id === selected)
+    ? [selectedRecord, ...matches] : matches;
+  const unavailableOption = selectedUnavailable ? `<option value="${esc(selected)}" selected disabled>原門市目前不可使用或有衝突，請重新選擇</option>` : '';
+  select.innerHTML = unavailableOption + shown.map(store => `<option value="${esc(store.id)}">${esc(store.name)}${store.district ? ' · ' + esc(store.district) : ''}</option>`).join('') + '<option value="__new__">＋ 快速新增門市</option>';
+  if ([...select.options].some(option => option.value === selected && !option.disabled)) select.value = selected;
+  else if (selectedUnavailable) select.value = selected;
+  else if (select.options.length) select.selectedIndex = 0;
+  if (count) count.textContent = needle ? `符合 ${matches.length} 間既有門市；目前選擇不會因搜尋自動改變。` : `可選 ${matches.length} 間既有門市。`;
+}
+function openVisitForStore(storeId) {
+  const store = by('store', storeId);
+  if (!store || store.deleted || store.conflict) return toast('這間門市目前不可直接新增拜訪；若有同步衝突請先處理。');
+  if (payload?.draft?.format === 'visit-draft-1') {
+    toast('目前有未完成草稿，先恢復該草稿；完成後再新增另一筆拜訪。');
+    return resumeVisitDraft();
+  }
+  focus = { type: 'store', id: storeId };
+  openEditor('visit');
+}
 function captureVisitDraft() {
   const ctx = editorContext; if (!ctx || ctx.type !== 'visit' || !$('editor').open) return null;
   const val = id => $(id)?.value ?? '';
@@ -329,7 +364,7 @@ function render() {
   $('conflict-list').innerHTML = records.filter(r => r.conflict).map(r => `<div class="conflict-card"><strong>${esc(r.name || name('store', r.store) + ' · ' + r.date)}</strong><p>${r.heads.length} 個版本待確認</p><button data-review="${r.type}:${esc(r.id)}">比較並處理</button></div>`).join('') || '<p class="muted">目前沒有衝突。</p>';
   if (activeView === 'trash') $('trash-list').innerHTML = records.filter(r => r.deleted && !r.conflict).map(r => `<article class="panel"><span class="pill">${kinds[r.type]}${r.mergedInto ? ' · 已整併' : ''}</span><h3>${esc(r.name || name('store', r.store) + ' · ' + r.date)}</h3><p>${r.mergedInto ? '已依裁定整併至：' + esc(name('store', r.mergedInto)) + '。原版本與歷史仍保留。' : esc(r.text || r.desc || r.contact || '')}</p><button data-restore="${r.type}:${esc(r.id)}">還原</button> <button data-history="${r.type}:${esc(r.id)}">查看歷史</button></article>`).join('') || '<p class="empty">回收桶是空的。</p>';
 }
-function entityCard(r) { return `<article class="panel"><span class="pill ${r.conflict ? 'warn' : ''}">${kinds[r.type]}${r.conflict ? ' · 有衝突' : ''}${storeIdentityPending(r) ? ' · 需要後續的確認' : ''}</span><h3>${esc(r.name)}</h3>${r.type === 'store' ? '<span class="pill retail-label">' + esc(retailChannel(r).label) + '</span>' : ''}${r.csvAliases?.length ? '<p class="muted">來源名稱：' + r.csvAliases.map(esc).join('／') + '</p>' : ''}<p>${esc(r.type === 'store' ? `${r.city} ${r.district} · ${r.channel}\n${r.attr}\n${r.contact}` : r.type === 'person' ? `${r.confirmed ? '身分已核對' : '身分待確認'} · ${r.role}${r.sameAs ? '\n連到：' + name('person', r.sameAs) : ''}` : r.desc)}</p><div class="note-actions">${sourceButton(r)}<button class="text-button" data-node-type="${r.type}" data-node-id="${esc(r.id)}">探索關聯</button><button class="text-button" data-edit="${r.type}:${esc(r.id)}">編輯</button><button class="text-button" data-history="${r.type}:${esc(r.id)}">歷史</button><button class="text-button danger" data-delete="${r.type}:${esc(r.id)}">刪除</button></div></article>`; }
+function entityCard(r) { return `<article class="panel"><span class="pill ${r.conflict ? 'warn' : ''}">${kinds[r.type]}${r.conflict ? ' · 有衝突' : ''}${storeIdentityPending(r) ? ' · 需要後續的確認' : ''}</span><h3>${esc(r.name)}</h3>${r.type === 'store' ? '<span class="pill retail-label">' + esc(retailChannel(r).label) + '</span>' : ''}${r.csvAliases?.length ? '<p class="muted">來源名稱：' + r.csvAliases.map(esc).join('／') + '</p>' : ''}<p>${esc(r.type === 'store' ? `${r.city} ${r.district} · ${r.channel}\n${r.attr}\n${r.contact}` : r.type === 'person' ? `${r.confirmed ? '身分已核對' : '身分待確認'} · ${r.role}${r.sameAs ? '\n連到：' + name('person', r.sameAs) : ''}` : r.desc)}</p><div class="note-actions">${r.type === 'store' && !r.conflict ? `<button class="secondary" data-new-visit-store="${esc(r.id)}">＋ 新增拜訪</button>` : ''}${sourceButton(r)}<button class="text-button" data-node-type="${r.type}" data-node-id="${esc(r.id)}">探索關聯</button><button class="text-button" data-edit="${r.type}:${esc(r.id)}">編輯</button><button class="text-button" data-history="${r.type}:${esc(r.id)}">歷史</button><button class="text-button danger" data-delete="${r.type}:${esc(r.id)}">刪除</button></div></article>`; }
 function qualityReport() {
   if (qualityCache?.bundle !== payload.bundle) qualityCache = { bundle: payload.bundle, report: scanQuality(records) };
   return qualityCache.report;
@@ -499,16 +534,16 @@ function openEditor(type, id = null, restoreDraft = null) {
     if (restoreDraft?.format === 'visit-draft-1') editorContext = { type, id: restoreDraft.id, parents: [...(restoreDraft.parents || [])], oldData: restoreDraft.baseData ? structuredClone(restoreDraft.baseData) : null, draftTouched: false };
     const base = editorContext.oldData || d;
     const selectedStore = restoreDraft?.fields?.store || base.store || (focus.type === 'store' && by('store', focus.id) && !by('store', focus.id).conflict ? focus.id : recentStores(1)[0]?.id || '__new__');
-    const recent = recentStores(6), recentIds = new Set(recent.map(s => s.id));
-    const orderedStores = [...recent, ...all('store').filter(s => !s.conflict && !recentIds.has(s.id))];
+    const orderedStores = orderedVisitStores();
     const pick = (kind, selected) => all(kind).map(r => `<label class="check"><input type="checkbox" name="${kind}" value="${esc(r.id)}" ${selected?.includes(r.id) ? 'checked' : ''}>${esc(r.name)}</label>`).join('') || '<p class="muted">先到「人物與主題」新增。</p>';
     const selectedRecord = selectedStore !== '__new__' ? by('store', selectedStore) : null;
     const selectedUnavailable = selectedStore !== '__new__' && (!selectedRecord || selectedRecord.deleted || selectedRecord.conflict);
     const unavailableOption = selectedUnavailable ? `<option value="${esc(selectedStore)}" selected disabled>原門市目前不可使用或有衝突，請重新選擇</option>` : '';
-    const storeOptions = unavailableOption + orderedStores.map(s => `<option value="${esc(s.id)}" ${!selectedUnavailable && selectedStore === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('') + `<option value="__new__" ${selectedStore === '__new__' ? 'selected' : ''}>＋ 快速新增門市</option>`;
-    $('editor-fields').innerHTML = `<div class="field-grid"><label>門市<select id="f-store">${storeOptions}</select></label><label>拜訪日期（未知可留空）<input type="date" id="f-date" value="${esc(base.date ?? new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10))}"></label></div><div id="quick-store-fields" class="quick-store" hidden><h3>快速新增門市</h3>${input('f-new-store-name', '門市名稱（必要）', '', 200)}${input('f-new-store-district', '地區（可稍後補）', '', 500)}${input('f-new-store-map-url', 'Google Maps 網址（可稍後補）', '', 2000)}<label class="check"><input id="f-new-store-pending" type="checkbox" checked> 身分待確認；先保存門市與拜訪，不自動合併</label><p class="muted">除名稱外都可稍後補。待確認門市不參與關聯分析，之後可在門市資料核實。</p></div><label>資訊來源<select id="f-source">${[...new Set(['藥師主動提及', '詢問後回覆', '現場觀察', '其他', ...(base.source ? [base.source] : [])])].map(x => `<option ${x === base.source ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></label>${textarea('f-text', '原始拜訪內容', base.text)}${textarea('f-next', '下次跟進', base.next)}<label>相關主題</label><div class="check-grid">${pick('topic', base.topics)}</div><label>提及人物</label><div class="check-grid">${pick('person', base.people)}</div><label>附件（每個上限 3 MB）<input type="file" id="f-files" multiple accept="image/jpeg,image/png,image/webp,image/heic,application/pdf"></label><p class="muted">支援圖片與 PDF。新選的附件檔案無法靠草稿跨 App 關閉／重新開啟保存；完成紀錄前若 App 被系統終止，請重新選擇附件。舊附件取消勾選可從此版本移除，歷史仍保留。</p><div class="check-grid">${(base.attachments || []).map((a, i) => `<label class="check"><input type="checkbox" name="keep-attachment" value="${i}" checked>${esc(a.name)}</label>`).join('')}</div><p id="draft-save-state" class="draft-state" role="status">尚未變更</p><p class="muted">文字與欄位變更會自動加密保存為本機草稿；「完成紀錄」才建立／更新正式拜訪版本。</p>`;
+    const storeOptions = unavailableOption + orderedStores.map(s => `<option value="${esc(s.id)}" ${!selectedUnavailable && selectedStore === s.id ? 'selected' : ''}>${esc(s.name)}${s.district ? ' · ' + esc(s.district) : ''}</option>`).join('') + `<option value="__new__" ${selectedStore === '__new__' ? 'selected' : ''}>＋ 快速新增門市</option>`;
+    $('editor-fields').innerHTML = `<div class="visit-store-picker"><label>搜尋既有門市<input id="f-store-search" type="search" placeholder="輸入店名、來源名稱、地區或地址" autocomplete="off"></label><p id="f-store-match-count" class="muted"></p></div><div class="field-grid"><label>門市<select id="f-store">${storeOptions}</select></label><label>拜訪日期（未知可留空）<input type="date" id="f-date" value="${esc(base.date ?? new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10))}"></label></div><div id="quick-store-fields" class="quick-store" hidden><h3>快速新增門市</h3>${input('f-new-store-name', '門市名稱（必要）', '', 200)}${input('f-new-store-district', '地區（可稍後補）', '', 500)}${input('f-new-store-map-url', 'Google Maps 網址（可稍後補）', '', 2000)}<label class="check"><input id="f-new-store-pending" type="checkbox" checked> 身分待確認；先保存門市與拜訪，不自動合併</label><p class="muted">除名稱外都可稍後補。待確認門市不參與關聯分析，之後可在門市資料核實。</p></div><label>資訊來源<select id="f-source">${[...new Set(['藥師主動提及', '詢問後回覆', '現場觀察', '其他', ...(base.source ? [base.source] : [])])].map(x => `<option ${x === base.source ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></label>${textarea('f-text', '原始拜訪內容', base.text)}${textarea('f-next', '下次跟進', base.next)}<label>相關主題</label><div class="check-grid">${pick('topic', base.topics)}</div><label>提及人物</label><div class="check-grid">${pick('person', base.people)}</div><label>附件（每個上限 3 MB）<input type="file" id="f-files" multiple accept="image/jpeg,image/png,image/webp,image/heic,application/pdf"></label><p class="muted">支援圖片與 PDF。新選的附件檔案無法靠草稿跨 App 關閉／重新開啟保存；完成紀錄前若 App 被系統終止，請重新選擇附件。舊附件取消勾選可從此版本移除，歷史仍保留。</p><div class="check-grid">${(base.attachments || []).map((a, i) => `<label class="check"><input type="checkbox" name="keep-attachment" value="${i}" checked>${esc(a.name)}</label>`).join('')}</div><p id="draft-save-state" class="draft-state" role="status">尚未變更</p><p class="muted">文字與欄位變更會自動加密保存為本機草稿；「完成紀錄」才建立／更新正式拜訪版本。</p>`;
     $('editor-save').textContent = '完成紀錄';
     toggleQuickStoreFields();
+    refreshVisitStoreOptions('');
     if (restoreDraft) applyVisitDraft(restoreDraft);
   } else {
     $('editor-save').textContent = '儲存';
@@ -684,7 +719,8 @@ document.addEventListener('click', event => {
   if (b.id === 'view-archives') return run(openArchives);
   if (b.dataset.exportArchive) return run(() => exportArchive(b.dataset.exportArchive));
   if (b.dataset.view) return switchView(b.dataset.view);
-  if (b.dataset.quickVisit) { focus = { type: 'store', id: b.dataset.quickVisit }; return openEditor('visit'); }
+  if (b.dataset.quickVisit) return openVisitForStore(b.dataset.quickVisit);
+  if (b.dataset.newVisitStore) return openVisitForStore(b.dataset.newVisitStore);
   if (b.id === 'resume-draft') return resumeVisitDraft();
   if (b.dataset.retailGroup !== undefined) return changeStoreFilter('groups', b.dataset.retailGroup);
   if (b.dataset.clearStoreFilters !== undefined) return changeStoreFilter('clear');
@@ -726,8 +762,11 @@ window.addEventListener('pagehide', () => { if (editorContext?.type === 'visit')
 window.addEventListener('pageshow', () => { if (!payload && !document.hidden) { document.body.classList.remove('privacy-veil'); showGate(); } });
 $('gate-form').addEventListener('submit', initializeOrUnlock); $('editor-form').addEventListener('submit', saveEditor);
 $('editor').addEventListener('close', () => editorContext = null);
-$('editor-fields').addEventListener('input', event => { if (editorContext?.type === 'visit' && event.target.id !== 'f-files') scheduleVisitDraftSave(); });
-$('editor-fields').addEventListener('change', event => { if (event.target.id === 'f-store') toggleQuickStoreFields(); if (editorContext?.type === 'visit' && event.target.id !== 'f-files') scheduleVisitDraftSave(); });
+$('editor-fields').addEventListener('input', event => {
+  if (event.target.id === 'f-store-search') { refreshVisitStoreOptions(event.target.value); return; }
+  if (editorContext?.type === 'visit' && event.target.id !== 'f-files') scheduleVisitDraftSave();
+});
+$('editor-fields').addEventListener('change', event => { if (event.target.id === 'f-store') toggleQuickStoreFields(); if (editorContext?.type === 'visit' && !['f-files', 'f-store-search'].includes(event.target.id)) scheduleVisitDraftSave(); });
 $('quality-content').addEventListener('change', e => { if (e.target.id === 'quality-field') { qualityField = e.target.value; qualityPage = 0; renderQuality(); } });
 $('gate-restore').addEventListener('click', () => { if (!$('password').value) { $('gate-error').textContent = '請先在密碼欄填寫備份密碼。'; return; } $('backup-file').click(); });
 $('backup-file').addEventListener('change', () => { const f = $('backup-file').files[0]; if (f) run(() => importBackup(f), payload ? null : 'gate-error'); $('backup-file').value = ''; });
