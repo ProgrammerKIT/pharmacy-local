@@ -50,3 +50,5 @@
 @media(max-width:700px){.quick-visit-panel .section-row{align-items:flex-start}.recent-store-list{grid-template-columns:1fr 1fr}.draft-banner{align-items:flex-start;flex-direction:column}.draft-banner button{width:100%}.recent-store{min-height:72px}}
 
 .visit-store-picker{margin-bottom:4px}.visit-store-picker label{margin-bottom:4px}.visit-store-picker p{margin-top:0}.customer-visit-hint{margin:-8px 0 18px}
+
+.draft-banner-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}@media(max-width:700px){.draft-banner-actions{width:100%}.draft-banner-actions button{flex:1}}
