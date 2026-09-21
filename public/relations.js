@@ -26,7 +26,7 @@ const EXTRA_CANDIDATE_RULES = [
   { key: 'price-resistance', name: '價格阻力', category: '疑慮／阻力', terms: ['太貴', '很貴'] },
   { key: 'stock-shortage', name: '缺貨', category: '疑慮／阻力', terms: ['缺貨'] }
 ];
-const reEscape = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\const reEscape = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');');
+const reEscape = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\const reEscape = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\const reEscape = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');');');
 export function termFound(text, term) {
   return /^[a-z0-9 ]+$/i.test(term)
     ? new RegExp(`(?<![a-z0-9])${reEscape(term)}(?![a-z0-9])`, 'i').test(text)
