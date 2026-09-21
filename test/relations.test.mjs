@@ -40,7 +40,7 @@ test('candidate relations are read-only evidence indexes with explicit status an
   ];
   const visits=[
     {id:'v1',store:'s1',date:'2026-09-20',source:'現場觀察',text:'乾眼客人詢問單支包裝怎麼用？',next:'下次帶資料',people:[],deleted:false,conflict:false},
-    {id:'v2',store:'s1',date:'2026-08-25',source:'詢問後回覆',text:'目前沒有乾眼需求',next:'',people:[],deleted:false,conflict:false},
+    {id:'v2',store:'s1',date:'2026-08-15',source:'詢問後回覆',text:'目前沒有乾眼需求',next:'',people:[],deleted:false,conflict:false},
     {id:'v3',store:'s2',date:'2026-09-15',source:'現場觀察',text:'乾眼與單支包裝都有被提到',next:'',people:[],deleted:false,conflict:false},
     {id:'v4',store:'pending',date:'2026-09-18',source:'現場觀察',text:'乾眼',next:'',people:[],deleted:false,conflict:false}
   ];
