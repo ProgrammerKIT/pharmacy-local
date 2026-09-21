@@ -746,7 +746,8 @@ document.addEventListener('click', event => {
   if (b.dataset.quickVisit) return openVisitForStore(b.dataset.quickVisit);
   if (b.dataset.newVisitStore) return openVisitForStore(b.dataset.newVisitStore);
   if (b.id === 'resume-draft') return resumeVisitDraft();
-  if (b.id === 'discard-draft' || b.id === 'discard-draft-banner') return run(discardVisitDraft, 'editor-error');
+  if (b.id === 'discard-draft') return run(discardVisitDraft, 'editor-error');
+  if (b.id === 'discard-draft-banner') return run(discardVisitDraft);
   if (b.dataset.retailGroup !== undefined) return changeStoreFilter('groups', b.dataset.retailGroup);
   if (b.dataset.clearStoreFilters !== undefined) return changeStoreFilter('clear');
   if (b.dataset.add) return openEditor(b.dataset.add);
