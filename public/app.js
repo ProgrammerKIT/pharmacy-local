@@ -8,6 +8,19 @@ import { startUpdates, requestLocal, diagnoseConnection } from './update-client.
 
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const regexEscape = value => String(value ?? '').replace(/[.*+?^$\{\}()|[\]\\]/g, '\\const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));');
+function highlightLiteral(value, query) {
+  const text = String(value ?? ''), needle = String(query ?? '').trim();
+  if (!needle) return esc(text);
+  const pattern = new RegExp(regexEscape(needle), 'giu');
+  let html = '', last = 0, match;
+  while ((match = pattern.exec(text))) {
+    html += esc(text.slice(last, match.index)) + '<mark class="search-match">' + esc(match[0]) + '</mark>';
+    last = match.index + match[0].length;
+    if (!match[0].length) pattern.lastIndex++;
+  }
+  return html + esc(text.slice(last));
+}
 const titles = { explore: '關聯探索', visits: '拜訪紀錄', stores: '客戶門市', entities: '人物與主題', csv: '匯入 CSV', quality: '資料整理', sync: '同步與備份', trash: '回收桶' };
 const kinds = { store: '門市', visit: '拜訪', person: '人物', topic: '主題' };
 let key = null, meta = null, payload = null, slot = null, localRevision = 0, busy = false, pendingLock = false, activeView = 'visits';
@@ -439,17 +452,17 @@ function related(f = focus) {
   const tagged = tag ? all('store').filter(s => sourceTags(s).includes(tag)).map(s => s.id) : [];
   return groupCSVNotes(all('visit').filter(v => f.type === 'store' || relationVisitAllowed(v, all('store'))).filter(v => f.type === 'store' ? v.store === f.id : f.type === 'topic' ? tag ? tagged.includes(v.store) : v.topics.includes(f.id) : v.people.some(p => canonicalPerson(p) === canonicalPerson(f.id))).sort((a, b) => b.date.localeCompare(a.date)));
 }
-function chip(type, id) { const r = by(type, id); return r ? `<button class="chip ${type}" data-node-type="${type}" data-node-id="${esc(id)}">${type === 'topic' ? '# ' : ''}${esc(r.name)}${r.conflict ? ' ⚠' : ''}</button>` : ''; }
-function noteHTML(v) {
-  if (v.evidenceMembers?.length > 1) return `<section class="note"><h3>相同來源文字 · ${v.evidenceMembers.length} 份來源</h3><p>同店、同日期欄位與全文相同，整合顯示一次；不代表已證實是同一次拜訪。每份來源與歷史都保留。</p><p>${esc(v.text)}</p><details><summary>展開所有來源、歷史與各別操作</summary>${v.evidenceMembers.map(noteHTML).join('')}</details></section>`;
+function chip(type, id, query = '') { const r = by(type, id); return r ? `<button class="chip ${type}" data-node-type="${type}" data-node-id="${esc(id)}">${type === 'topic' ? '# ' : ''}${highlightLiteral(r.name, query)}${r.conflict ? ' ⚠' : ''}</button>` : ''; }
+function noteHTML(v, query = '') {
+  if (v.evidenceMembers?.length > 1) return `<section class="note"><h3>相同來源文字 · ${v.evidenceMembers.length} 份來源</h3><p>同店、同日期欄位與全文相同，整合顯示一次；不代表已證實是同一次拜訪。每份來源與歷史都保留。</p><p>${highlightLiteral(v.text, query)}</p><details><summary>展開所有來源、歷史與各別操作</summary>${v.evidenceMembers.map(item => noteHTML(item, query)).join('')}</details></section>`;
   const rule = activeView === 'explore' ? entityRule(by(focus.type, focus.id)) : null;
   const evidence = rule ? evidenceKind(v.text, rule) : null;
   const hint = evidence?.lines.length ? `<div class="evidence-hint ${evidence.kind}"><strong>${esc(evidence.label)} · 字詞線索</strong>${evidence.lines.map(line => `<blockquote>${esc(line)}</blockquote>`).join('')}</div>` : '';
   const sourceState = v.sourceMissing ? '<div class="conflict-card">Google 最新匯出已沒有這段備註；程式保留最後內容，未刪除。</div>' : v.googleUpdatePending ? `<div class="conflict-card">Google 備註已有新版；你曾在 App 修改原文，因此先保留 App 文字。<details><summary>查看 Google 最新文字</summary><p>${esc(v.googleText)}</p></details></div>` : '';
   const textBlock = v.conflict
-    ? `<p>${esc(v.text)}</p>`
-    : `<button type="button" class="quick-edit-text" data-quick-edit-text="${esc(v.id)}" aria-label="快速修改這筆拜訪文字"><span>${esc(v.text)}</span><small>點文字快速修改</small></button>`;
-  return `<article class="note"><div class="note-head"><time>${esc(v.date || '原始日期未提供')}</time><span class="pill">${esc(v.source)}</span></div><button class="text-button store-link" data-node-type="store" data-node-id="${esc(v.store)}">${esc(name('store', v.store))}</button>${v.conflict ? `<div class="conflict-card">這筆有 ${v.heads.length} 個版本。以下僅顯示其中一個，請先核對。 <button class="text-button" data-review="visit:${esc(v.id)}">處理衝突</button></div>` : ''}${sourceState}${hint}${textBlock}<div class="chips">${v.topics.map(id => chip('topic', id)).join('')}${v.people.map(id => chip('person', id)).join('')}</div>${v.next ? `<p class="next"><strong>下次跟進</strong>${esc(v.next)}</p>` : ''}<div class="attachments">${(v.attachments || []).map((a, i) => `<button data-attachment="${esc(v.id)}" data-index="${i}">↧ ${esc(a.name)}</button>`).join('')}</div><div class="note-actions">${sourceButton(v)}<button class="text-button" data-edit="visit:${esc(v.id)}">編輯</button><button class="text-button" data-history="visit:${esc(v.id)}">歷史 ${v.versions.length}</button><button class="text-button danger" data-delete="visit:${esc(v.id)}">移到回收桶</button></div></article>`;
+    ? `<p>${highlightLiteral(v.text, query)}</p>`
+    : `<button type="button" class="quick-edit-text" data-quick-edit-text="${esc(v.id)}" aria-label="快速修改這筆拜訪文字"><span>${highlightLiteral(v.text, query)}</span><small>點文字快速修改</small></button>`;
+  return `<article class="note"><div class="note-head"><time>${esc(v.date || '原始日期未提供')}</time><span class="pill">${esc(v.source)}</span></div><button class="text-button store-link" data-node-type="store" data-node-id="${esc(v.store)}">${highlightLiteral(name('store', v.store), query)}</button>${v.conflict ? `<div class="conflict-card">這筆有 ${v.heads.length} 個版本。以下僅顯示其中一個，請先核對。 <button class="text-button" data-review="visit:${esc(v.id)}">處理衝突</button></div>` : ''}${sourceState}${hint}${textBlock}<div class="chips">${v.topics.map(id => chip('topic', id, query)).join('')}${v.people.map(id => chip('person', id, query)).join('')}</div>${v.next ? `<p class="next"><strong>下次跟進</strong>${highlightLiteral(v.next, query)}</p>` : ''}<div class="attachments">${(v.attachments || []).map((a, i) => `<button data-attachment="${esc(v.id)}" data-index="${i}">↧ ${esc(a.name)}</button>`).join('')}</div><div class="note-actions">${sourceButton(v)}<button class="text-button" data-edit="visit:${esc(v.id)}">編輯</button><button class="text-button" data-history="visit:${esc(v.id)}">歷史 ${v.versions.length}</button><button class="text-button danger" data-delete="visit:${esc(v.id)}">移到回收桶</button></div></article>`;
 }
 function render() {
   if (!payload) return;
@@ -616,13 +629,28 @@ function drawGraph() {
   });
   $('graph').innerHTML = `<title>${esc(r.name)}的相關節點</title>${edges}${shapes}<g class="node center"><rect x="${cx - 82}" y="${cy - 30}" width="164" height="60" rx="10"/><text class="sub" x="${cx}" y="${cy - 8}" text-anchor="middle">目前中心 · ${kinds[r.type]}</text><text x="${cx}" y="${cy + 13}" text-anchor="middle">${esc(r.name.slice(0, 11))}</text></g>`;
 }
+function visitSearchRank(v, needle) {
+  if (!needle) return 0;
+  const lower = value => String(value ?? '').toLocaleLowerCase('zh-Hant');
+  const storeName = lower(name('store', v.store)), q = lower(needle);
+  if (storeName === q) return 0;
+  if (storeName.includes(q)) return 1;
+  if (lower(v.text).includes(q)) return 2;
+  if (lower(v.next).includes(q)) return 3;
+  if (v.topics.some(id => lower(name('topic', id)).includes(q))) return 4;
+  if (v.people.some(id => lower(name('person', id)).includes(q))) return 5;
+  return Infinity;
+}
 function renderVisits() {
   const recent = recentStores();
   $('recent-store-list').innerHTML = recent.map(store => `<button type="button" class="recent-store" data-quick-visit="${esc(store.id)}"><strong>${esc(store.name)}</strong><small>${esc(store.district || '地區未提供')}</small></button>`).join('') || '<p class="muted">完成第一筆拜訪後，最近使用門市會出現在這裡。</p>';
   $('draft-banner').hidden = !payload?.draft;
   if (payload?.draft) $('draft-banner-text').textContent = '有一份已成功保存於本機的未完成草稿' + (payload.draft.savedAt ? ' · ' + dateText(payload.draft.savedAt) : '') + '。';
-  const q = $('visit-search').value.trim().toLowerCase();
-  $('visit-list').innerHTML = all('visit').sort((a, b) => b.date.localeCompare(a.date)).filter(v => !q || `${v.text}${v.next}${name('store', v.store)}${v.topics.map(id => name('topic', id)).join()}${v.people.map(id => name('person', id)).join()}`.toLowerCase().includes(q)).map(noteHTML).join('') || '<p class="empty">沒有符合的拜訪紀錄。</p>';
+  const query = $('visit-search').value.trim();
+  const ranked = all('visit').map(v => ({ v, rank: visitSearchRank(v, query) }))
+    .filter(item => !query || Number.isFinite(item.rank))
+    .sort((a, b) => a.rank - b.rank || b.v.date.localeCompare(a.v.date) || name('store', a.v.store).localeCompare(name('store', b.v.store), 'zh-Hant'));
+  $('visit-list').innerHTML = ranked.map(({ v }) => noteHTML(v, query)).join('') || '<p class="empty">沒有符合的拜訪紀錄。</p>';
 }
 function sourceButton(r) { return (r.csvSources?.length || r.versions?.some(v => v.data.csvSources?.length)) ? `<button class="text-button" data-csv-source="${r.type}:${esc(r.id)}">查看匯入原始來源</button>` : ''; }
 function openSources(type, id) {
