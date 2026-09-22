@@ -694,7 +694,6 @@ async function saveQuickTextEdit(event) {
     if (!ctx.after.trim()) throw new Error('為避免誤刪，快速修改不能把整段文字存成空白。');
     const data = structuredClone(visit.heads[0].data);
     data.text = ctx.after;
-    if (data.googleUpdatePending && data.text === data.googleText) data.googleUpdatePending = false;
     await commitRevision('visit', ctx.id, data, visit.heads.map(head => head.id));
     $('quick-text-dialog').close(); quickTextContext = null;
     toast('文字修改已建立為同一筆拜訪的新版本；舊文字與 CSV 原始來源都保留。');
@@ -853,7 +852,7 @@ document.addEventListener('click', event => {
   const node = event.target.closest('[data-node-type]'); if (node && !busy) return navigate(node.dataset.nodeType, node.dataset.nodeId);
   if (!b) return;
   if (b.dataset.close) {
-    if (b.dataset.close === 'rebuild-dialog' && busy) return;
+    if (['rebuild-dialog', 'quick-text-dialog'].includes(b.dataset.close) && busy) return;
     if (b.dataset.close === 'editor' && editorContext?.type === 'visit') return run(async () => {
       await flushVisitDraft(); $('editor').close(); editorContext = null; render();
     }, 'editor-error');
@@ -914,6 +913,7 @@ window.addEventListener('pageshow', () => { if (!payload && !document.hidden) { 
 $('gate-form').addEventListener('submit', initializeOrUnlock); $('editor-form').addEventListener('submit', saveEditor); $('quick-text-form').addEventListener('submit', saveQuickTextEdit);
 $('editor').addEventListener('close', () => editorContext = null);
 $('quick-text-dialog').addEventListener('close', () => { quickTextContext = null; $('quick-text-error').textContent = ''; });
+$('quick-text-dialog').addEventListener('cancel', event => { if (busy) event.preventDefault(); });
 $('editor-fields').addEventListener('input', event => {
   if (event.target.id === 'f-store-search') { refreshVisitStoreOptions(event.target.value); return; }
   if (editorContext?.type === 'visit' && event.target.id !== 'f-files') scheduleVisitDraftSave();
