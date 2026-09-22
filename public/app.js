@@ -8,7 +8,7 @@ import { startUpdates, requestLocal, diagnoseConnection } from './update-client.
 
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const regexEscape = value => String(value ?? '').replace(/[.*+?^$\{\}()|[\]\\]/g, '\\const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));');
+const regexEscape = value => String(value ?? '').replace(/[.*+?^$\{\}()|[\]\\]/g, char => '\\' + char);
 function highlightLiteral(value, query) {
   const text = String(value ?? ''), needle = String(query ?? '').trim();
   if (!needle) return esc(text);
