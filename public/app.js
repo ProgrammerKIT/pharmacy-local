@@ -1,4 +1,4 @@
-import { newMeta, derive, seal, unseal, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot } from './core.js';
+import { newMeta, derive, seal, unseal, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments } from './core.js';
 import { readLocal, writeLocal, archiveAndReplaceLocal, listLocalArchives, readLocalArchive } from './db.js';
 import { createCSVImport } from './csv-ui.js';
 import { PROFILE_FIELDS, FILL_FIELDS, scanQuality, setDistinctReview, sourceSuggestions, fillProfile } from './csv.js';
@@ -642,13 +642,19 @@ function openEditor(type, id = null, restoreDraft = null) {
 function quickTextParents(record) {
   return (record?.heads || []).map(head => head.id).sort();
 }
+function diffSegmentsHTML(segments) {
+  return segments.map(segment => segment.kind === 'same'
+    ? esc(segment.text)
+    : `<mark class="quick-diff-${segment.kind}">${esc(segment.text)}</mark>`).join('');
+}
 function renderQuickTextDialog() {
   if (!quickTextContext) return;
   const ctx = quickTextContext, dialog = $('quick-text-dialog');
   $('quick-text-title').textContent = ctx.step === 'confirm' ? '二次確認文字修改' : '快速修改拜訪文字';
   $('quick-text-error').textContent = '';
   if (ctx.step === 'confirm') {
-    $('quick-text-body').innerHTML = `<div class="quick-text-scope"><strong>這次只會修改這一筆拜訪的文字欄。</strong><p>門市、日期、來源、主題、人物、附件與 CSV 原始來源不變；修改前文字會留在歷史版本中。</p></div><div class="quick-text-compare"><section><h3>修改前</h3><pre>${esc(ctx.before)}</pre></section><section><h3>修改後</h3><pre>${esc(ctx.after)}</pre></section></div>`;
+    const diff = diffTextSegments(ctx.before, ctx.after);
+    $('quick-text-body').innerHTML = `<div class="quick-text-scope"><strong>這次只會修改這一筆拜訪的文字欄。</strong><p>門市、日期、來源、主題、人物、附件與 CSV 原始來源不變；修改前文字會留在歷史版本中。</p></div><div class="quick-diff-legend" aria-label="修改標示說明"><span><i class="quick-diff-swatch removed"></i>修改前被刪除／取代</span><span><i class="quick-diff-swatch added"></i>修改後新增／取代</span></div><div class="quick-text-compare"><section><h3>修改前</h3><pre>${diffSegmentsHTML(diff.before)}</pre></section><section><h3>修改後</h3><pre>${diffSegmentsHTML(diff.after)}</pre></section></div>`;
     $('quick-text-actions').innerHTML = '<button type="button" data-close="quick-text-dialog">取消</button><button type="button" data-quick-text-back>返回修改</button><button type="submit" class="primary">確定建立新版本</button>';
   } else {
     $('quick-text-body').innerHTML = `<p><strong>${esc(ctx.storeName)}</strong></p><p class="muted">${esc(ctx.date || '原始日期未提供')} · ${esc(ctx.source || '來源未提供')}</p><div class="quick-text-scope"><strong>安全快速修改</strong><p>這裡只能改文字，不提供刪除。第一次按確認不會寫入正式資料，下一頁還會再顯示修改前／後內容讓你二次確認。</p></div><label>拜訪文字<textarea id="quick-text-value" maxlength="20000" spellcheck="false">${esc(ctx.after ?? ctx.before)}</textarea></label>`;
