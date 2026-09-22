@@ -261,7 +261,7 @@ function restoreTransientResumeState() {
   $('visit-search').value = typeof state.visitSearch === 'string' ? state.visitSearch : '';
   switchView(Object.hasOwn(titles, state.view) ? state.view : 'visits');
   const scrollTop = Number.isFinite(state.scrollTop) && state.scrollTop >= 0 ? state.scrollTop : 0;
-  requestAnimationFrame(() => requestAnimationFrame(() => window.scrollTo({ top: scrollTop, left: 0, behavior: 'instant' })));
+  requestAnimationFrame(() => requestAnimationFrame(() => window.scrollTo(0, scrollTop)));
 }
 async function openWorkspace() {
   pendingLock = document.hidden; lastError = ''; lastSyncFailure = null; syncWarning = '';
