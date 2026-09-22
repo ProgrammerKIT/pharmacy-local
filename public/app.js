@@ -687,14 +687,18 @@ function renderVisits() {
     if (!Number.isFinite(rank)) continue;
     let group = grouped.get(v.store);
     if (!group) {
-      group = { storeId: v.store, bestRank: rank, latestMatchDate: v.date || '', matches: [], allVisits: allByStore.get(v.store) || [] };
+      group = { storeId: v.store, bestRank: rank, bestRankDate: v.date || '', matches: [], allVisits: allByStore.get(v.store) || [] };
       grouped.set(v.store, group);
     }
     group.matches.push({ v, rank });
-    group.bestRank = Math.min(group.bestRank, rank);
-    if ((v.date || '') > group.latestMatchDate) group.latestMatchDate = v.date || '';
+    if (rank < group.bestRank) {
+      group.bestRank = rank;
+      group.bestRankDate = v.date || '';
+    } else if (rank === group.bestRank && (v.date || '') > group.bestRankDate) {
+      group.bestRankDate = v.date || '';
+    }
   }
-  const groups = [...grouped.values()].sort((a, b) => a.bestRank - b.bestRank || b.latestMatchDate.localeCompare(a.latestMatchDate) || name('store', a.storeId).localeCompare(name('store', b.storeId), 'zh-Hant'));
+  const groups = [...grouped.values()].sort((a, b) => a.bestRank - b.bestRank || b.bestRankDate.localeCompare(a.bestRankDate) || name('store', a.storeId).localeCompare(name('store', b.storeId), 'zh-Hant'));
   $('visit-list').innerHTML = groups.map(group => group.matches.length > 1 ? renderVisitSearchGroup(group, query) : noteHTML(group.matches[0].v, query)).join('') || '<p class="empty">沒有符合的拜訪紀錄。</p>';
 }
 function sourceButton(r) { return (r.csvSources?.length || r.versions?.some(v => v.data.csvSources?.length)) ? `<button class="text-button" data-csv-source="${r.type}:${esc(r.id)}">查看匯入原始來源</button>` : ''; }
