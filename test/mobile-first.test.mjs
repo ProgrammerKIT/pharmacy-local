@@ -92,11 +92,13 @@ test('quick text edit creates one new visit revision and preserves every non-tex
     name: '虛構測試藥局', city: '台北市', district: '測試區', channel: '直營', attr: '', contact: '',
     address: '測試路 1 號', mapUrl: '', csvIdentityPending: false
   }, [], 'phone'));
+  const attachmentBlob = 'a'.repeat(64), sourceBlob = 'b'.repeat(64);
+  bundle.blobs[attachmentBlob] = 'AA=='; bundle.blobs[sourceBlob] = 'AQ==';
   const original = {
     store: 'store-1', date: '2026-09-22', source: 'Google Maps CSV 匯入', text: '修改前原文',
-    next: '下次帶資料', topics: ['topic-x'], people: ['person-y'], attachments: [{ blob: 'blob-1', name: 'a.pdf', mime: 'application/pdf' }],
+    next: '下次帶資料', topics: ['topic-x'], people: ['person-y'], attachments: [{ blob: attachmentBlob, name: 'a.pdf', mime: 'application/pdf' }],
     googleText: 'Google 最初原文', googleUpdatePending: false, sourceMissing: false,
-    csvSources: [{ file: 'private.csv', line: 12, list: '測試', headers: ['note'], cells: ['修改前原文'], blob: 'source-blob', fingerprint: 'fp', at: '2026-09-22T00:00:00.000Z' }]
+    csvSources: [{ file: 'private.csv', line: 12, batch: 'batch-1', list: '測試', headers: ['note'], cells: ['修改前原文'], blob: sourceBlob, fingerprint: 'fp', at: '2026-09-22T00:00:00.000Z' }]
   };
   bundle.ops.push(revision('visit', 'visit-1', original, [], 'phone'));
   const before = project(bundle).find(r => r.type === 'visit');
