@@ -641,16 +641,65 @@ function visitSearchRank(v, needle) {
   if (v.people.some(id => lower(name('person', id)).includes(q))) return 5;
   return Infinity;
 }
+function visitSearchSnippet(value, query, before = 38, after = 70) {
+  const text = String(value ?? ''), needle = String(query ?? '').trim();
+  if (!needle) return esc(text);
+  const lower = text.toLocaleLowerCase('zh-Hant'), q = needle.toLocaleLowerCase('zh-Hant'), index = lower.indexOf(q);
+  if (index < 0) return '';
+  const start = Math.max(0, index - before), end = Math.min(text.length, index + needle.length + after);
+  return highlightLiteral((start ? '…' : '') + text.slice(start, end) + (end < text.length ? '…' : ''), needle);
+}
+function visitSearchPreview(v, query) {
+  const lower = value => String(value ?? '').toLocaleLowerCase('zh-Hant'), q = query.toLocaleLowerCase('zh-Hant');
+  if (lower(name('store', v.store)).includes(q)) return '<span class="muted">門市名稱符合搜尋字詞</span>';
+  const fields = [
+    ['拜訪原文', v.text],
+    ['下次跟進', v.next],
+    ['主題', v.topics.map(id => name('topic', id)).join('、')],
+    ['人物', v.people.map(id => name('person', id)).join('、')]
+  ];
+  const hit = fields.find(([, value]) => lower(value).includes(q));
+  return hit ? `<span class="visit-search-preview-label">${esc(hit[0])}</span><span>${visitSearchSnippet(hit[1], query)}</span>` : '';
+}
+function renderVisitSearchGroup(group, query) {
+  const matches = group.matches.slice().sort((a, b) => a.rank - b.rank || b.v.date.localeCompare(a.v.date));
+  const lead = matches[0]?.v, total = group.allVisits.length;
+  return `<section class="visit-search-group"><div class="visit-search-group-head"><button class="text-button store-link" data-node-type="store" data-node-id="${esc(group.storeId)}">${highlightLiteral(name('store', group.storeId), query)}</button><span class="pill">${group.matches.length} 筆命中 · 共 ${total} 筆</span></div><div class="visit-search-preview">${lead ? visitSearchPreview(lead, query) : ''}</div><details class="visit-search-details"><summary>展開這間藥局全部 ${total} 筆拜訪紀錄</summary><div class="visit-search-expanded">${group.allVisits.map(v => noteHTML(v, query)).join('')}</div></details></section>`;
+}
 function renderVisits() {
   const recent = recentStores();
   $('recent-store-list').innerHTML = recent.map(store => `<button type="button" class="recent-store" data-quick-visit="${esc(store.id)}"><strong>${esc(store.name)}</strong><small>${esc(store.district || '地區未提供')}</small></button>`).join('') || '<p class="muted">完成第一筆拜訪後，最近使用門市會出現在這裡。</p>';
   $('draft-banner').hidden = !payload?.draft;
   if (payload?.draft) $('draft-banner-text').textContent = '有一份已成功保存於本機的未完成草稿' + (payload.draft.savedAt ? ' · ' + dateText(payload.draft.savedAt) : '') + '。';
-  const query = $('visit-search').value.trim();
-  const ranked = all('visit').map(v => ({ v, rank: visitSearchRank(v, query) }))
-    .filter(item => !query || Number.isFinite(item.rank))
-    .sort((a, b) => a.rank - b.rank || b.v.date.localeCompare(a.v.date) || name('store', a.v.store).localeCompare(name('store', b.v.store), 'zh-Hant'));
-  $('visit-list').innerHTML = ranked.map(({ v }) => noteHTML(v, query)).join('') || '<p class="empty">沒有符合的拜訪紀錄。</p>';
+  const query = $('visit-search').value.trim(), visits = all('visit').slice().sort((a, b) => b.date.localeCompare(a.date));
+  if (!query) {
+    $('visit-list').innerHTML = visits.map(v => noteHTML(v)).join('') || '<p class="empty">沒有符合的拜訪紀錄。</p>';
+    return;
+  }
+  const allByStore = new Map();
+  for (const visit of visits) {
+    if (!allByStore.has(visit.store)) allByStore.set(visit.store, []);
+    allByStore.get(visit.store).push(visit);
+  }
+  const grouped = new Map();
+  for (const v of visits) {
+    const rank = visitSearchRank(v, query);
+    if (!Number.isFinite(rank)) continue;
+    let group = grouped.get(v.store);
+    if (!group) {
+      group = { storeId: v.store, bestRank: rank, bestRankDate: v.date || '', matches: [], allVisits: allByStore.get(v.store) || [] };
+      grouped.set(v.store, group);
+    }
+    group.matches.push({ v, rank });
+    if (rank < group.bestRank) {
+      group.bestRank = rank;
+      group.bestRankDate = v.date || '';
+    } else if (rank === group.bestRank && (v.date || '') > group.bestRankDate) {
+      group.bestRankDate = v.date || '';
+    }
+  }
+  const groups = [...grouped.values()].sort((a, b) => a.bestRank - b.bestRank || b.bestRankDate.localeCompare(a.bestRankDate) || name('store', a.storeId).localeCompare(name('store', b.storeId), 'zh-Hant'));
+  $('visit-list').innerHTML = groups.map(group => group.matches.length > 1 ? renderVisitSearchGroup(group, query) : noteHTML(group.matches[0].v, query)).join('') || '<p class="empty">沒有符合的拜訪紀錄。</p>';
 }
 function sourceButton(r) { return (r.csvSources?.length || r.versions?.some(v => v.data.csvSources?.length)) ? `<button class="text-button" data-csv-source="${r.type}:${esc(r.id)}">查看匯入原始來源</button>` : ''; }
 function openSources(type, id) {

@@ -60,6 +60,11 @@ test('mobile-first runtime files are valid JavaScript and expose the daily captu
   assert.match(app, /<mark class="search-match">/);
   assert.match(app, /highlightLiteral\(name\('store', v\.store\), query\)/);
   assert.match(app, /highlightLiteral\(v\.text, query\)/);
+  assert.match(app, /function renderVisitSearchGroup\(/);
+  assert.match(app, /group\.matches\.length > 1 \? renderVisitSearchGroup\(group, query\) : noteHTML/);
+  assert.match(app, /展開這間藥局全部/);
+  assert.match(app, /group\.allVisits\.map\(v => noteHTML\(v, query\)\)/);
+  assert.match(app, /筆命中 · 共/);
   assert.match(app, /visitSearch: \$\('visit-search'\)\?\.value/);
   assert.match(app, /scrollTop: document\.scrollingElement\?\.scrollTop/);
   assert.match(app, /\$\('review'\)\.open \|\| \$\('quick-text-dialog'\)\?\.open/);
@@ -151,7 +156,7 @@ test('quick text edit creates one new visit revision and preserves every non-tex
 });
 
 test('SOP1 explicitly separates App daily notes from Google CSV imports and keeps retention undecided', () => {
-  assert.equal(SOP1_VERSION, '1.2.4');
+  assert.equal(SOP1_VERSION, '1.2.5');
   assert.match(sop, /### A\. App 日常記錄/);
   assert.match(sop, /### B\. Google CSV 外部資料匯入/);
   assert.match(sop, /### C\. 同步與備份/);
@@ -172,6 +177,9 @@ test('SOP1 explicitly separates App daily notes from Google CSV imports and keep
   assert.match(sop, /完整店名符合優先於店名局部符合/);
   assert.match(sop, /逐字符合的實際文字片段.*highlight/);
   assert.match(sop, /不得把模糊／語意相關結果冒充為逐字符合/);
+  assert.match(sop, /兩筆以上命中的拜訪紀錄/);
+  assert.match(sop, /全部目前有效的拜訪紀錄/);
+  assert.match(sop, /此分組僅是顯示層去重/);
   assert.match(sop, /快速修改不得把整段文字存成空白/);
   assert.match(sop, /門市、日期、來源、主題、人物、附件、Google 原始文字與 Source Snapshot 都不得因快速修改而改變/);
   assert.match(sop, /目前程式保留最近 30 份 Mac 自動快照/);
