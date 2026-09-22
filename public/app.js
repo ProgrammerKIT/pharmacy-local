@@ -16,7 +16,7 @@ let lastError = '', offlineReady = false, storagePersistent = false, autoFetchin
 let qualityTab = 'duplicates', qualityField = '', qualityPage = 0, qualityCache = null, qualityReview = null;
 let storeFilters = { query: '', district: '', kind: '', groups: [] };
 let updateHolding = false, macProgram = null, lastSyncFailure = null, syncWarning = '';
-let draftTimer = null, draftSaveChain = Promise.resolve(), discardingDraft = false, quickTextContext = null;
+let draftTimer = null, draftSaveChain = Promise.resolve(), discardingDraft = false, quickTextContext = null, transientResumeState = null;
 const csvImport = createCSVImport({ host: $('csv-view'), getState: () => payload, run, saveBundle: async bundle => { await persist({ ...payload, bundle, dirty: true }); render(); }, notify: toast, exportReport: report => download(JSON.stringify({ ...report, appVersion: APP_VERSION }, null, 2), 'pharmacy-import-preview.json', 'application/json'), downloadSource: (blob, filename) => { if (!confirm('原始 CSV 是明文檔案。請確認下載到自己的本機資料夾，避開 iCloud Drive。')) return; download(unb64(payload.bundle.blobs[blob]), filename.replace(/[\/\\]/g, '_'), 'application/octet-stream'); } });
 const all = type => records.filter(r => r.type === type && (!r.deleted || r.conflict));
 const by = (type, id) => records.find(r => r.type === type && r.id === id);
@@ -231,22 +231,54 @@ async function initializeOrUnlock(event) {
     setTimeout(autoSync, 0);
   }, 'gate-error');
 }
+function captureTransientResumeState() {
+  if (!payload) return;
+  transientResumeState = {
+    view: Object.hasOwn(titles, activeView) ? activeView : 'visits',
+    focus: { ...focus },
+    graphPage,
+    trail: trail.map(item => ({ ...item })),
+    qualityTab,
+    qualityField,
+    qualityPage,
+    storeFilters: structuredClone(storeFilters),
+    visitSearch: $('visit-search')?.value || '',
+    scrollTop: document.scrollingElement?.scrollTop || 0
+  };
+}
+function restoreTransientResumeState() {
+  const state = transientResumeState; transientResumeState = null;
+  if (!state) { switchView('visits'); return; }
+  focus = { ...state.focus };
+  graphPage = Number.isSafeInteger(state.graphPage) && state.graphPage >= 0 ? state.graphPage : 0;
+  trail = Array.isArray(state.trail) ? state.trail.map(item => ({ ...item })) : [];
+  qualityTab = ['duplicates', 'missing', 'reviewed'].includes(state.qualityTab) ? state.qualityTab : 'duplicates';
+  qualityField = typeof state.qualityField === 'string' ? state.qualityField : '';
+  qualityPage = Number.isSafeInteger(state.qualityPage) && state.qualityPage >= 0 ? state.qualityPage : 0;
+  storeFilters = state.storeFilters && typeof state.storeFilters === 'object'
+    ? { query: state.storeFilters.query || '', district: state.storeFilters.district || '', kind: state.storeFilters.kind || '', groups: Array.isArray(state.storeFilters.groups) ? [...state.storeFilters.groups] : [] }
+    : { query: '', district: '', kind: '', groups: [] };
+  $('visit-search').value = typeof state.visitSearch === 'string' ? state.visitSearch : '';
+  switchView(Object.hasOwn(titles, state.view) ? state.view : 'visits');
+  const scrollTop = Number.isFinite(state.scrollTop) && state.scrollTop >= 0 ? state.scrollTop : 0;
+  requestAnimationFrame(() => requestAnimationFrame(() => window.scrollTo({ top: scrollTop, left: 0, behavior: 'instant' })));
+}
 async function openWorkspace() {
   pendingLock = document.hidden; lastError = ''; lastSyncFailure = null; syncWarning = '';
   $('gate').hidden = true; $('workspace').hidden = false;
   document.body.classList.toggle('privacy-veil', pendingLock);
   try { storagePersistent = await navigator.storage?.persist?.() || false; } catch {}
-  switchView('visits'); clearInterval(autoTimer);
+  restoreTransientResumeState(); clearInterval(autoTimer);
   autoTimer = setInterval(autoSync, 15000);
 }
 async function autoSync() {
-  if (updateHolding || autoFetching || !payload?.token || document.hidden || busy || editorContext || $('review').open || $('rebuild-dialog')?.open || csvImport.hasPending()) return;
+  if (updateHolding || autoFetching || !payload?.token || document.hidden || busy || editorContext || $('review').open || $('quick-text-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending()) return;
   const sessionKey = key;
   autoFetching = true;
   try {
     // Offline probes never block editing or take the write lock, and carry no customer content.
     const remote = await api('/api/version');
-    if (updateHolding || !payload || key !== sessionKey || document.hidden || busy || editorContext || $('review').open || $('rebuild-dialog')?.open || csvImport.hasPending()) return;
+    if (updateHolding || !payload || key !== sessionKey || document.hidden || busy || editorContext || $('review').open || $('quick-text-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending()) return;
     await run(async () => {
       try {
         if (payload.dirty || remote.version !== payload.serverVersion) await synchronize();
@@ -257,7 +289,8 @@ async function autoSync() {
   finally { autoFetching = false; }
 }
 function lockNow(reopen = !document.hidden) {
-  if (busy || editorContext || csvImport.hasPending()) { pendingLock = true; document.body.classList.add('privacy-veil'); return; }
+  if (busy || editorContext || $('review').open || $('quick-text-dialog')?.open || csvImport.hasPending()) { pendingLock = true; document.body.classList.add('privacy-veil'); return; }
+  captureTransientResumeState();
   pendingLock = false; clearInterval(autoTimer); key = null; meta = null; payload = null; records = []; trail = []; editorContext = null; lastError = ''; macProgram = null; lastSyncFailure = null; syncWarning = '';
   csvImport.reset(); qualityCache = null; qualityReview = null; qualityTab = 'duplicates'; qualityField = ''; qualityPage = 0;
   resetStoreFilters();
