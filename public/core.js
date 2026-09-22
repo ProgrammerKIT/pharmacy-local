@@ -9,6 +9,88 @@ export function b64(bytes) {
   return btoa(s);
 }
 export function unb64(str) { return Uint8Array.from(atob(str), c => c.charCodeAt(0)); }
+
+const mergeDiffSegments = segments => {
+  const out = [];
+  for (const segment of segments) {
+    if (!segment.text) continue;
+    const last = out.at(-1);
+    if (last?.kind === segment.kind) last.text += segment.text;
+    else out.push({ kind: segment.kind, text: segment.text });
+  }
+  return out;
+};
+function inlineDiff(before, after) {
+  const a = [...before], b = [...after]; let start = 0;
+  while (start < a.length && start < b.length && a[start] === b[start]) start++;
+  let endA = a.length - 1, endB = b.length - 1;
+  while (endA >= start && endB >= start && a[endA] === b[endB]) { endA--; endB--; }
+  const prefix = a.slice(0, start).join(''), suffix = a.slice(endA + 1).join('');
+  return {
+    before: mergeDiffSegments([
+      { kind: 'same', text: prefix },
+      { kind: 'removed', text: a.slice(start, endA + 1).join('') },
+      { kind: 'same', text: suffix }
+    ]),
+    after: mergeDiffSegments([
+      { kind: 'same', text: prefix },
+      { kind: 'added', text: b.slice(start, endB + 1).join('') },
+      { kind: 'same', text: suffix }
+    ])
+  };
+}
+// Display-only text diff for the quick-edit confirmation screen.
+// It never rewrites either input. Normal notes use a line LCS, then highlight the changed
+// portion within paired replacement lines. Very large comparisons fall back to a safe
+// prefix/suffix diff rather than allocating an unbounded matrix.
+export function diffTextSegments(before, after) {
+  before = String(before ?? ''); after = String(after ?? '');
+  if (before === after) return { before: [{ kind: 'same', text: before }], after: [{ kind: 'same', text: after }] };
+  const oldLines = before.split('\n'), newLines = after.split('\n');
+  if (oldLines.length * newLines.length > 120000) return inlineDiff(before, after);
+  const rows = Array.from({ length: oldLines.length + 1 }, () => new Uint16Array(newLines.length + 1));
+  for (let i = oldLines.length - 1; i >= 0; i--) for (let j = newLines.length - 1; j >= 0; j--) {
+    rows[i][j] = oldLines[i] === newLines[j] ? rows[i + 1][j + 1] + 1 : Math.max(rows[i + 1][j], rows[i][j + 1]);
+  }
+  const ops = []; let i = 0, j = 0;
+  while (i < oldLines.length || j < newLines.length) {
+    if (i < oldLines.length && j < newLines.length && oldLines[i] === newLines[j]) { ops.push({ kind: 'same', old: oldLines[i], next: newLines[j] }); i++; j++; }
+    else if (j < newLines.length && (i === oldLines.length || rows[i][j + 1] >= rows[i + 1][j])) { ops.push({ kind: 'added-line', next: newLines[j++] }); }
+    else { ops.push({ kind: 'removed-line', old: oldLines[i++] }); }
+  }
+  const beforeSegments = [], afterSegments = [];
+  const pushLine = (target, segments, needsBreak) => {
+    if (needsBreak) target.push({ kind: 'same', text: '\n' });
+    target.push(...segments);
+  };
+  let beforeLine = 0, afterLine = 0, k = 0;
+  while (k < ops.length) {
+    if (ops[k].kind === 'same') {
+      pushLine(beforeSegments, [{ kind: 'same', text: ops[k].old }], beforeLine++ > 0);
+      pushLine(afterSegments, [{ kind: 'same', text: ops[k].next }], afterLine++ > 0);
+      k++; continue;
+    }
+    const removed = [], added = [];
+    while (k < ops.length && ops[k].kind !== 'same') {
+      if (ops[k].kind === 'removed-line') removed.push(ops[k].old);
+      else added.push(ops[k].next);
+      k++;
+    }
+    const count = Math.max(removed.length, added.length);
+    for (let n = 0; n < count; n++) {
+      if (n < removed.length && n < added.length) {
+        const changed = inlineDiff(removed[n], added[n]);
+        pushLine(beforeSegments, changed.before, beforeLine++ > 0);
+        pushLine(afterSegments, changed.after, afterLine++ > 0);
+      } else if (n < removed.length) {
+        pushLine(beforeSegments, [{ kind: 'removed', text: removed[n] }], beforeLine++ > 0);
+      } else {
+        pushLine(afterSegments, [{ kind: 'added', text: added[n] }], afterLine++ > 0);
+      }
+    }
+  }
+  return { before: mergeDiffSegments(beforeSegments), after: mergeDiffSegments(afterSegments) };
+}
 export function newMeta() { return { format: FORMAT, vaultId: uuid(), salt: b64(crypto.getRandomValues(new Uint8Array(16))), iterations: ITERATIONS }; }
 export function checkEnvelope(e) {
   if (!e || e.format !== FORMAT || typeof e.vaultId !== 'string' || e.vaultId.length > 100 || e.iterations !== ITERATIONS || typeof e.salt !== 'string' || unb64(e.salt).length !== 16 || typeof e.iv !== 'string' || unb64(e.iv).length !== 12 || typeof e.ciphertext !== 'string' || e.ciphertext.length > 40 * 1024 * 1024 || unb64(e.ciphertext).length < 16) throw new Error('加密檔案格式不符或版本不支援。');
