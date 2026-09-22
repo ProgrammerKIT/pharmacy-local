@@ -137,7 +137,7 @@ test('quick text edit creates one new visit revision and preserves every non-tex
 });
 
 test('SOP1 explicitly separates App daily notes from Google CSV imports and keeps retention undecided', () => {
-  assert.equal(SOP1_VERSION, '1.2.1');
+  assert.equal(SOP1_VERSION, '1.2.2');
   assert.match(sop, /### A\. App 日常記錄/);
   assert.match(sop, /### B\. Google CSV 外部資料匯入/);
   assert.match(sop, /### C\. 同步與備份/);
@@ -149,6 +149,7 @@ test('SOP1 explicitly separates App daily notes from Google CSV imports and keep
   assert.match(sop, /候選不能冒充已確認需求/);
   assert.match(sop, /時間比較只使用明確的拜訪日期欄位/);
   assert.match(sop, /第一次確認只進入修改前／後的二次確認頁/);
+  assert.match(sop, /二次確認頁必須以明顯 highlight 標示/);
   assert.match(sop, /快速修改不得把整段文字存成空白/);
   assert.match(sop, /門市、日期、來源、主題、人物、附件、Google 原始文字與 Source Snapshot 都不得因快速修改而改變/);
   assert.match(sop, /目前程式保留最近 30 份 Mac 自動快照/);
