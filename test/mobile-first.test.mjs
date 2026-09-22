@@ -49,6 +49,12 @@ test('mobile-first runtime files are valid JavaScript and expose the daily captu
   assert.match(html, /id="discard-draft"/);
   assert.match(html, /id="quick-text-dialog"/);
   assert.match(app, /確定建立新版本/);
+  assert.match(app, /function captureTransientResumeState\(/);
+  assert.match(app, /function restoreTransientResumeState\(/);
+  assert.match(app, /restoreTransientResumeState\(\); clearInterval\(autoTimer\)/);
+  assert.match(app, /visitSearch: \$\('visit-search'\)\?\.value/);
+  assert.match(app, /scrollTop: document\.scrollingElement\?\.scrollTop/);
+  assert.match(app, /\$\('review'\)\.open \|\| \$\('quick-text-dialog'\)\?\.open/);
 });
 
 test('a local draft survives encryption without creating a formal visit revision', async () => {
@@ -137,7 +143,7 @@ test('quick text edit creates one new visit revision and preserves every non-tex
 });
 
 test('SOP1 explicitly separates App daily notes from Google CSV imports and keeps retention undecided', () => {
-  assert.equal(SOP1_VERSION, '1.2.2');
+  assert.equal(SOP1_VERSION, '1.2.3');
   assert.match(sop, /### A\. App 日常記錄/);
   assert.match(sop, /### B\. Google CSV 外部資料匯入/);
   assert.match(sop, /### C\. 同步與備份/);
@@ -150,6 +156,10 @@ test('SOP1 explicitly separates App daily notes from Google CSV imports and keep
   assert.match(sop, /時間比較只使用明確的拜訪日期欄位/);
   assert.match(sop, /第一次確認只進入修改前／後的二次確認頁/);
   assert.match(sop, /二次確認頁必須以明顯 highlight 標示/);
+  assert.match(sop, /非關閉式 App 切換/);
+  assert.match(sop, /不得把使用者硬切回「拜訪紀錄」/);
+  assert.match(sop, /導覽狀態只保存在記憶體/);
+  assert.match(sop, /若 App 真正被關閉、iOS 終止前端程序、重新載入或程式更新，則不保證恢復一般導覽頁/);
   assert.match(sop, /快速修改不得把整段文字存成空白/);
   assert.match(sop, /門市、日期、來源、主題、人物、附件、Google 原始文字與 Source Snapshot 都不得因快速修改而改變/);
   assert.match(sop, /目前程式保留最近 30 份 Mac 自動快照/);
