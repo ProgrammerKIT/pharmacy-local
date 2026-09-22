@@ -91,12 +91,12 @@ test('a local draft survives encryption without creating a formal visit revision
 
 test('quick text confirmation highlights only changed portions without changing either input', () => {
   const before = '- 第一行維持不變\n- 原本是玻尿酸\n- 最後一行';
-  const after = '- 第一行維持不變\n- 原本是單支玻尿酸\n- 新增追問\n- 最後一行';
+  const after = '- 第一行維持不變\n- 原本是單支裝\n- 新增追問\n- 最後一行';
   const diff = diffTextSegments(before, after);
   assert.equal(diff.before.map(x => x.text).join(''), before);
   assert.equal(diff.after.map(x => x.text).join(''), after);
   assert.ok(diff.before.some(x => x.kind === 'removed' && x.text.includes('玻尿酸')));
-  assert.ok(diff.after.some(x => x.kind === 'added' && x.text.includes('單支玻尿酸')));
+  assert.ok(diff.after.some(x => x.kind === 'added' && x.text.includes('單支裝')));
   assert.ok(diff.after.some(x => x.kind === 'added' && x.text.includes('新增追問')));
   assert.ok(diff.before.some(x => x.kind === 'same' && x.text.includes('第一行維持不變')));
 });
