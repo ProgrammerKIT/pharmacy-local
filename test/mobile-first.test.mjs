@@ -156,7 +156,7 @@ test('quick text edit creates one new visit revision and preserves every non-tex
 });
 
 test('SOP1 explicitly separates App daily notes from Google CSV imports and keeps retention undecided', () => {
-  assert.equal(SOP1_VERSION, '1.2.5');
+  assert.equal(SOP1_VERSION, '1.2.6');
   assert.match(sop, /### A\. App 日常記錄/);
   assert.match(sop, /### B\. Google CSV 外部資料匯入/);
   assert.match(sop, /### C\. 同步與備份/);

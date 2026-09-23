@@ -30,6 +30,7 @@ let qualityTab = 'duplicates', qualityField = '', qualityPage = 0, qualityCache 
 let storeFilters = { query: '', district: '', kind: '', groups: [] };
 let updateHolding = false, macProgram = null, lastSyncFailure = null, syncWarning = '';
 let draftTimer = null, draftSaveChain = Promise.resolve(), discardingDraft = false, quickTextContext = null, transientResumeState = null;
+let versionReview = null, resolutionPreview = null;
 const csvImport = createCSVImport({ host: $('csv-view'), getState: () => payload, run, saveBundle: async bundle => { await persist({ ...payload, bundle, dirty: true }); render(); }, notify: toast, exportReport: report => download(JSON.stringify({ ...report, appVersion: APP_VERSION }, null, 2), 'pharmacy-import-preview.json', 'application/json'), downloadSource: (blob, filename) => { if (!confirm('原始 CSV 是明文檔案。請確認下載到自己的本機資料夾，避開 iCloud Drive。')) return; download(unb64(payload.bundle.blobs[blob]), filename.replace(/[\/\\]/g, '_'), 'application/octet-stream'); } });
 const all = type => records.filter(r => r.type === type && (!r.deleted || r.conflict));
 const by = (type, id) => records.find(r => r.type === type && r.id === id);
@@ -304,7 +305,7 @@ async function autoSync() {
 function lockNow(reopen = !document.hidden) {
   if (busy || editorContext || $('review').open || $('quick-text-dialog')?.open || csvImport.hasPending()) { pendingLock = true; document.body.classList.add('privacy-veil'); return; }
   captureTransientResumeState();
-  pendingLock = false; clearInterval(autoTimer); key = null; meta = null; payload = null; records = []; trail = []; editorContext = null; lastError = ''; macProgram = null; lastSyncFailure = null; syncWarning = '';
+  pendingLock = false; versionReview = null; resolutionPreview = null; clearInterval(autoTimer); key = null; meta = null; payload = null; records = []; trail = []; editorContext = null; lastError = ''; macProgram = null; lastSyncFailure = null; syncWarning = '';
   csvImport.reset(); qualityCache = null; qualityReview = null; qualityTab = 'duplicates'; qualityField = ''; qualityPage = 0;
   resetStoreFilters();
   for (const u of objectURLs) URL.revokeObjectURL(u); objectURLs = [];
@@ -863,6 +864,10 @@ async function saveEditor(event) {
     }
     d = { ...(ctx.oldData || {}), ...d };
     if (ctx.type === 'store' && ctx.oldData?.csvIdentityPending && $('f-identity-reviewed')?.checked) d.csvIdentityPending = false;
+    if (ctx.parents.length > 1) {
+      if (quickStore) throw new Error('衝突整合請選擇既有門市；新增門市需另外處理。');
+      previewResolution(ctx, d, false, blobs, true); return;
+    }
     if (ctx.type === 'visit' && d.googleUpdatePending && d.text === d.googleText) d.googleUpdatePending = false;
     if (ctx.type === 'visit') {
       const bundle = structuredClone(payload.bundle); bundle.schema = 2;
@@ -881,23 +886,82 @@ function describeData(type, data) {
   if (data.qualityDistinct !== undefined) details.push('此版本保存的不同門市核對：' + data.qualityDistinct.length + ' 組（辨識資料改變後需重新核對）');
   return details.join('\n');
 }
+function reviewHeads(record) { return record.heads.map(h => h.id).sort(); }
+function checkedReview(ctx) {
+  const r = project(payload.bundle).find(r => r.type === ctx.type && r.id === ctx.id);
+  if (!r || JSON.stringify(reviewHeads(r)) !== JSON.stringify([...ctx.parents].sort())) throw new Error('核對期間已有新版本，本次未寫入。請關閉並重新比較衝突。');
+  return r;
+}
+function reviewValue(value) {
+  if (value === undefined) return '（未提供）';
+  if (typeof value === 'string') return value || '（空白）';
+  return JSON.stringify(value, null, 2);
+}
+function reviewFields(before, after) {
+  const labels = { text: '拜訪文字', next: '下次跟進', store: '門市 ID', date: '拜訪日期', source: '紀錄來源', topics: '主題連結', people: '人物連結', attachments: '附件', name: '名稱', address: '地址', mapUrl: '地圖網址', city: '縣市', district: '地區', channel: '通路', attr: '屬性', contact: '窗口', desc: '備註', role: '職務', confirmed: '身分已核對', sameAs: '人物身分連結', csvSources: 'CSV 來源證據', csvIdentityPending: '門市身分待確認', csvIdentityRules: '門市身分裁定', googleText: 'Google 來源文字', googleUpdatePending: 'Google 文字待核對', sourceMissing: '來源缺失' };
+  const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])];
+  const changed = keys.filter(k => JSON.stringify(before[k]) !== JSON.stringify(after[k]));
+  const rows = changed.map(k => {
+    const diff = diffTextSegments(reviewValue(before[k]), reviewValue(after[k]));
+    return `<section class="conflict-field"><h4>${esc(labels[k] || k)}</h4><div class="quick-text-compare"><section><small>對照內容</small><pre>${diffSegmentsHTML(diff.before)}</pre></section><section><small>此版本／預計結果</small><pre>${diffSegmentsHTML(diff.after)}</pre></section></div></section>`;
+  }).join('');
+  return `<p><strong>${changed.length} 個欄位不同</strong>${changed.length ? '：' + changed.map(k => esc(labels[k] || k)).join('、') : '；仍須核對是否有刪除狀態差異。'}</p>${rows}`;
+}
+function reviewVersionLabel(o, index) {
+  return `版本 ${index + 1} · ${o.device === payload.device ? '本裝置' : '其他裝置 ' + o.device.slice(0, 8)} · ${dateText(o.at)}${o.deleted ? ' · 已刪除' : ' · 保留紀錄'}`;
+}
 function openReview(type, id, conflict) {
   const r = by(type, id); if (!r) return;
-  $('review-title').textContent = conflict ? '比較衝突版本' : '歷史版本';
-  const versions = conflict ? r.heads : [...r.versions].sort((a, b) => b.at.localeCompare(a.at));
-  $('review-body').innerHTML = `<p class="muted">${conflict ? '選擇保留的版本會解決目前全部衝突，其他版本仍留在歷史中。需要整合文字時，可選擇「編輯合併」。' : '還原會新增版本；不會抹除後續歷史。'}</p>${versions.map(o => `<article class="version"><p class="muted">${dateText(o.at)} · 裝置 ${esc(o.device.slice(0, 8))}${o.deleted ? ' · 已刪除' : ''}</p><pre>${esc(describeData(type, o.data))}</pre><button class="secondary" data-use-version="${esc(o.id)}">${conflict ? o.deleted ? '採用刪除' : '採用這個版本' : '還原這個內容'}</button> ${conflict && !o.deleted ? `<button data-merge-version="${esc(o.id)}">以此內容編輯合併</button>` : ''}</article>`).join('')}`;
+  versionReview = { type, id, parents: reviewHeads(r), conflict, baseline: r.heads[0].id };
+  resolutionPreview = null;
+  if (conflict) renderConflictReview();
+  else {
+    $('review-title').textContent = '歷史版本';
+    $('review-body').innerHTML = `<p>還原會先預覽，再建立新版本；不會抹除後續歷史。</p>${[...r.versions].sort((a, b) => b.at.localeCompare(a.at)).map(o => `<article class="version"><p>${esc(dateText(o.at))}${o.deleted ? ' · 已刪除' : ''}</p><pre>${esc(describeData(type, o.data))}</pre><button data-use-version="${esc(o.id)}">預覽還原這個內容</button></article>`).join('')}`;
+  }
   $('review').showModal();
 }
+function renderConflictReview() {
+  const r = checkedReview(versionReview), versions = r.heads;
+  const baseline = versions.find(o => o.id === versionReview.baseline) || versions[0];
+  $('review-title').textContent = '比較衝突版本';
+  $('review-body').innerHTML = `<p><strong>${versions.length} 個版本待核對，目前沒有寫入任何變更。</strong></p><p>選一份作為對照，再看其他版本的差異。紅色是對照內容中不同的部分，綠色是另一版本不同的部分；顏色不代表正確、新舊或建議採用。時間是版本儲存時間，不是拜訪日期。</p><label>對照版本<select id="conflict-baseline">${versions.map((o, i) => `<option value="${esc(o.id)}" ${o.id === baseline.id ? 'selected' : ''}>${esc(reviewVersionLabel(o, i))}</option>`).join('')}</select></label>${versions.map((o, i) => `<article class="version"><h3>${esc(reviewVersionLabel(o, i))}</h3>${o.id === baseline.id ? '<p>目前對照版本</p>' : `<p>${o.deleted !== baseline.deleted ? '<strong>刪除狀態不同，請特別核對。</strong>' : '刪除狀態一致。'}</p>${reviewFields(baseline.data, o.data)}`}<details><summary>查看完整內容與來源欄位</summary><pre>${esc(reviewValue(o.data))}</pre></details><button class="secondary" data-use-version="${esc(o.id)}">${o.deleted ? '預覽採用刪除' : '預覽採用此版本'}</button> ${!o.deleted ? `<button data-merge-version="${esc(o.id)}">以此版本為起點整合</button>` : ''}</article>`).join('')}`;
+}
+function previewResolution(ctx, data, deleted = false, blobs = {}, fromEditor = false) {
+  const r = checkedReview(ctx);
+  resolutionPreview = { ...ctx, parents: [...ctx.parents], data: structuredClone(data), deleted, blobs, fromEditor };
+  $('review-title').textContent = '確認衝突處理／還原結果';
+  $('review-body').innerHTML = `<p><strong>尚未寫入。${deleted ? '確認後，此紀錄將移到回收桶。' : '確認後，同一筆紀錄會建立一個新的有效版本。'}</strong></p><p>以下逐一比較目前版本與預計結果。${r.conflict ? '目前全部衝突將由這個結果解決。' : ''}未採用的內容仍保留在歷史中，原始 Source Snapshot 不變。</p><h3>預計保存的完整內容</h3><pre class="resolution-result">${esc(describeData(ctx.type, data))}</pre><details><summary>查看全部結果欄位</summary><pre>${esc(reviewValue(data))}</pre></details>${r.heads.map((o, i) => `<article class="version"><h3>相對於 ${esc(reviewVersionLabel(o, i))}</h3><p>${o.deleted !== deleted ? '<strong>刪除狀態將改變。</strong>' : '刪除狀態不變。'}</p>${reviewFields(o.data, data)}</article>`).join('')}<p id="resolution-error" class="error" role="alert"></p><div class="dialog-footer"><button data-resolution-back>返回${fromEditor ? '修改' : '核對'}</button><button class="primary" data-resolution-confirm>${deleted ? '確定移到回收桶並建立版本' : '確定建立處理結果版本'}</button></div>`;
+  if (!$('review').open) $('review').showModal();
+}
 async function useVersion(id) {
-  const o = payload.bundle.ops.find(o => o.id === id), r = by(o.type, o.entity);
-  if (!confirm('確認採用此版本？其他版本仍保留在歷史中。')) return;
-  await commitRevision(o.type, o.entity, o.data, r.heads.map(h => h.id), o.deleted); $('review').close(); toast('已建立新的確認版本，等待同步。');
+  if (!versionReview) throw new Error('請重新開啟版本核對。');
+  const r = checkedReview(versionReview), o = r.versions.find(o => o.id === id);
+  if (!o || (versionReview.conflict && !r.heads.some(h => h.id === id))) throw new Error('版本已改變，請重新核對。');
+  if (payload.draft?.id === r.id) throw new Error('這筆拜訪有未完成草稿，請先處理草稿。');
+  previewResolution(versionReview, o.data, o.deleted);
+}
+async function confirmResolution() {
+  const ctx = resolutionPreview; if (!ctx) throw new Error('請重新預覽處理結果。');
+  checkedReview(ctx);
+  if (!ctx.fromEditor && payload.draft?.id === ctx.id) throw new Error('這筆拜訪有未完成草稿，請先處理草稿。');
+  const bundle = structuredClone(payload.bundle); bundle.schema = 2;
+  bundle.ops.push(revision(ctx.type, ctx.id, ctx.data, ctx.parents, payload.device, ctx.deleted));
+  Object.assign(bundle.blobs, ctx.blobs); validateBundle(bundle);
+  await persist({ ...payload, bundle, dirty: true, ...(ctx.fromEditor && ctx.type === 'visit' ? { draft: null } : {}) });
+  if (ctx.fromEditor) { clearTimeout(draftTimer); draftTimer = null; $('editor').close(); editorContext = null; }
+  resolutionPreview = null; versionReview = null; $('review').close(); render(); toast('已建立處理結果版本，原版本保留在歷史中；等待同步。');
 }
 function editMerge(id) {
-  const o = payload.bundle.ops.find(o => o.id === id), r = by(o.type, o.entity), heads = r.heads.map(h => h.id);
-  // Open an editable copy while retaining all conflict parent IDs for explicit resolution.
+  const r = checkedReview(versionReview), o = r.heads.find(o => o.id === id);
+  if (!o || o.deleted) throw new Error('請重新選擇可編輯的版本。');
+  if (payload.draft) throw new Error('有未完成草稿，請先處理，避免覆蓋。');
   const temporary = { ...r, ...o.data, conflict: false, heads: [o] }, i = records.indexOf(r); records[i] = temporary;
-  $('review').close(); openEditor(o.type, o.entity); records[i] = r; editorContext.parents = heads;
+  try {
+    $('review').close(); openEditor(o.type, o.entity); editorContext.parents = reviewHeads(r);
+    $('editor-fields').insertAdjacentHTML('afterbegin', `<details class="conflict-editor-reference"><summary>展開原衝突版本，邊看邊整合</summary><p>以選定版本為起點；其他版本不會自動拼接。請核對附件、人物與來源等差異。</p>${r.heads.map((head, index) => `<section><h3>${esc(reviewVersionLabel(head, index))}</h3><pre>${esc(reviewValue(head.data))}</pre></section>`).join('')}</details>`);
+  }
+  finally { records[i] = r; }
 }
 async function removeEntity(type, id) {
   const r = by(type, id); if (r.conflict) return openReview(type, id, true);
@@ -968,7 +1032,7 @@ document.addEventListener('click', event => {
   const node = event.target.closest('[data-node-type]'); if (node && !busy) return navigate(node.dataset.nodeType, node.dataset.nodeId);
   if (!b) return;
   if (b.dataset.close) {
-    if (['rebuild-dialog', 'quick-text-dialog'].includes(b.dataset.close) && busy) return;
+    if (['rebuild-dialog', 'quick-text-dialog', 'review'].includes(b.dataset.close) && busy) return;
     if (b.dataset.close === 'editor' && editorContext?.type === 'visit') return run(async () => {
       await flushVisitDraft(); $('editor').close(); editorContext = null; render();
     }, 'editor-error');
@@ -1004,7 +1068,13 @@ document.addEventListener('click', event => {
   if (b.dataset.delete) return run(() => removeEntity(...b.dataset.delete.split(':')));
   if (b.dataset.restore) return run(async () => { const [type, id] = b.dataset.restore.split(':'), r = by(type, id); if (r.mergedInto && !confirm('此門市曾依已裁定同店規則整併至「' + name('store', r.mergedInto) + '」。還原會重新成為獨立門市，之後必須重新核對身分。確認還原？')) return; await commitRevision(type, id, r.heads[0].data, r.heads.map(h => h.id)); toast('已還原。'); });
   if (b.dataset.useVersion) return run(() => useVersion(b.dataset.useVersion));
-  if (b.dataset.mergeVersion) return editMerge(b.dataset.mergeVersion);
+  if (b.dataset.mergeVersion) return run(() => editMerge(b.dataset.mergeVersion));
+  if (b.dataset.resolutionConfirm !== undefined) return run(confirmResolution, 'resolution-error');
+  if (b.dataset.resolutionBack !== undefined) {
+    const ctx = resolutionPreview; resolutionPreview = null;
+    if (ctx?.fromEditor) return $('review').close();
+    if (versionReview) return run(() => { $('review').close(); openReview(versionReview.type, versionReview.id, versionReview.conflict); });
+  }
   if (b.dataset.attachment) { const v = by('visit', b.dataset.attachment), a = v.attachments[Number(b.dataset.index)]; download(unb64(payload.bundle.blobs[a.blob]), a.name.replace(/[\/\\]/g, '_'), 'application/octet-stream'); return; }
   if (b.dataset.graphPage) { graphPage = Math.max(0, graphPage + Number(b.dataset.graphPage)); drawGraph(); return; }
   if (b.id === 'new-note') return openEditor('visit');
@@ -1051,3 +1121,6 @@ else {
   startUpdates({ api, hasToken: () => !!payload?.token, isBusy: draftBusy, setHold: held => { updateHolding = held; document.body.classList.toggle('update-holding', held); }, notify: toast, onOfflineReady: () => { offlineReady = true; $('secure-state').textContent = '離線介面已備妥。iPhone 請先加入主畫面，再從主畫面進行配對。'; status(); } });
   if (location.hostname === 'localhost') $('secure-state').textContent = '請使用 Mac 顯示的 .local 網址開啟 App，管理頁才使用 localhost。';
 }
+
+$('review').addEventListener('change', event => { if (event.target.id === 'conflict-baseline') run(() => { versionReview.baseline = event.target.value; renderConflictReview(); }); });
+$('review').addEventListener('cancel', event => { if (busy) event.preventDefault(); });

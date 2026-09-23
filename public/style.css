@@ -90,3 +90,8 @@
 .visit-search-expanded .note>.store-link{display:none}
 .visit-search-expanded .note:last-child{margin-bottom:0}
 @media(max-width:760px){.visit-search-group{padding:14px}.visit-search-group-head{align-items:flex-start}.visit-search-group-head .pill{white-space:nowrap}.visit-search-preview{display:block}.visit-search-preview-label{display:block;margin-bottom:2px}}
+
+/* Conflict comparison retains readable full text on narrow screens. */
+.conflict-field{border-top:1px solid var(--line);padding:8px 0}.conflict-field h4{margin:8px 0}.conflict-field pre,.resolution-result,#review-body details pre{white-space:pre-wrap;overflow-wrap:anywhere}.conflict-field .quick-text-compare section{min-width:0}#conflict-baseline{max-width:100%}
+
+.conflict-editor-reference pre{white-space:pre-wrap;overflow-wrap:anywhere}.conflict-editor-reference{margin:12px 0;padding:12px;border:1px solid var(--line)}
