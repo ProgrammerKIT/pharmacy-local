@@ -23,6 +23,7 @@ test('real HTTPS pairing, authentication, CAS sync, encrypted backups and revoca
   const admin = 'test-admin-token-123456';
   assert.equal((await request('/api/admin/status')).status, 403);
   const status = await request('/api/admin/status', 'GET', undefined, admin);
+  assert.equal(status.headers['permissions-policy'], 'camera=(), microphone=(), geolocation=(self), payment=(), usb=()');
   assert.equal(status.body.service.running, true);
   assert.equal(status.body.service.supervised, false);
   assert.ok(['unsupported', 'unknown', 'unconfigured', 'disabled', 'not-loaded', 'loaded'].includes(status.body.service.autostart.state));

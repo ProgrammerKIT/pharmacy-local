@@ -2,6 +2,10 @@
 
 這是個人自用、尚未經獨立安全審計的軟體。客戶資料在 App 內加密，在已配對 iPhone／Mac 的私人區網以 HTTPS 交換。程式沒有客戶上傳端點、外部 AI、CDN、遙測或錯誤報告。發布工具只接受明列的程式路徑；客戶檔案即使加密，也不在 GitHub 發布範圍。
 
+## 手機定位
+
+手機在開啟並解鎖 App 後透過瀏覽器請求單次定位，首次仍需系統授權；桌機不請求。Permissions-Policy 僅允許同源 geolocation，其他原本禁用的感測功能維持禁用。位置只留在記憶體用於直線距離計算，背景、鎖定及切换資料庫時清除，不進入紀錄、IndexedDB、備份、同步或 Mac API。App 不向 Google 補查門市，不傳送使用者位置；瀏覽器／作業系統定位服務可能自行使用網路，不能視為完全離線 GPS。
+
 ## 對外連線與信任
 
 Mac 更新器只從設定的公開 GitHub Release 發出 GET 下載，允許 HTTPS 的 github.com、release-assets.githubusercontent.com、objects.githubusercontent.com 轉址，驗證 Ed25519 簽章後才解包。請求不帶客戶內容、資料庫 ID、配對權杖或裝置名稱；GitHub 仍會得知網路 IP、請求時間與下載資源。這不是整台 Mac「完全不上網」。

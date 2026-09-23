@@ -1,4 +1,4 @@
-import { newMeta, derive, seal, unseal, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments } from './core.js';
+import { newMeta, derive, seal, unseal, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates } from './core.js';
 import { readLocal, writeLocal, archiveAndReplaceLocal, listLocalArchives, readLocalArchive } from './db.js';
 import { createCSVImport } from './csv-ui.js';
 import { PROFILE_FIELDS, FILL_FIELDS, scanQuality, setDistinctReview, sourceSuggestions, fillProfile } from './csv.js';
@@ -31,6 +31,7 @@ let storeFilters = { query: '', district: '', kind: '', groups: [] };
 let updateHolding = false, macProgram = null, lastSyncFailure = null, syncWarning = '';
 let draftTimer = null, draftSaveChain = Promise.resolve(), discardingDraft = false, quickTextContext = null, transientResumeState = null;
 let versionReview = null, resolutionPreview = null;
+let nearbyState = { status: 'idle', position: null, message: '' }, nearbyRequest = 0, nearbyDenied = false;
 const csvImport = createCSVImport({ host: $('csv-view'), getState: () => payload, run, saveBundle: async bundle => { await persist({ ...payload, bundle, dirty: true }); render(); }, notify: toast, exportReport: report => download(JSON.stringify({ ...report, appVersion: APP_VERSION }, null, 2), 'pharmacy-import-preview.json', 'application/json'), downloadSource: (blob, filename) => { if (!confirm('原始 CSV 是明文檔案。請確認下載到自己的本機資料夾，避開 iCloud Drive。')) return; download(unb64(payload.bundle.blobs[blob]), filename.replace(/[\/\\]/g, '_'), 'application/octet-stream'); } });
 const all = type => records.filter(r => r.type === type && (!r.deleted || r.conflict));
 const by = (type, id) => records.find(r => r.type === type && r.id === id);
@@ -88,6 +89,56 @@ function recentStores(limit = 6) {
     if (!latest.has(store.id)) latest.set(store.id, at);
   }
   return availableStores.sort((a, b) => (latest.get(b.id) || 0) - (latest.get(a.id) || 0) || a.name.localeCompare(b.name, 'zh-Hant')).slice(0, limit);
+}
+function clearNearbyPosition() {
+  nearbyRequest++;
+  nearbyState = { status: nearbyDenied ? 'denied' : 'idle', position: null, message: nearbyDenied ? '定位未授權，請在裝置設定允許定位後重試。' : '' };
+}
+function renderQuickVisit() {
+  if (!payload) return;
+  const mobile = mobileLocationDevice(navigator), ready = mobile && nearbyState.status === 'ready';
+  const available = all('store').filter(s => !s.conflict && !s.deleted);
+  const located = ready ? nearestStores(available, nearbyState.position) : [];
+  const coverage = available.filter(s => storeCoordinates(s)).length;
+  const title = $('quick-visit-title'), status = $('nearby-status'), retry = $('nearby-retry');
+  title.textContent = mobile ? '附近最近 3 間門市' : '最近使用的門市';
+  retry.hidden = !mobile; retry.disabled = nearbyState.status === 'locating';
+  retry.textContent = nearbyState.status === 'locating' ? '定位中…' : '重新定位';
+  let message = mobile ? nearbyState.message : '快速選擇門市開始拜訪；電腦不啟動定位。';
+  if (ready) message = located.length
+    ? `依直線距離排序（不是行車距離）。${coverage}／${available.length} 間有可用座標${coverage < available.length ? '；缺少座標的門市未參與排序，可能另有更近門市' : ''}。定位誤差約 ${Math.round(nearbyState.position.accuracy)} 公尺${nearbyState.position.accuracy > 1000 ? '，目前誤差較大，請重新定位' : ''}。`
+    : '已取得定位，但門市缺少可靠座標，尚無法計算附近門市。';
+  status.textContent = message || '開啟後會請求定位；只在本機計算距離。';
+  const entries = located.length ? located : recentStores(3).map(store => ({ store }));
+  const fallback = mobile && !located.length ? '<p class="nearby-fallback-label">先顯示最近使用的門市（不是距離排序）</p>' : '';
+  $('recent-store-list').innerHTML = fallback + entries.map(({ store, distance }) => {
+    const range = Number.isFinite(distance) ? (distance < 1000 ? `約 ${Math.round(distance / 10) * 10} 公尺` : `約 ${(distance / 1000).toFixed(1)} 公里`) + ' · 直線距離' : store.district || '地區未提供';
+    return `<button type="button" class="recent-store" data-quick-visit="${esc(store.id)}"><strong>${esc(store.name)}</strong><small>${esc(range)}</small>${storeIdentityPending(store) ? '<small>身分待確認</small>' : ''}</button>`;
+  }).join('') || '<p class="muted">目前沒有可用門市，可按「新增拜訪」開始記錄。</p>';
+}
+function requestNearbyPosition(force = false) {
+  if (!payload || document.hidden || !mobileLocationDevice(navigator) || nearbyState.status === 'locating') return;
+  if (!force && (nearbyDenied || nearbyState.status === 'ready')) { renderQuickVisit(); return; }
+  const request = ++nearbyRequest, sessionKey = key;
+  const current = () => request === nearbyRequest && !!payload && key === sessionKey && !document.hidden;
+  if (!navigator.geolocation || !isSecureContext) {
+    nearbyState = { status: 'error', position: null, message: '此環境無法定位，請使用原本受信任的 HTTPS App。' }; renderQuickVisit(); return;
+  }
+  nearbyState = { status: 'locating', position: null, message: '正在取得目前位置；首次使用請允許定位。位置只在本機使用。' }; renderQuickVisit();
+  const failed = error => {
+    if (!current()) return;
+    nearbyDenied = error?.code === 1;
+    nearbyState = { status: nearbyDenied ? 'denied' : 'error', position: null, message: nearbyDenied ? '定位未授權，請在裝置設定允許定位後重試。' : error?.code === 3 ? '定位逾時，請到訊號較好的位置後重新定位。' : '目前無法取得位置，請確認定位服務後重試。' }; renderQuickVisit();
+  };
+  try {
+    navigator.geolocation.getCurrentPosition(result => {
+      if (!current()) return;
+      const c = result.coords;
+      if (!validCoordinates(c?.latitude, c?.longitude) || !Number.isFinite(c.accuracy) || c.accuracy < 0 || !Number.isFinite(result.timestamp) || Date.now() - result.timestamp > 60000) { failed({ code: 2 }); return; }
+      nearbyDenied = false;
+      nearbyState = { status: 'ready', position: { latitude: c.latitude, longitude: c.longitude, accuracy: c.accuracy }, message: '' }; renderQuickVisit();
+    }, failed, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+  } catch { failed({ code: 2 }); }
 }
 function visitStoreSearchText(store) {
   return [store.name, ...(store.csvAliases || []), store.city, store.district, store.address, store.channel]
@@ -284,6 +335,7 @@ async function openWorkspace() {
   try { storagePersistent = await navigator.storage?.persist?.() || false; } catch {}
   restoreTransientResumeState(); clearInterval(autoTimer);
   autoTimer = setInterval(autoSync, 15000);
+  requestNearbyPosition();
 }
 async function autoSync() {
   if (updateHolding || autoFetching || !payload?.token || document.hidden || busy || editorContext || $('review').open || $('quick-text-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending()) return;
@@ -305,7 +357,7 @@ async function autoSync() {
 function lockNow(reopen = !document.hidden) {
   if (busy || editorContext || $('review').open || $('quick-text-dialog')?.open || csvImport.hasPending()) { pendingLock = true; document.body.classList.add('privacy-veil'); return; }
   captureTransientResumeState();
-  pendingLock = false; versionReview = null; resolutionPreview = null; clearInterval(autoTimer); key = null; meta = null; payload = null; records = []; trail = []; editorContext = null; lastError = ''; macProgram = null; lastSyncFailure = null; syncWarning = '';
+  pendingLock = false; clearNearbyPosition(); versionReview = null; resolutionPreview = null; clearInterval(autoTimer); key = null; meta = null; payload = null; records = []; trail = []; editorContext = null; lastError = ''; macProgram = null; lastSyncFailure = null; syncWarning = '';
   csvImport.reset(); qualityCache = null; qualityReview = null; qualityTab = 'duplicates'; qualityField = ''; qualityPage = 0;
   resetStoreFilters();
   for (const u of objectURLs) URL.revokeObjectURL(u); objectURLs = [];
@@ -668,8 +720,7 @@ function renderVisitSearchGroup(group, query) {
   return `<section class="visit-search-group"><div class="visit-search-group-head"><button class="text-button store-link" data-node-type="store" data-node-id="${esc(group.storeId)}">${highlightLiteral(name('store', group.storeId), query)}</button><span class="pill">${group.matches.length} 筆命中 · 共 ${total} 筆</span></div><div class="visit-search-preview">${lead ? visitSearchPreview(lead, query) : ''}</div><details class="visit-search-details"><summary>展開這間藥局全部 ${total} 筆拜訪紀錄</summary><div class="visit-search-expanded">${group.allVisits.map(v => noteHTML(v, query)).join('')}</div></details></section>`;
 }
 function renderVisits() {
-  const recent = recentStores();
-  $('recent-store-list').innerHTML = recent.map(store => `<button type="button" class="recent-store" data-quick-visit="${esc(store.id)}"><strong>${esc(store.name)}</strong><small>${esc(store.district || '地區未提供')}</small></button>`).join('') || '<p class="muted">完成第一筆拜訪後，最近使用門市會出現在這裡。</p>';
+  renderQuickVisit();
   $('draft-banner').hidden = !payload?.draft;
   if (payload?.draft) $('draft-banner-text').textContent = '有一份已成功保存於本機的未完成草稿' + (payload.draft.savedAt ? ' · ' + dateText(payload.draft.savedAt) : '') + '。';
   const query = $('visit-search').value.trim(), visits = all('visit').slice().sort((a, b) => b.date.localeCompare(a.date));
@@ -997,7 +1048,7 @@ async function adoptRebuilt(event) {
     const envelope = await seal(next.payload, next.key, next.meta, 'device');
     const rev = await archiveAndReplaceLocal(envelope, localRevision, next.key);
     // Only adopt after the archive and active slot commit in one transaction.
-    meta = next.meta; key = next.key; payload = next.payload; localRevision = rev; slot = { envelope, revision: rev, unlockKey: key };
+    clearNearbyPosition(); meta = next.meta; key = next.key; payload = next.payload; localRevision = rev; slot = { envelope, revision: rev, unlockKey: key };
     csvImport.reset(); qualityCache = null; qualityReview = null; editorContext = null; records = []; trail = []; focus = { type: 'store', id: '' }; graphPage = 0;
     for (const u of objectURLs) URL.revokeObjectURL(u); objectURLs = [];
     for (const id of ['focus-header', 'graph', 'graph-pager', 'focus-detail', 'evidence-list', 'store-list', 'visit-list', 'customer-list', 'entity-list', 'trash-list', 'review-body', 'editor-fields', 'quality-content']) $(id).replaceChildren();
@@ -1077,6 +1128,7 @@ document.addEventListener('click', event => {
   }
   if (b.dataset.attachment) { const v = by('visit', b.dataset.attachment), a = v.attachments[Number(b.dataset.index)]; download(unb64(payload.bundle.blobs[a.blob]), a.name.replace(/[\/\\]/g, '_'), 'application/octet-stream'); return; }
   if (b.dataset.graphPage) { graphPage = Math.max(0, graphPage + Number(b.dataset.graphPage)); drawGraph(); return; }
+  if (b.id === 'nearby-retry') return requestNearbyPosition(true);
   if (b.id === 'new-note') return openEditor('visit');
   if (b.id === 'back-node') { const previous = trail.pop(); if (previous) navigate(previous.type, previous.id, false); return; }
   if (b.id === 'candidate-overview') return openCandidateOverview();
@@ -1090,11 +1142,11 @@ document.addEventListener('click', event => {
 });
 document.addEventListener('keydown', e => { const n = e.target.closest('.node[role="button"]'); if (n && ['Enter', ' '].includes(e.key) && !busy) { e.preventDefault(); if (n.dataset.candidateKey) openCandidateDetail(n.dataset.candidateKey, n.dataset.candidateStore || ''); else navigate(n.dataset.nodeType, n.dataset.nodeId); } });
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) { if (editorContext?.type === 'visit') void flushVisitDraft(); document.body.classList.add('privacy-veil'); if (payload || busy) lockNow(false); }
+  if (document.hidden) { clearNearbyPosition(); if (editorContext?.type === 'visit') void flushVisitDraft(); document.body.classList.add('privacy-veil'); if (payload || busy) lockNow(false); }
   else if (pendingLock || !payload) { pendingLock = false; document.body.classList.remove('privacy-veil'); showGate(); }
-  else document.body.classList.remove('privacy-veil');
+  else { document.body.classList.remove('privacy-veil'); requestNearbyPosition(); }
 });
-window.addEventListener('pagehide', () => { if (editorContext?.type === 'visit') void flushVisitDraft(); if (payload || busy) lockNow(false); });
+window.addEventListener('pagehide', () => { clearNearbyPosition(); if (editorContext?.type === 'visit') void flushVisitDraft(); if (payload || busy) lockNow(false); });
 window.addEventListener('pageshow', () => { if (!payload && !document.hidden) { document.body.classList.remove('privacy-veil'); showGate(); } });
 $('gate-form').addEventListener('submit', initializeOrUnlock); $('editor-form').addEventListener('submit', saveEditor); $('quick-text-form').addEventListener('submit', saveQuickTextEdit);
 $('editor').addEventListener('close', () => editorContext = null);

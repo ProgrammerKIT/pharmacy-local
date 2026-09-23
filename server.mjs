@@ -109,7 +109,7 @@ export function createService({ dataDir = defaultDataDir(), host = '0.0.0.0', po
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-Pharmacy-Version', APP_VERSION);
-    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=()');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(self), payment=(), usb=()');
     try {
       if (!isPrivate(req.socket.remoteAddress)) return send(403, { error: '只接受本機與私人區域網路連線。' });
       const authority = String(req.headers.host || '').toLowerCase();

@@ -200,3 +200,57 @@ export function revision(type, entity, data, parents, device, deleted = false) {
   return { id: uuid(), type, entity, data: structuredClone(data), parents: [...parents], device, deleted, at: new Date().toISOString() };
 }
 export async function hashBytes(bytes) { return [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(x => x.toString(16).padStart(2, '0')).join(''); }
+
+// Nearby-store calculations are read-only. Map viewports and opaque place IDs are
+// not coordinates of a store, and must never be guessed into distance rankings.
+export function mobileLocationDevice(nav = {}) {
+  return /iPhone|iPad|iPod|Android/i.test(nav.userAgent || '') ||
+    (nav.platform === 'MacIntel' && nav.maxTouchPoints > 1);
+}
+export function validCoordinates(latitude, longitude) {
+  return typeof latitude === 'number' && typeof longitude === 'number' &&
+    Number.isFinite(latitude) && Number.isFinite(longitude) && Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180;
+}
+export function distanceMeters(a, b) {
+  const rad = Math.PI / 180, dlat = (b.latitude - a.latitude) * rad, dlon = (b.longitude - a.longitude) * rad;
+  const h = Math.sin(dlat / 2) ** 2 + Math.cos(a.latitude * rad) * Math.cos(b.latitude * rad) * Math.sin(dlon / 2) ** 2;
+  return 6371008.8 * 2 * Math.atan2(Math.sqrt(Math.min(1, Math.max(0, h))), Math.sqrt(Math.max(0, 1 - h)));
+}
+export function mapCoordinates(value) {
+  let url; try { url = new URL(value); } catch { return null; }
+  if (url.protocol !== 'https:' || url.username || url.password || url.port ||
+      !['www.google.com', 'maps.google.com', 'www.google.com.tw', 'maps.google.com.tw'].includes(url.hostname)) return null;
+  if (!url.hostname.startsWith('maps.') && !/^\/maps(?:\/|$)/.test(url.pathname)) return null;
+  let text; try { text = decodeURIComponent(url.pathname + url.search + url.hash); } catch { return null; }
+  const points = [...text.matchAll(/!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)(?=[!&#/?]|$)/g)]
+    .map(m => ({ latitude: Number(m[1]), longitude: Number(m[2]) }));
+  if (!points.length) {
+    // Only an explicit coordinate pin, never ll= or @ camera center.
+    for (const field of ['query', 'q']) {
+      const m = (url.searchParams.get(field) || '').trim().match(/^(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)$/);
+      if (m) points.push({ latitude: Number(m[1]), longitude: Number(m[2]) });
+    }
+  }
+  if (!points.length || points.some(p => !validCoordinates(p.latitude, p.longitude)) || points.some(p => distanceMeters(points[0], p) > 25)) return null;
+  return points[0];
+}
+export function storeCoordinates(store) {
+  const direct = mapCoordinates(store.mapUrl || '');
+  if (direct) return direct;
+  const points = [];
+  for (const source of store.csvSources || []) {
+    for (let i = 0; i < (source.headers || []).length; i++) {
+      if (!/^(網址|地圖網址|google\s*maps(?:\s*網址)?|url|map\s*url)$/i.test(source.headers[i].trim())) continue;
+      const p = mapCoordinates(source.cells?.[i] || ''); if (p) points.push(p);
+    }
+  }
+  if (!points.length || points.some(p => distanceMeters(points[0], p) > 25)) return null;
+  return points[0];
+}
+export function nearestStores(stores, position, limit = 3) {
+  if (!validCoordinates(position?.latitude, position?.longitude)) return [];
+  return stores.filter(s => !s.deleted && !s.conflict).map(store => ({ store, point: storeCoordinates(store) }))
+    .filter(x => x.point).map(({ store, point }) => ({ store, distance: distanceMeters(position, point) }))
+    .sort((a, b) => a.distance - b.distance || a.store.name.localeCompare(b.store.name, 'zh-Hant') || a.store.id.localeCompare(b.store.id))
+    .slice(0, limit);
+}
