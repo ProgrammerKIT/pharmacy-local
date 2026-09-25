@@ -254,3 +254,73 @@ export function nearestStores(stores, position, limit = 3) {
     .sort((a, b) => a.distance - b.distance || a.store.name.localeCompare(b.store.name, 'zh-Hant') || a.store.id.localeCompare(b.store.id))
     .slice(0, limit);
 }
+
+
+// Coordinate review packages are private local inputs, never bundled with code.
+export function coordinateFeature(value) {
+  try {
+    const u = new URL(value);
+    if (u.protocol !== 'https:' || u.username || u.password || u.port || !['www.google.com','maps.google.com','www.google.com.tw','maps.google.com.tw'].includes(u.hostname)) return '';
+    if (!u.hostname.startsWith('maps.') && !/^\/maps(?:\/|$)/.test(u.pathname)) return '';
+    const matches = [...decodeURIComponent(u.pathname + u.search).matchAll(/!1s(0x[a-f0-9]+:0x[a-f0-9]+)(?=[!&#/?]|$)/gi)].map(m => m[1].toLowerCase());
+    const ftid = u.searchParams.get('ftid'); if (/^0x[a-f0-9]+:0x[a-f0-9]+$/i.test(ftid || '')) matches.push(ftid.toLowerCase());
+    return matches.length && new Set(matches).size === 1 ? matches[0] : '';
+  } catch { return ''; }
+}
+export function validateCoordinateReview(input) {
+  const fail = () => { throw new Error('座標補查檔案格式或地點證據不完整，未修改資料。'); };
+  if (!input || input.format !== 'pharmacy-coordinate-review-1' || !Array.isArray(input.items) || !input.items.length || input.items.length > 2000) fail();
+  const seen = new Set();
+  const items = input.items.map(item => {
+    if (!item || typeof item.featureId !== 'string' || !/^0x[a-f0-9]+:0x[a-f0-9]+$/.test(item.featureId) || seen.has(item.featureId) || typeof item.resolvedUrl !== 'string' || item.resolvedUrl.length > 2000 || coordinateFeature(item.resolvedUrl) !== item.featureId || typeof item.googleName !== 'string' || !item.googleName.trim() || item.googleName.length > 500 || !Array.isArray(item.sourceNames) || !item.sourceNames.length || item.sourceNames.length > 100 || item.sourceNames.some(n => typeof n !== 'string' || n.length > 500) || !Number.isFinite(Date.parse(item.checkedAt))) fail();
+    const point = mapCoordinates(item.resolvedUrl);
+    if (!point || !validCoordinates(item.latitude,item.longitude) || Math.abs(point.latitude-item.latitude)>1e-8 || Math.abs(point.longitude-item.longitude)>1e-8) fail();
+    if (item.address != null && (typeof item.address !== 'string' || item.address.length > 2000)) fail();
+    seen.add(item.featureId);
+    return { featureId:item.featureId, mapUrl:item.resolvedUrl, googleName:item.googleName, sourceNames:[...item.sourceNames], checkedAt:item.checkedAt, address:item.address || '', point };
+  });
+  return items;
+}
+export function planCoordinates(bundle, input) {
+  validateBundle(bundle);
+  const items = validateCoordinateReview(input), lookup = new Map(items.map(i => [i.featureId,i]));
+  const stores = project(bundle).filter(s => s.type === 'store' && (!s.deleted || s.conflict));
+  const evidence = store => {
+    const urls = (store.csvSources || []).flatMap(s => s.headers.flatMap((h,i) => /^(網址|地圖網址|google\s*maps(?:\s*網址)?|url|map\s*url)$/i.test(h.trim()) ? [s.cells[i]] : []));
+    const direct = coordinateFeature(store.mapUrl || '');
+    const ids = [...new Set([direct,...urls.map(coordinateFeature)].filter(Boolean))];
+    return {id:ids.length===1 ? ids[0] : '', ambiguous:ids.length>1 || !!store.mapUrl && !direct};
+  };
+  const evidenceById = new Map(stores.map(s => [s.id,evidence(s)]));
+  const counts = new Map(); for (const e of evidenceById.values()) if(e.id) counts.set(e.id,(counts.get(e.id)||0)+1);
+  const changes=[], skipped=[];
+  for (const store of stores) {
+    const e=evidenceById.get(store.id), item=lookup.get(e.id);
+    let reason='';
+    if(store.conflict || store.csvIdentityPending || store.deleted || store.mergedInto) reason='版本衝突或身分待確認';
+    else if(e.ambiguous) reason='地圖識別不一致或人工連結無法核對';
+    else if(!item) reason='補查檔案沒有相同地點識別碼';
+    else if(counts.get(e.id)>1) reason='相同地點識別碼對應多筆門市，需核對';
+    else if(store.name.trim()!==item.googleName.trim() || !item.sourceNames.some(n=>n.trim()===item.googleName.trim())) reason='名稱變動，需重新核對身分';
+    else if(store.address?.trim() && store.address.trim() !== item.address.trim()) reason='現有地址與 Google 地址不同，需核對';
+    else {
+      const old=storeCoordinates(store);
+      if(old) reason=distanceMeters(old,item.point)<=25 ? '已有可靠座標，不需修改' : '現有座標與補查結果不一致';
+      // Check each source separately: an ambiguous aggregate must not hide disagreement.
+      else if((store.csvSources||[]).some(source=>source.headers.some((h,i)=>/^(網址|地圖網址|google\s*maps(?:\s*網址)?|url|map\s*url)$/i.test(h.trim()) && mapCoordinates(source.cells[i]) && distanceMeters(mapCoordinates(source.cells[i]),item.point)>25))) reason='來源座標不一致';
+    }
+    if(reason) skipped.push({id:store.id,name:store.name,reason});
+    else changes.push({id:store.id,name:store.name,parents:store.heads.map(h=>h.id).sort(),before:store.mapUrl||'',after:item.mapUrl,point:item.point,checkedAt:item.checkedAt});
+  }
+  return {vaultId:bundle.vaultId,changes,skipped};
+}
+export function applyCoordinates(bundle, input, expected, device) {
+  const current=planCoordinates(bundle,input);
+  if(JSON.stringify(current)!==JSON.stringify(expected)) throw new Error('資料或補查結果已改變，請重新預覽；尚未套用。');
+  const next=structuredClone(bundle), stores=new Map(project(bundle).map(s=>[s.id,s]));
+  for(const change of current.changes) {
+    const store=stores.get(change.id);
+    next.ops.push(revision('store',store.id,{...store.heads[0].data,mapUrl:change.after},change.parents,device));
+  }
+  return validateBundle(next);
+}

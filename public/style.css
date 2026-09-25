@@ -97,3 +97,5 @@
 .conflict-editor-reference pre{white-space:pre-wrap;overflow-wrap:anywhere}.conflict-editor-reference{margin:12px 0;padding:12px;border:1px solid var(--line)}
 
 .nearby-fallback-label{grid-column:1/-1;margin:4px 0;color:var(--muted);font-size:.9rem}#nearby-status{line-height:1.6}#nearby-retry{margin-bottom:10px}
+
+.coordinate-url { overflow-wrap: anywhere; }

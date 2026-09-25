@@ -1,4 +1,4 @@
-import { newMeta, derive, seal, unseal, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates } from './core.js';
+import { newMeta, derive, seal, unseal, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates } from './core.js';
 import { readLocal, writeLocal, archiveAndReplaceLocal, listLocalArchives, readLocalArchive } from './db.js';
 import { createCSVImport } from './csv-ui.js';
 import { PROFILE_FIELDS, FILL_FIELDS, scanQuality, setDistinctReview, sourceSuggestions, fillProfile } from './csv.js';
@@ -31,6 +31,7 @@ let storeFilters = { query: '', district: '', kind: '', groups: [] };
 let updateHolding = false, macProgram = null, lastSyncFailure = null, syncWarning = '';
 let draftTimer = null, draftSaveChain = Promise.resolve(), discardingDraft = false, quickTextContext = null, transientResumeState = null;
 let versionReview = null, resolutionPreview = null;
+let coordinatePreview = null;
 let nearbyState = { status: 'idle', position: null, message: '' }, nearbyRequest = 0, nearbyDenied = false;
 const csvImport = createCSVImport({ host: $('csv-view'), getState: () => payload, run, saveBundle: async bundle => { await persist({ ...payload, bundle, dirty: true }); render(); }, notify: toast, exportReport: report => download(JSON.stringify({ ...report, appVersion: APP_VERSION }, null, 2), 'pharmacy-import-preview.json', 'application/json'), downloadSource: (blob, filename) => { if (!confirm('原始 CSV 是明文檔案。請確認下載到自己的本機資料夾，避開 iCloud Drive。')) return; download(unb64(payload.bundle.blobs[blob]), filename.replace(/[\/\\]/g, '_'), 'application/octet-stream'); } });
 const all = type => records.filter(r => r.type === type && (!r.deleted || r.conflict));
@@ -139,6 +140,27 @@ function requestNearbyPosition(force = false) {
       nearbyState = { status: 'ready', position: { latitude: c.latitude, longitude: c.longitude, accuracy: c.accuracy }, message: '' }; renderQuickVisit();
     }, failed, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
   } catch { failed({ code: 2 }); }
+}
+async function previewCoordinateFile(file) {
+  if (!payload || editorContext || csvImport.hasPending() || $('review').open) throw new Error('請先完成目前編輯或預覽。');
+  if (file.size > 2 * 1024 * 1024) throw new Error('座標檔案超過 2 MB，未載入。');
+  const sessionKey = key, input = JSON.parse(await file.text());
+  if (!payload || key !== sessionKey || pendingLock || document.hidden) return;
+  const plan = planCoordinates(payload.bundle, input);
+  coordinatePreview = { input, plan, sessionKey }; versionReview = null; resolutionPreview = null;
+  $('review-title').textContent = '座標補查：正式套用前預覽';
+  $('review-body').innerHTML = `<p>對照目前資料：可更新 ${plan.changes.length} 間，略過 ${plan.skipped.length} 間。檔案中的歷史清單不代表目前全部門市。</p><p>確認後只新增門市地圖網址版本，讓附近排序讀取座標；舊網址保留在版本歷史。名稱、地址、拜訪文字、原 CSV 與 Source Snapshot 均保留。變更會隨加密同步傳到其他裝置。</p><p>取消或關閉不寫入任何資料。</p>` +
+    plan.changes.map(c => `<article><h3>${esc(c.name)}</h3><p>座標：${esc(c.point.latitude)}, ${esc(c.point.longitude)}；補查時間：${esc(dateText(c.checkedAt))}</p><details><summary>原網址與新網址</summary><p class="coordinate-url">原：${esc(c.before || '未提供')}</p><p class="coordinate-url">新：${esc(c.after)}</p></details></article>`).join('') +
+    `<details><summary>略過 ${plan.skipped.length} 間及原因</summary>` + plan.skipped.map(c => `<p>${esc(c.name)}：${esc(c.reason)}</p>`).join('') + '</details><div class="dialog-footer"><button data-close="review">取消，不修改</button>' + (plan.changes.length ? `<button id="apply-coordinates" class="primary">確認更新這 ${plan.changes.length} 間的地圖網址</button>` : '') + '</div>';
+  $('review').showModal();
+}
+async function commitCoordinates() {
+  const preview = coordinatePreview;
+  if (!preview || !payload || preview.sessionKey !== key || pendingLock || document.hidden || !$('review').open) throw new Error('預覽已失效，請重新載入檔案。');
+  const bundle = applyCoordinates(payload.bundle, preview.input, preview.plan, payload.device);
+  await persist({ ...payload, bundle, dirty: true });
+  coordinatePreview = null; $('review').close(); render();
+  toast('座標已加密儲存；舊網址與原始來源保留。');
 }
 function visitStoreSearchText(store) {
   return [store.name, ...(store.csvAliases || []), store.city, store.district, store.address, store.channel]
@@ -357,7 +379,7 @@ async function autoSync() {
 function lockNow(reopen = !document.hidden) {
   if (busy || editorContext || $('review').open || $('quick-text-dialog')?.open || csvImport.hasPending()) { pendingLock = true; document.body.classList.add('privacy-veil'); return; }
   captureTransientResumeState();
-  pendingLock = false; clearNearbyPosition(); versionReview = null; resolutionPreview = null; clearInterval(autoTimer); key = null; meta = null; payload = null; records = []; trail = []; editorContext = null; lastError = ''; macProgram = null; lastSyncFailure = null; syncWarning = '';
+  pendingLock = false; coordinatePreview = null; clearNearbyPosition(); versionReview = null; resolutionPreview = null; clearInterval(autoTimer); key = null; meta = null; payload = null; records = []; trail = []; editorContext = null; lastError = ''; macProgram = null; lastSyncFailure = null; syncWarning = '';
   csvImport.reset(); qualityCache = null; qualityReview = null; qualityTab = 'duplicates'; qualityField = ''; qualityPage = 0;
   resetStoreFilters();
   for (const u of objectURLs) URL.revokeObjectURL(u); objectURLs = [];
@@ -1128,6 +1150,8 @@ document.addEventListener('click', event => {
   }
   if (b.dataset.attachment) { const v = by('visit', b.dataset.attachment), a = v.attachments[Number(b.dataset.index)]; download(unb64(payload.bundle.blobs[a.blob]), a.name.replace(/[\/\\]/g, '_'), 'application/octet-stream'); return; }
   if (b.dataset.graphPage) { graphPage = Math.max(0, graphPage + Number(b.dataset.graphPage)); drawGraph(); return; }
+  if (b.id === 'import-coordinates') return $('coordinate-file').click();
+  if (b.id === 'apply-coordinates') return run(commitCoordinates);
   if (b.id === 'nearby-retry') return requestNearbyPosition(true);
   if (b.id === 'new-note') return openEditor('visit');
   if (b.id === 'back-node') { const previous = trail.pop(); if (previous) navigate(previous.type, previous.id, false); return; }
@@ -1176,3 +1200,6 @@ else {
 
 $('review').addEventListener('change', event => { if (event.target.id === 'conflict-baseline') run(() => { versionReview.baseline = event.target.value; renderConflictReview(); }); });
 $('review').addEventListener('cancel', event => { if (busy) event.preventDefault(); });
+
+$('coordinate-file').addEventListener('change', () => { const file = $('coordinate-file').files[0]; $('coordinate-file').value = ''; if (file) run(() => previewCoordinateFile(file)); });
+$('review').addEventListener('close', () => { coordinatePreview = null; });
