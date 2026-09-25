@@ -35,6 +35,10 @@ test('mobile-first runtime files are valid JavaScript and expose the daily captu
   assert.match(app, /async function discardVisitDraft\(/);
   assert.match(app, /function openCandidateDetail\(/);
   assert.match(app, /function openCandidateOverview\(/);
+  assert.match(app, /function openVisitBrief\(/);
+  assert.match(app, /data-visit-brief=/);
+  assert.match(app, /拜訪前重點卡（唯讀）/);
+  assert.match(app, /只排列既有欄位與原文/);
   assert.match(app, /function openQuickTextEdit\(/);
   assert.match(app, /async function saveQuickTextEdit\(/);
   assert.match(app, /快速修改不能把整段文字存成空白/);
@@ -156,7 +160,7 @@ test('quick text edit creates one new visit revision and preserves every non-tex
 });
 
 test('SOP1 explicitly separates App daily notes from Google CSV imports and keeps retention undecided', () => {
-  assert.equal(SOP1_VERSION, '1.2.8');
+  assert.equal(SOP1_VERSION, '1.2.9');
   assert.match(sop, /### A\. App 日常記錄/);
   assert.match(sop, /### B\. Google CSV 外部資料匯入/);
   assert.match(sop, /### C\. 同步與備份/);

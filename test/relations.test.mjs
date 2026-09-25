@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { TOPIC_RULES, termFound, evidenceKind, sourceTags, candidateRelationsForStore, candidateOverview, candidateTrend } from '../public/relations.js';
+import { TOPIC_RULES, termFound, evidenceKind, sourceTags, candidateRelationsForStore, candidateOverview, candidateTrend, visitBriefForStore } from '../public/relations.js';
 import { prepareCSV, planCSV, buildCSVImport } from '../public/csv.js';
 import { newMeta, derive, seal, unseal, emptyBundle, project } from '../public/core.js';
 import { rekeyInitial, installInitialCustomer } from '../scripts/initial-customer.mjs';
@@ -62,6 +62,20 @@ test('candidate relations are read-only evidence indexes with explicit status an
   assert.equal(across.visitCount,3);
   const trend=candidateTrend(across,new Date('2026-09-22T12:00:00'));
   assert.deepEqual(trend,{currentVisits:2,previousVisits:1,currentStores:2,previousStores:1});
+});
+test('visit brief is a bounded read-only view and excludes unsafe records without changing input',()=>{
+  const stores=[{id:'s1',name:'虛構甲藥局',city:'台北市',district:'中正區'},{id:'s2',name:'身分待確認',csvIdentityPending:true},{id:'s3',name:'衝突門市',conflict:true}];
+  const visits=[
+    {id:'v1',store:'s1',date:'2026-09-20',source:'現場觀察',text:'乾眼客人詢問單支包裝怎麼用？',next:'帶資料',people:[],topics:[],deleted:false,conflict:false},
+    {id:'v2',store:'s1',date:'',source:'電話',text:'日期未提供的原文',next:'',people:[],topics:[],deleted:false,conflict:false},
+    {id:'v3',store:'s1',date:'2026-09-21',source:'現場觀察',text:'衝突文字',next:'不應顯示',people:[],topics:[],deleted:false,conflict:true},
+    {id:'v4',store:'s1',date:'2026-09-22',source:'現場觀察',text:'回收桶文字',next:'不應顯示',people:[],topics:[],deleted:true,conflict:false}
+  ];
+  const before=structuredClone({stores,visits}), brief=visitBriefForStore('s1',visits,stores,[],{followups:2,recent:2,candidates:3});
+  assert.equal(brief.visitCount,2);assert.equal(brief.latestDate,'2026-09-20');assert.deepEqual(brief.followups.map(x=>x.text),['帶資料']);
+  assert.deepEqual(brief.recent.map(x=>x.visitId),['v1','v2']);assert.ok(brief.candidates.some(x=>x.key==='topic:dryeye'));
+  assert.equal(visitBriefForStore('s2',visits,stores),null);assert.equal(visitBriefForStore('s3',visits,stores),null);
+  assert.deepEqual({stores,visits},before);
 });
 test('initial customer package rekeys locally; delivery password cannot decrypt new vault',async()=>{
   const meta=newMeta(), bundle=emptyBundle(meta.vaultId), delivery='delivery-password-strong', own='personal-password-strong';

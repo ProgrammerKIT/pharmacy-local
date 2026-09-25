@@ -99,3 +99,5 @@
 .nearby-fallback-label{grid-column:1/-1;margin:4px 0;color:var(--muted);font-size:.9rem}#nearby-status{line-height:1.6}#nearby-retry{margin-bottom:10px}
 
 .coordinate-url { overflow-wrap: anywhere; }
+
+.visit-brief-head{margin-bottom:14px}.visit-brief-head h3{font-size:1.25rem;margin:8px 0 4px}.visit-brief-head p{color:var(--muted);margin:0}.visit-brief-section{margin:22px 0}.visit-brief-section>h3{margin-bottom:10px}.brief-item{border:1px solid var(--line);border-radius:10px;padding:13px 15px;margin:9px 0;background:#fff}.brief-item.explicit{border-left:4px solid var(--teal);background:#f8fcfb}.brief-item>div{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.brief-item p,.brief-item pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;line-height:1.6;margin:9px 0 0}.brief-item .chips{margin-top:10px}@media(max-width:760px){.visit-brief-section{margin:18px 0}.brief-item{padding:12px}}

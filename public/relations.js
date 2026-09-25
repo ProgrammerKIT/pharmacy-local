@@ -115,6 +115,25 @@ export function candidateRelationsForStore(storeId, visits, stores, people = [])
   }
   return output.sort(candidateSort);
 }
+
+// A display-time visit brief. It contains only existing, traceable fields and never writes a summary back.
+export function visitBriefForStore(storeId, visits, stores, people = [], limits = {}) {
+  const store = stores.find(item => item.id === storeId);
+  if (!store || store.deleted || store.conflict || storeIdentityPending(store)) return null;
+  const eligible = visits.filter(visit => visit.store === storeId && !visit.deleted && !visit.conflict && relationVisitAllowed(visit, stores))
+    .slice().sort((a, b) => (dateKey(b.date) || '').localeCompare(dateKey(a.date) || '') || String(b.id).localeCompare(String(a.id)));
+  const followupLimit = Math.max(1, limits.followups || 5), recentLimit = Math.max(1, limits.recent || 3), candidateLimit = Math.max(1, limits.candidates || 8);
+  const followups = eligible.filter(visit => String(visit.next || '').trim()).slice(0, followupLimit).map(visit => ({
+    visitId: visit.id, date: dateKey(visit.date), source: visit.source || '', text: visit.next.trim()
+  }));
+  const recent = eligible.slice(0, recentLimit).map(visit => ({
+    visitId: visit.id, date: dateKey(visit.date), source: visit.source || '', text: String(visit.text || ''),
+    people: [...(visit.people || [])], topics: [...(visit.topics || [])]
+  }));
+  const candidates = candidateRelationsForStore(storeId, visits, stores, people)
+    .filter(item => item.key !== 'followup').slice(0, candidateLimit);
+  return { store, visitCount: eligible.length, latestDate: eligible.map(visit => dateKey(visit.date)).find(Boolean) || '', followups, candidates, recent };
+}
 export function candidateOverview(visits, stores, people = []) {
   const aggregated = new Map();
   for (const store of stores.filter(item => !item.deleted && !storeIdentityPending(item))) {
