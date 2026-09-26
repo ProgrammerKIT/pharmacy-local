@@ -85,3 +85,33 @@ test('history restore also previews and retains current content as history',asyn
   assert.equal(h.c.persistCalls,0);await h.c.confirmResolution();
   const v=project(h.c.payload.bundle).find(r=>r.id==='v');assert.equal(v.text,h.original.data.text);assert.equal(v.versions.length,4);
 });
+
+test('safe merge preview combines changes made to different ordinary fields and writes only after confirmation',async()=>{
+  const b=emptyBundle('synthetic-safe-merge');
+  b.ops.push(revision('store','s',{name:'虛構門市',city:'',district:'',channel:'',attr:'',contact:'',address:'',mapUrl:''},[],'mac'));
+  const data={store:'s',date:'2026-09-26',source:'現場觀察',text:'原始拜訪文字',next:'',topics:[],people:[],attachments:[]};
+  const base=revision('visit','safe',data,[],'mac');b.ops.push(base);
+  const phone=revision('visit','safe',{...data,text:'手機補上拜訪文字'},[base.id],'phone');
+  const mac=revision('visit','safe',{...data,next:'Mac 補上下次跟進'},[base.id],'mac');b.ops.push(phone,mac);
+  const h=harness({b,original:base,a:phone,z:mac});h.c.openReview('visit','safe',true);
+  assert.match(h.$('review-body').innerHTML,/安全合併預覽可用/);
+  const plan=h.c.safeConflictMerge(h.c.by('visit','safe'));
+  assert.equal(plan.safe,true);assert.equal(plan.data.text,'手機補上拜訪文字');assert.equal(plan.data.next,'Mac 補上下次跟進');
+  h.c.previewSafeConflictMerge();assert.equal(h.c.persistCalls,0);assert.match(h.$('review-body').innerHTML,/預計保存的完整內容/);
+  await h.c.confirmResolution();assert.equal(h.c.persistCalls,1);
+  const saved=project(h.c.payload.bundle).find(r=>r.id==='safe');assert.equal(saved.conflict,false);assert.equal(saved.text,'手機補上拜訪文字');assert.equal(saved.next,'Mac 補上下次跟進');
+});
+
+test('safe merge preview refuses overlapping edits, deletions, and protected evidence fields',()=>{
+  const overlap=harness();overlap.c.openReview('visit','v',true);
+  assert.equal(overlap.c.safeConflictMerge(overlap.c.by('visit','v')).safe,false);
+  assert.match(overlap.$('review-body').innerHTML,/不提供自動合併建議/);
+
+  const deletedFixture=fixture();deletedFixture.z.deleted=true;const deleted=harness(deletedFixture);
+  assert.equal(deleted.c.safeConflictMerge(deleted.c.by('visit','v')).safe,false);
+
+  const protectedFixture=fixture();protectedFixture.a.data={...protectedFixture.original.data,attachments:[{blob:'a'.repeat(64),name:'證據.pdf',mime:'application/pdf'}]};
+  protectedFixture.b.blobs['a'.repeat(64)]='YQ==';protectedFixture.z.data={...protectedFixture.original.data,next:'後續'};
+  const protectedHarness=harness(protectedFixture);
+  assert.equal(protectedHarness.c.safeConflictMerge(protectedHarness.c.by('visit','v')).safe,false);
+});

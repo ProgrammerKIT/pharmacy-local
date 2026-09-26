@@ -1010,6 +1010,57 @@ function describeData(type, data) {
   return details.join('\n');
 }
 function reviewHeads(record) { return record.heads.map(h => h.id).sort(); }
+const SAFE_CONFLICT_BLOCKED_FIELDS = new Set(['attachments', 'csvSources', 'csvIdentityRules', 'qualityDistinct', 'mergedInto', 'mergeDecision', 'sameAs', 'confirmed', 'googleText', 'googleUpdatePending', 'sourceMissing']);
+function sameReviewValue(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+function conflictMergeBase(record) {
+  const versions = new Map(record.versions.map(version => [version.id, version]));
+  const distances = record.heads.map(head => {
+    const found = new Map(), queue = head.parents.map(id => [id, 1]);
+    for (let i = 0; i < queue.length; i++) {
+      const [id, distance] = queue[i];
+      if (found.has(id) && found.get(id) <= distance) continue;
+      found.set(id, distance);
+      for (const parent of versions.get(id)?.parents || []) queue.push([parent, distance + 1]);
+    }
+    return found;
+  });
+  const common = [...(distances[0]?.keys() || [])].filter(id => distances.every(found => found.has(id)));
+  if (!common.length) return null;
+  common.sort((a, b) => {
+    const aDistance = Math.max(...distances.map(found => found.get(a))), bDistance = Math.max(...distances.map(found => found.get(b)));
+    return aDistance - bDistance || (versions.get(b)?.at || '').localeCompare(versions.get(a)?.at || '') || a.localeCompare(b);
+  });
+  const bestDistance = Math.max(...distances.map(found => found.get(common[0])));
+  const best = common.filter(id => Math.max(...distances.map(found => found.get(id))) === bestDistance);
+  return best.length === 1 ? versions.get(best[0]) : null;
+}
+function safeConflictMerge(record) {
+  if (!record?.conflict || record.heads.length < 2) return { safe: false, reason: '目前沒有可合併的衝突版本。' };
+  if (record.heads.some(head => head.deleted)) return { safe: false, reason: '版本包含刪除狀態，必須人工選擇，不能產生安全合併建議。' };
+  const base = conflictMergeBase(record);
+  if (!base || base.deleted) return { safe: false, reason: '找不到唯一且可驗證的共同版本，必須人工核對。' };
+  const fields = [...new Set([...Object.keys(base.data), ...record.heads.flatMap(head => Object.keys(head.data))])];
+  const result = structuredClone(base.data), changes = [], blocked = [];
+  for (const field of fields) {
+    const changed = record.heads.filter(head => !sameReviewValue(head.data[field], base.data[field]));
+    if (!changed.length) continue;
+    const values = [];
+    for (const head of changed) if (!values.some(value => sameReviewValue(value, head.data[field]))) values.push(head.data[field]);
+    if (SAFE_CONFLICT_BLOCKED_FIELDS.has(field)) blocked.push({ field, kind: 'protected' });
+    else if (values.length > 1) blocked.push({ field, kind: 'overlap' });
+    else { result[field] = structuredClone(values[0]); changes.push({ field, heads: changed.map(head => head.id) }); }
+  }
+  if (blocked.length) return { safe: false, reason: '存在同一欄位的不同修改，或涉及身分、來源、附件等保護欄位，必須人工核對。', blocked, base };
+  if (!changes.length) return { safe: false, reason: '各版本沒有可合併的欄位差異，請人工選擇版本。', base };
+  return { safe: true, base, data: result, changes };
+}
+function safeMergeSummary(plan, record) {
+  const labels = { text: '拜訪文字', next: '下次跟進', store: '門市', date: '拜訪日期', source: '紀錄來源', topics: '主題連結', people: '人物連結', name: '名稱', address: '地址', mapUrl: '地圖網址', city: '縣市', district: '地區', channel: '通路', attr: '屬性', contact: '窗口', desc: '備註', role: '職務' };
+  return plan.changes.map(change => {
+    const versions = change.heads.map(id => record.heads.findIndex(head => head.id === id) + 1).join('、');
+    return `<li>${esc(labels[change.field] || change.field)}：取自版本 ${esc(versions)}</li>`;
+  }).join('');
+}
 function checkedReview(ctx) {
   const r = project(payload.bundle).find(r => r.type === ctx.type && r.id === ctx.id);
   if (!r || JSON.stringify(reviewHeads(r)) !== JSON.stringify([...ctx.parents].sort())) throw new Error('核對期間已有新版本，本次未寫入。請關閉並重新比較衝突。');
@@ -1047,8 +1098,14 @@ function openReview(type, id, conflict) {
 function renderConflictReview() {
   const r = checkedReview(versionReview), versions = r.heads;
   const baseline = versions.find(o => o.id === versionReview.baseline) || versions[0];
+  const safePlan = safeConflictMerge(r);
   $('review-title').textContent = '比較衝突版本';
-  $('review-body').innerHTML = `<p><strong>${versions.length} 個版本待核對，目前沒有寫入任何變更。</strong></p><p>選一份作為對照，再看其他版本的差異。紅色是對照內容中不同的部分，綠色是另一版本不同的部分；顏色不代表正確、新舊或建議採用。時間是版本儲存時間，不是拜訪日期。</p><label>對照版本<select id="conflict-baseline">${versions.map((o, i) => `<option value="${esc(o.id)}" ${o.id === baseline.id ? 'selected' : ''}>${esc(reviewVersionLabel(o, i))}</option>`).join('')}</select></label>${versions.map((o, i) => `<article class="version"><h3>${esc(reviewVersionLabel(o, i))}</h3>${o.id === baseline.id ? '<p>目前對照版本</p>' : `<p>${o.deleted !== baseline.deleted ? '<strong>刪除狀態不同，請特別核對。</strong>' : '刪除狀態一致。'}</p>${reviewFields(baseline.data, o.data)}`}<details><summary>查看完整內容與來源欄位</summary><pre>${esc(reviewValue(o.data))}</pre></details><button class="secondary" data-use-version="${esc(o.id)}">${o.deleted ? '預覽採用刪除' : '預覽採用此版本'}</button> ${!o.deleted ? `<button data-merge-version="${esc(o.id)}">以此版本為起點整合</button>` : ''}</article>`).join('')}`;
+  $('review-body').innerHTML = `<p><strong>${versions.length} 個版本待核對，目前沒有寫入任何變更。</strong></p><p>選一份作為對照，再看其他版本的差異。紅色是對照內容中不同的部分，綠色是另一版本不同的部分；顏色不代表正確、新舊或建議採用。時間是版本儲存時間，不是拜訪日期。</p>${safePlan.safe ? `<section class="safe-merge-card"><span class="pill">安全合併預覽可用</span><h3>各版本修改了不同欄位</h3><p>系統只組合沒有互相覆蓋的欄位，現在仍未寫入。請先查看完整結果，再決定是否建立處理版本。</p><ul>${safeMergeSummary(safePlan, r)}</ul><button class="primary" data-safe-conflict-preview>查看安全合併預覽</button></section>` : `<section class="safe-merge-card blocked"><strong>這次不提供自動合併建議</strong><p>${esc(safePlan.reason)}</p><p>你仍可逐版比較、採用其中一版，或以一個版本為起點人工整合。</p></section>`}<label>對照版本<select id="conflict-baseline">${versions.map((o, i) => `<option value="${esc(o.id)}" ${o.id === baseline.id ? 'selected' : ''}>${esc(reviewVersionLabel(o, i))}</option>`).join('')}</select></label>${versions.map((o, i) => `<article class="version"><h3>${esc(reviewVersionLabel(o, i))}</h3>${o.id === baseline.id ? '<p>目前對照版本</p>' : `<p>${o.deleted !== baseline.deleted ? '<strong>刪除狀態不同，請特別核對。</strong>' : '刪除狀態一致。'}</p>${reviewFields(baseline.data, o.data)}`}<details><summary>查看完整內容與來源欄位</summary><pre>${esc(reviewValue(o.data))}</pre></details><button class="secondary" data-use-version="${esc(o.id)}">${o.deleted ? '預覽採用刪除' : '預覽採用此版本'}</button> ${!o.deleted ? `<button data-merge-version="${esc(o.id)}">以此版本為起點整合</button>` : ''}</article>`).join('')}`;
+}
+function previewSafeConflictMerge() {
+  const r = checkedReview(versionReview), plan = safeConflictMerge(r);
+  if (!plan.safe) throw new Error('衝突內容已改變，現在不能安全產生合併預覽；請重新核對。');
+  previewResolution(versionReview, plan.data);
 }
 function previewResolution(ctx, data, deleted = false, blobs = {}, fromEditor = false) {
   const r = checkedReview(ctx);
@@ -1193,6 +1250,7 @@ document.addEventListener('click', event => {
   if (b.dataset.restore) return run(async () => { const [type, id] = b.dataset.restore.split(':'), r = by(type, id); if (r.mergedInto && !confirm('此門市曾依已裁定同店規則整併至「' + name('store', r.mergedInto) + '」。還原會重新成為獨立門市，之後必須重新核對身分。確認還原？')) return; await commitRevision(type, id, r.heads[0].data, r.heads.map(h => h.id)); toast('已還原。'); });
   if (b.dataset.useVersion) return run(() => useVersion(b.dataset.useVersion));
   if (b.dataset.mergeVersion) return run(() => editMerge(b.dataset.mergeVersion));
+  if (b.dataset.safeConflictPreview !== undefined) return run(previewSafeConflictMerge);
   if (b.dataset.resolutionConfirm !== undefined) return run(confirmResolution, 'resolution-error');
   if (b.dataset.resolutionBack !== undefined) {
     const ctx = resolutionPreview; resolutionPreview = null;
