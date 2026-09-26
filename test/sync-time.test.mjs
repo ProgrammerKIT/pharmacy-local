@@ -27,7 +27,7 @@ async function client(f, device = 'phone') {
     ...f, payload: { schema: 1, device, deviceName: device, token: `fictional-${device}`, bundle: structuredClone(f.bundle), dirty: false, serverVersion: 1, lastSync: OLD },
     records: [], lastError: '', lastSyncFailure: null, syncWarning: '', macProgram: null, APP_VERSION, diagnoseConnection, clock: NOW, failure: null, updateHolding: false, autoFetching: false, busy: false, editorContext: null,
     document: { hidden: false }, csvImport: { hasPending: () => false }, location: { hostname: 'fictional.local' },
-    offlineReady: true, storagePersistent: true, TextEncoder, seal, unseal, validateBundle, merge, $, dateText: value => value || '尚未同步',
+    offlineReady: true, storagePersistent: true, TextEncoder, seal, unseal, validateBundle, merge, $, dateText: value => value || '尚未同步', renderHealthAudit: () => {},
   });
   c.Date = class extends Date { constructor(...args) { super(...(args.length ? args : [c.clock])); } };
   c.persist = async next => {

@@ -28,6 +28,11 @@ test('mobile-first runtime files are valid JavaScript and expose the daily captu
   assert.match(html, /Mac 已確認收到/);
   assert.match(html, /id="sync-health-card"/);
   assert.match(html, /id="pending-sync-detail"/);
+  assert.match(html, /id="health-audit-card"/);
+  assert.match(html, /每 7 天|立即重新健檢/);
+  assert.match(html, /也不處理跟進提醒/);
+  assert.match(app, /function runPeriodicHealthAudit\(/);
+  assert.match(app, /lastBackupExport/);
   assert.match(html, /同一筆紀錄連續修改仍只算一項/);
   assert.match(app, /function withPendingSync\(/);
   assert.match(app, /function pendingSyncSummary\(/);
@@ -60,7 +65,7 @@ test('mobile-first runtime files are valid JavaScript and expose the daily captu
   assert.match(app, /確定建立新版本/);
   assert.match(app, /function captureTransientResumeState\(/);
   assert.match(app, /function restoreTransientResumeState\(/);
-  assert.match(app, /restoreTransientResumeState\(\); clearInterval\(autoTimer\)/);
+  assert.match(app, /restoreTransientResumeState\(\); await runPeriodicHealthAudit\(\); clearInterval\(autoTimer\)/);
   assert.match(app, /function visitSearchRank\(/);
   assert.match(app, /if \(storeName === q\) return 0;/);
   assert.match(app, /if \(storeName\.includes\(q\)\) return 1;/);
@@ -165,7 +170,7 @@ test('quick text edit creates one new visit revision and preserves every non-tex
 });
 
 test('SOP1 explicitly separates App daily notes from Google CSV imports and keeps retention undecided', () => {
-  assert.equal(SOP1_VERSION, '1.2.11');
+  assert.equal(SOP1_VERSION, '1.2.12');
   assert.match(sop, /### A\. App 日常記錄/);
   assert.match(sop, /### B\. Google CSV 外部資料匯入/);
   assert.match(sop, /### C\. 同步與備份/);

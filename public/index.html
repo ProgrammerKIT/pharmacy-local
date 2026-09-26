@@ -12,10 +12,10 @@
   </form><button id="gate-restore" class="text-button">從加密備份還原至這台裝置</button><p class="muted">配對後不需每日登入。密碼不會傳給 Mac 服務；加密備份仍需原密碼還原，請離線保存。</p><p class="muted" id="secure-state"></p></div>
 </section>
 <div id="workspace" hidden>
-  <aside class="rail"><a href="/" class="brand"><img src="/icon.svg" width="36" height="36" alt=""><span>藥局關係筆記<small id="app-version">CS EDITION · 1.5.23</small></span></a><nav aria-label="主選單"><button data-view="explore">◎ 關聯探索</button><button data-view="visits" class="active">▤ 拜訪紀錄</button><button data-view="stores">▦ 客戶門市</button><button data-view="entities">◇ 人物與主題</button><button data-view="quality">☷ 資料整理</button><button data-view="csv">⇩ 匯入 CSV</button><button data-view="sync">⇄ 同步與備份</button><button data-view="trash">↶ 回收桶</button></nav><div class="rail-bottom"><span id="device-label"></span><small>由裝置鎖定保護</small></div></aside>
+  <aside class="rail"><a href="/" class="brand"><img src="/icon.svg" width="36" height="36" alt=""><span>藥局關係筆記<small id="app-version">CS EDITION · 1.5.24</small></span></a><nav aria-label="主選單"><button data-view="explore">◎ 關聯探索</button><button data-view="visits" class="active">▤ 拜訪紀錄</button><button data-view="stores">▦ 客戶門市</button><button data-view="entities">◇ 人物與主題</button><button data-view="quality">☷ 資料整理</button><button data-view="csv">⇩ 匯入 CSV</button><button data-view="sync">⇄ 同步與備份</button><button data-view="trash">↶ 回收桶</button></nav><div class="rail-bottom"><span id="device-label"></span><small>由裝置鎖定保護</small></div></aside>
   <main><header class="topbar"><div><p class="eyebrow">PRIVATE FIELD NOTES</p><h1 id="page-title">拜訪紀錄</h1></div><div class="top-actions"><button id="sync-button" class="secondary">同步</button><button id="new-note" class="primary">＋ 新增拜訪</button></div></header>
     <div class="statusline"><span id="save-state">手機已保存：讀取中</span><span id="sync-state">Mac 尚未確認收到</span><button id="conflict-link" class="text-button" hidden></button></div>
-    <p id="update-state" class="update-state" role="status">程式 v1.5.23 · 等待檢查本機服務</p>
+    <p id="update-state" class="update-state" role="status">程式 v1.5.24 · 等待檢查本機服務</p>
     <section id="explore-view" class="explore-grid" hidden>
       <aside class="store-pane"><div class="section-row"><h2>探索起點</h2><button class="text-button" data-add="store">＋ 門市</button></div>
         <label class="sr-only" for="search">搜尋門市與拜訪原文</label><input id="search" type="search" placeholder="搜尋門市、客群、拜訪原文">
@@ -43,7 +43,8 @@
     <article class="panel"><p class="eyebrow">02 · ENCRYPTED BACKUP</p><h2>加密備份與還原</h2><p>匯出包括門市、人物、主題、歷史版本及附件。解鎖密碼同資料庫密碼；不包括裝置配對憑證。</p><button id="export-backup" class="secondary">匯出加密備份</button> <button id="import-backup" class="secondary">匯入備份並合併</button><p class="muted">儲存到外接碟或「我的 iPhone」，避開 iCloud Drive。Mac 目前每次收到同步後保留最近 30 份歷史快照；這個保存上限尚未調整，之後依你的容量／保存期限裁定再改。較舊快照在被輪替前可用來復原同步誤刪；同一顆硬碟上的快照不能防止硬碟故障。</p><p id="storage-detail" class="muted"></p></article>
     <article class="panel"><h2>重建資料庫與隔離備份</h2><p>先在 Mac 管理頁「清空全部資料並重建」，再讓每台裝置切換。切換會隔離這台裝置的全部舊資料，只保留新資料庫；新舊資料不合併。</p><button id="connect-rebuilt" class="danger">改用重建後的資料庫</button> <button id="view-archives">查看本機隔離備份</button><p class="muted">隔離備份只供匯出，不參與同步、CSV 比對或關聯圖。Mac 重建前的副本也可在管理頁匯出。</p></article>
     <article class="panel"><p class="eyebrow">03 · PRIVACY CHECK</p><h2>正式資料啟用前</h2><p>App 只連到提供本頁的 Mac，沒有外部腳本、字型、AI 或遙測。Mac 更新器另行連到已設定的 GitHub 來源下載程式，不傳送客戶內容。PWA 無法替你控制 iOS 雲端備份或其他 App。</p><p>請依隨附指南確認 iCloud 備份、照片、輸入法及外接備份。關閉對外網路、保留 Wi-Fi 後，實測離線操作及同步。</p><p class="muted">切到背景會遮蔽畫面。拜訪文字與欄位在輸入後會自動加密保存成本機草稿；只有顯示「已存於本機」才代表最近一次草稿寫入成功。瀏覽器／iOS 仍可能在最後一次寫入完成前突然終止程序，因此不能宣稱絕對零遺失；新選的附件檔案也無法靠草稿跨 App 終止保存。任何能解鎖這台 iPhone／Mac 的人，也能開啟本 App。</p></article>
-    <article class="panel"><p class="eyebrow">04 · REVIEW CHANGES</p><h2>待處理衝突</h2><div id="conflict-list"></div></article></div></section>
+    <article class="panel"><p class="eyebrow">04 · REVIEW CHANGES</p><h2>待處理衝突</h2><div id="conflict-list"></div></article>
+    <article id="health-audit-card" class="panel health-audit" data-state="partial"><p class="eyebrow">05 · READ-ONLY AUDIT</p><h2 id="health-audit-title">正在準備唯讀健檢</h2><p id="health-audit-time" class="muted"></p><ul id="health-audit-list"></ul><button id="run-health-audit" class="secondary">立即重新健檢</button><p class="muted">健檢只讀取目前狀態，不修改門市、拜訪、人物、主題、CSV、Source Snapshot，也不處理跟進提醒。</p></article></div></section>
     <section id="trash-view" class="page-section" hidden><h2>回收桶</h2><p class="muted">此版保留所有歷史。還原會新增一個版本，並在下次同步傳到另一台。</p><div id="trash-list" class="card-grid"></div></section>
   </main>
 </div>
