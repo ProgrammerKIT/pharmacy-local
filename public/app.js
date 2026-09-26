@@ -1,4 +1,4 @@
-import { newMeta, derive, seal, unseal, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates } from './core.js';
+import { newMeta, derive, seal, unseal, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates, readonlyHealthAudit } from './core.js';
 import { readLocal, writeLocal, archiveAndReplaceLocal, listLocalArchives, readLocalArchive } from './db.js';
 import { createCSVImport } from './csv-ui.js';
 import { PROFILE_FIELDS, FILL_FIELDS, scanQuality, setDistinctReview, sourceSuggestions, fillProfile } from './csv.js';
@@ -59,7 +59,7 @@ function programDetail() {
 async function api(path, options = {}) {
   return requestLocal(path, { token: payload?.token, ...options }, version => {
     macProgram = { version, at: new Date().toISOString() };
-    if (payload) $('program-detail').textContent = programDetail();
+    if (payload) { $('program-detail').textContent = programDetail(); renderHealthAudit(); }
   });
 }
 async function checkConnection() {
@@ -382,9 +382,27 @@ async function openWorkspace() {
   $('gate').hidden = true; $('workspace').hidden = false;
   document.body.classList.toggle('privacy-veil', pendingLock);
   try { storagePersistent = await navigator.storage?.persist?.() || false; } catch {}
-  restoreTransientResumeState(); clearInterval(autoTimer);
+  restoreTransientResumeState(); await runPeriodicHealthAudit(); clearInterval(autoTimer);
   autoTimer = setInterval(autoSync, 15000);
   requestNearbyPosition();
+}
+function currentHealthAudit() {
+  const pending = pendingSyncSummary();
+  return readonlyHealthAudit({ pendingCount: pending.count, pendingUnknown: pending.unknown, conflicts: records.filter(record => record.conflict).length, identityPending: all('store').filter(storeIdentityPending).length, lastSync: payload.lastSync, lastBackup: payload.lastBackupExport, appVersion: APP_VERSION, macVersion: macProgram?.version || '', now: Date.now() });
+}
+function renderHealthAudit() {
+  if (!payload || !$('health-audit-list')) return;
+  const audit = currentHealthAudit(), last = payload.lastHealthAudit ? dateText(payload.lastHealthAudit) : '尚未完成定期健檢';
+  $('health-audit-card').dataset.state = audit.state;
+  $('health-audit-title').textContent = audit.state === 'healthy' ? '唯讀健檢正常' : audit.state === 'partial' ? '唯讀健檢完成，部分狀態待連線確認' : `${audit.attention} 項需要查看`;
+  $('health-audit-time').textContent = `最近定期健檢：${last}。每 7 天在 App 開啟時自動重做，也可立即手動重做。`;
+  $('health-audit-list').innerHTML = audit.checks.map(check => `<li class="audit-${esc(check.level)}"><span aria-hidden="true">${check.level === 'ok' ? '✓' : check.level === 'info' ? '○' : '!'}</span>${esc(check.text)}</li>`).join('');
+}
+async function runPeriodicHealthAudit(force = false) {
+  if (!payload) return;
+  const previous = Date.parse(payload.lastHealthAudit || ''), due = !Number.isFinite(previous) || Date.now() - previous >= 7 * 24 * 60 * 60 * 1000;
+  if (force || due) await persist({ ...payload, lastHealthAudit: new Date().toISOString() });
+  renderHealthAudit();
 }
 async function autoSync() {
   if (updateHolding || autoFetching || !payload?.token || document.hidden || busy || editorContext || $('review').open || $('quick-text-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending()) return;
@@ -411,7 +429,7 @@ function lockNow(reopen = !document.hidden) {
   resetStoreFilters();
   for (const u of objectURLs) URL.revokeObjectURL(u); objectURLs = [];
   document.querySelectorAll('dialog').forEach(d => d.close());
-  for (const id of ['quality-content', 'focus-header', 'graph', 'graph-pager', 'focus-detail', 'evidence-list', 'store-list', 'visit-list', 'recent-store-list', 'draft-banner-text', 'customer-list', 'entity-list', 'trash-list', 'review-body', 'editor-fields', 'conflict-list', 'connection-detail', 'program-detail', 'local-save-detail', 'mac-ack-detail', 'sync-success-detail', 'sync-failure-detail', 'connection-check', 'device-label', 'sync-result', 'storage-detail', 'sync-health-title', 'sync-health-body', 'pending-sync-detail', 'sync-conflict-count']) $(id).replaceChildren();
+  for (const id of ['quality-content', 'focus-header', 'graph', 'graph-pager', 'focus-detail', 'evidence-list', 'store-list', 'visit-list', 'recent-store-list', 'draft-banner-text', 'customer-list', 'entity-list', 'trash-list', 'review-body', 'editor-fields', 'conflict-list', 'connection-detail', 'program-detail', 'local-save-detail', 'mac-ack-detail', 'sync-success-detail', 'sync-failure-detail', 'connection-check', 'device-label', 'sync-result', 'storage-detail', 'sync-health-title', 'sync-health-body', 'pending-sync-detail', 'sync-conflict-count', 'health-audit-title', 'health-audit-time', 'health-audit-list']) $(id).replaceChildren();
   $('connection-check').hidden = true;
   $('editor-form').reset(); $('gate-form').reset(); $('rebuild-connect-form').reset(); $('password').value = ''; $('backup-file').value = '';
   $('workspace').hidden = true; $('gate').hidden = false;
@@ -506,6 +524,7 @@ function status() {
   $('sync-health-body').textContent = healthBody;
   $('pending-sync-detail').textContent = pendingSyncText(pending);
   $('sync-conflict-count').textContent = conflicts + ' 筆';
+  renderHealthAudit();
   $('storage-detail').textContent = `離線介面：${offlineReady ? '已備妥' : '尚待確認，請先保持連線'}。持久儲存：${storagePersistent ? '已獲允許' : '瀏覽器尚未允許，請定期同步及備份'}。資料 ${(new TextEncoder().encode(JSON.stringify(payload.bundle)).length / 1048576).toFixed(2)} / 24 MB（包含歷史與附件）。`;
 }
 function switchView(view) {
@@ -1149,7 +1168,7 @@ async function removeEntity(type, id) {
   await commitRevision(type, id, r.heads[0].data, r.heads.map(h => h.id), true); toast('已移到回收桶。');
 }
 function download(bytes, filename, type) { const url = URL.createObjectURL(new Blob([bytes], { type })); objectURLs.push(url); const a = document.createElement('a'); a.href = url; a.download = filename; document.body.append(a); a.click(); a.remove(); setTimeout(() => { URL.revokeObjectURL(url); objectURLs = objectURLs.filter(u => u !== url); }, 60000); }
-async function exportBackup() { const envelope = await seal(payload.bundle, key, meta); download(JSON.stringify({ format: 'pharmacy-backup-1', envelope }), `pharmacy-${new Date().toISOString().slice(0, 10)}.pharmabackup`, 'application/octet-stream'); toast('已產生加密備份，請儲存到本機或外接碟。'); }
+async function exportBackup() { const envelope = await seal(payload.bundle, key, meta); download(JSON.stringify({ format: 'pharmacy-backup-1', envelope }), `pharmacy-${new Date().toISOString().slice(0, 10)}.pharmabackup`, 'application/octet-stream'); await persist({ ...payload, lastBackupExport: new Date().toISOString() }); renderHealthAudit(); toast('已產生加密備份，請儲存到本機或外接碟。'); }
 async function importBackup(file) {
   if (file.size > 36 * 1024 * 1024) throw new Error('備份檔案太大。');
   const data = JSON.parse(await file.text()); if (data.format !== 'pharmacy-backup-1') throw new Error('不是此版本的加密備份。');
@@ -1269,6 +1288,7 @@ document.addEventListener('click', event => {
   if (b.id === 'conflict-link') return switchView('sync');
   if (['sync-button', 'sync-now'].includes(b.id)) return run(async () => { try { await synchronize(); toast(`同步成功：${dateText(payload.lastSync)}。另一台裝置連線同步後會接收更新。`); } catch (e) { recordSyncFailure(e); throw e; } });
   if (b.id === 'check-connection') return run(checkConnection);
+  if (b.id === 'run-health-audit') return run(async () => { await runPeriodicHealthAudit(true); toast('唯讀健檢已重新完成；沒有修改任何客戶紀錄。'); });
   if (b.id === 'export-backup') return run(exportBackup);
   if (b.id === 'import-backup') return $('backup-file').click();
   if (b.id === 'repair-pair') return run(async () => { try { await repairPair(); } catch (e) { recordSyncFailure(e); throw e; } });

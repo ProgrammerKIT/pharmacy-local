@@ -199,6 +199,24 @@ export function revision(type, entity, data, parents, device, deleted = false) {
   if (!validData(type, data)) throw new Error('欄位內容不完整或超過長度限制。');
   return { id: uuid(), type, entity, data: structuredClone(data), parents: [...parents], device, deleted, at: new Date().toISOString() };
 }
+export function readonlyHealthAudit(input) {
+  const now = Number.isFinite(input.now) ? input.now : Date.now(), week = 7 * 24 * 60 * 60 * 1000;
+  const age = value => { const time = Date.parse(value || ''); return Number.isFinite(time) ? now - time : null; };
+  const checks = [];
+  if (input.pendingUnknown) checks.push({ code: 'pending-unknown', level: 'warning', text: '待同步數量尚未建立精確基準；完成一次同步後即可精確計算。' });
+  else if (input.pendingCount > 0) checks.push({ code: 'pending', level: 'action', text: `${input.pendingCount} 筆資料等待 Mac 確認。` });
+  else checks.push({ code: 'pending', level: 'ok', text: '沒有資料等待 Mac 確認。' });
+  checks.push(input.conflicts > 0 ? { code: 'conflicts', level: 'action', text: `${input.conflicts} 筆同步衝突待核對。` } : { code: 'conflicts', level: 'ok', text: '沒有待核對衝突。' });
+  checks.push(input.identityPending > 0 ? { code: 'identity', level: 'action', text: `${input.identityPending} 間門市身分待確認。` } : { code: 'identity', level: 'ok', text: '沒有門市身分待確認。' });
+  const syncAge = age(input.lastSync);
+  checks.push(syncAge === null ? { code: 'sync-age', level: 'warning', text: '這台裝置尚未完成成功同步。' } : syncAge > week ? { code: 'sync-age', level: 'warning', text: '最近成功同步已超過 7 天。' } : { code: 'sync-age', level: 'ok', text: '最近 7 天內曾成功同步。' });
+  const backupAge = age(input.lastBackup);
+  checks.push(backupAge === null ? { code: 'backup-age', level: 'warning', text: '這台裝置尚無由 App 匯出加密備份的紀錄。' } : backupAge > week ? { code: 'backup-age', level: 'warning', text: '最近由 App 匯出加密備份已超過 7 天。' } : { code: 'backup-age', level: 'ok', text: '最近 7 天內曾由 App 匯出加密備份。' });
+  if (!input.macVersion) checks.push({ code: 'program', level: 'info', text: 'Mac 程式版本尚待連線確認。' });
+  else checks.push(input.macVersion === input.appVersion ? { code: 'program', level: 'ok', text: `本機與 Mac 程式版本一致（v${input.appVersion}）。` } : { code: 'program', level: 'warning', text: `版本不一致：本機 v${input.appVersion}，Mac v${input.macVersion}。` });
+  const attention = checks.filter(check => ['action', 'warning'].includes(check.level)).length;
+  return { checkedAt: new Date(now).toISOString(), attention, state: attention ? 'attention' : checks.some(check => check.level === 'info') ? 'partial' : 'healthy', checks };
+}
 export async function hashBytes(bytes) { return [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(x => x.toString(16).padStart(2, '0')).join(''); }
 
 // Nearby-store calculations are read-only. Map viewports and opaque place IDs are
