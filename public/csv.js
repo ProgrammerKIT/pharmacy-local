@@ -206,7 +206,7 @@ export function identityRuleAllows(store, incoming) {
   const name = comparisonText(incoming.name), address = comparisonText(incoming.address);
   return (store.csvIdentityRules || []).some(rule => rule.decision === 'same' && rule.mapKey === key && rule.names.some(alias => comparisonText(alias) === name) && (!address || !rule.addresses.length || rule.addresses.some(value => comparisonText(value) === address)));
 }
-export const SOP1_VERSION = '1.2.10';
+export const SOP1_VERSION = '1.2.11';
 export const sourceListKey = list => normalizeListName(list).normalize('NFKC').trim().toLocaleLowerCase('zh-Hant');
 export function sourceTextFields(file, raw) {
   const mapped = new Set(Object.values(file.mapping).filter(i => i >= 0));
