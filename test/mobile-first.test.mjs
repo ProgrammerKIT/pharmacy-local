@@ -51,6 +51,17 @@ test('mobile-first runtime files are valid JavaScript and expose the daily captu
   assert.match(app, /只排列既有欄位與原文/);
   assert.match(app, /function openQuickTextEdit\(/);
   assert.match(app, /async function saveQuickTextEdit\(/);
+  assert.match(app, /contenteditable="true"/);
+  assert.match(app, /data-inline-edit-text=/);
+  assert.match(app, /function updateInlineText\(/);
+  assert.match(app, /修改草稿已加密保存在這台裝置/);
+  assert.match(app, /data-inline-cancel=/);
+  assert.match(app, /data-inline-review=/);
+  assert.match(app, /下次記得：/);
+  assert.match(app, /每次必做、必給：/);
+  assert.match(app, /id="f-next-remember"/);
+  assert.match(app, /id="f-every-time-must"/);
+  assert.ok(app.indexOf("store.nextRemember ?") < app.indexOf("store.everyTimeMust ?"), 'store reminders render in the requested order');
   assert.match(app, /快速修改不能把整段文字存成空白/);
   assert.match(app, /這次只會修改這一筆拜訪的文字欄/);
   assert.match(app, /diffTextSegments\(ctx\.before, ctx\.after\)/);
@@ -134,6 +145,20 @@ test('quick text confirmation highlights only changed portions without changing 
   assert.ok(diff.before.some(x => x.kind === 'same' && x.text.includes('第一行維持不變')));
 });
 
+test('inline text draft is encrypted locally without creating a formal revision', async () => {
+  const bundle = emptyBundle('inline-text-draft-test');
+  const store = revision('store', 'store-inline', { name: '虛構行內測試門市', city: '', district: '', channel: '', attr: '', contact: '' }, [], 'phone');
+  const visit = revision('visit', 'visit-inline', { store: 'store-inline', date: '2026-09-27', source: '現場觀察', text: '正式原文', next: '', topics: [], people: [], attachments: [] }, [], 'phone');
+  bundle.ops.push(store, visit);
+  const inlineTextDraft = { format: 'inline-text-draft-1', id: 'visit-inline', before: '正式原文', after: '正式原文加上草稿', parents: [visit.id], updatedAt: '2026-09-27T01:00:00.000Z' };
+  const payload = { schema: 1, device: 'phone', deviceName: '測試 iPhone', token: null, bundle, dirty: false, serverVersion: 1, lastSync: null, inlineTextDraft };
+  const meta = newMeta(), key = await derive('inline-text-draft-password', meta);
+  const restored = await unseal(await seal(payload, key, meta, 'device'), key, 'device');
+  assert.deepEqual(restored.inlineTextDraft, inlineTextDraft);
+  assert.equal(restored.bundle.ops.length, 2);
+  assert.equal(project(restored.bundle).find(record => record.type === 'visit').text, '正式原文');
+});
+
 test('quick text edit creates one new visit revision and preserves every non-text field and the original version', () => {
   const bundle = emptyBundle('quick-edit-test');
   bundle.ops.push(revision('store', 'store-1', {
@@ -170,7 +195,7 @@ test('quick text edit creates one new visit revision and preserves every non-tex
 });
 
 test('SOP1 explicitly separates App daily notes from Google CSV imports and keeps retention undecided', () => {
-  assert.equal(SOP1_VERSION, '1.2.12');
+  assert.equal(SOP1_VERSION, '1.2.13');
   assert.match(sop, /### A\. App 日常記錄/);
   assert.match(sop, /### B\. Google CSV 外部資料匯入/);
   assert.match(sop, /### C\. 同步與備份/);
@@ -181,7 +206,10 @@ test('SOP1 explicitly separates App daily notes from Google CSV imports and keep
   assert.match(sop, /拜訪前的記憶提示/);
   assert.match(sop, /候選不能冒充已確認需求/);
   assert.match(sop, /時間比較只使用明確的拜訪日期欄位/);
-  assert.match(sop, /第一次確認只進入修改前／後的二次確認頁/);
+  assert.match(sop, /可直接定位游標的行內編輯區/);
+  assert.match(sop, /單純點擊或移動游標不寫入資料/);
+  assert.match(sop, /同一時間只允許一筆行內文字草稿/);
+  assert.match(sop, /下次記得.*每次必做、必給/);
   assert.match(sop, /二次確認頁必須以明顯 highlight 標示/);
   assert.match(sop, /非關閉式 App 切換/);
   assert.match(sop, /不得把使用者硬切回「拜訪紀錄」/);
@@ -194,8 +222,8 @@ test('SOP1 explicitly separates App daily notes from Google CSV imports and keep
   assert.match(sop, /兩筆以上命中的拜訪紀錄/);
   assert.match(sop, /全部目前有效的拜訪紀錄/);
   assert.match(sop, /此分組僅是顯示層去重/);
-  assert.match(sop, /快速修改不得把整段文字存成空白/);
-  assert.match(sop, /門市、日期、來源、主題、人物、附件、Google 原始文字與 Source Snapshot 都不得因快速修改而改變/);
+  assert.match(sop, /行內修改不得把整段文字存成空白/);
+  assert.match(sop, /門市、日期、來源、主題、人物、附件、Google 原始文字與 Source Snapshot 都不得因行內修改而改變/);
   assert.match(sop, /目前程式保留最近 30 份 Mac 自動快照/);
   assert.match(sop, /未經使用者裁定不得自行更改/);
 });

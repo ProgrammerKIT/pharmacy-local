@@ -29,7 +29,7 @@ let lastError = '', offlineReady = false, storagePersistent = false, autoFetchin
 let qualityTab = 'duplicates', qualityField = '', qualityPage = 0, qualityCache = null, qualityReview = null;
 let storeFilters = { query: '', district: '', kind: '', groups: [] };
 let updateHolding = false, macProgram = null, lastSyncFailure = null, syncWarning = '';
-let draftTimer = null, draftSaveChain = Promise.resolve(), discardingDraft = false, quickTextContext = null, transientResumeState = null;
+let draftTimer = null, draftSaveChain = Promise.resolve(), discardingDraft = false, quickTextContext = null, inlineTextContext = null, inlineDraftTimer = null, inlineDraftSaveChain = Promise.resolve(), transientResumeState = null;
 let versionReview = null, resolutionPreview = null;
 let coordinatePreview = null;
 let nearbyState = { status: 'idle', position: null, message: '' }, nearbyRequest = 0, nearbyDenied = false;
@@ -405,13 +405,13 @@ async function runPeriodicHealthAudit(force = false) {
   renderHealthAudit();
 }
 async function autoSync() {
-  if (updateHolding || autoFetching || !payload?.token || document.hidden || busy || editorContext || $('review').open || $('quick-text-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending()) return;
+  if (updateHolding || autoFetching || !payload?.token || document.hidden || busy || editorContext || inlineTextContext || payload.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending()) return;
   const sessionKey = key;
   autoFetching = true;
   try {
     // Offline probes never block editing or take the write lock, and carry no customer content.
     const remote = await api('/api/version');
-    if (updateHolding || !payload || key !== sessionKey || document.hidden || busy || editorContext || $('review').open || $('quick-text-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending()) return;
+    if (updateHolding || !payload || key !== sessionKey || document.hidden || busy || editorContext || inlineTextContext || payload.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending()) return;
     await run(async () => {
       try {
         if (payload.dirty || remote.version !== payload.serverVersion) await synchronize();
@@ -422,9 +422,9 @@ async function autoSync() {
   finally { autoFetching = false; }
 }
 function lockNow(reopen = !document.hidden) {
-  if (busy || editorContext || $('review').open || $('quick-text-dialog')?.open || csvImport.hasPending()) { pendingLock = true; document.body.classList.add('privacy-veil'); return; }
+  if (busy || editorContext || inlineTextContext || payload?.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || csvImport.hasPending()) { pendingLock = true; document.body.classList.add('privacy-veil'); return; }
   captureTransientResumeState();
-  pendingLock = false; coordinatePreview = null; clearNearbyPosition(); versionReview = null; resolutionPreview = null; clearInterval(autoTimer); key = null; meta = null; payload = null; records = []; trail = []; editorContext = null; lastError = ''; macProgram = null; lastSyncFailure = null; syncWarning = '';
+  pendingLock = false; coordinatePreview = null; clearNearbyPosition(); versionReview = null; resolutionPreview = null; inlineTextContext = null; clearTimeout(inlineDraftTimer); inlineDraftTimer = null; clearInterval(autoTimer); key = null; meta = null; payload = null; records = []; trail = []; editorContext = null; lastError = ''; macProgram = null; lastSyncFailure = null; syncWarning = '';
   csvImport.reset(); qualityCache = null; qualityReview = null; qualityTab = 'duplicates'; qualityField = ''; qualityPage = 0;
   resetStoreFilters();
   for (const u of objectURLs) URL.revokeObjectURL(u); objectURLs = [];
@@ -603,10 +603,13 @@ function noteHTML(v, query = '') {
   const evidence = rule ? evidenceKind(v.text, rule) : null;
   const hint = evidence?.lines.length ? `<div class="evidence-hint ${evidence.kind}"><strong>${esc(evidence.label)} · 字詞線索</strong>${evidence.lines.map(line => `<blockquote>${esc(line)}</blockquote>`).join('')}</div>` : '';
   const sourceState = v.sourceMissing ? '<div class="conflict-card">Google 最新匯出已沒有這段備註；程式保留最後內容，未刪除。</div>' : v.googleUpdatePending ? `<div class="conflict-card">Google 備註已有新版；你曾在 App 修改原文，因此先保留 App 文字。<details><summary>查看 Google 最新文字</summary><p>${esc(v.googleText)}</p></details></div>` : '';
+  const store = by('store', v.store), storeNotes = store && (store.nextRemember || store.everyTimeMust) ? `<div class="store-memory">${store.nextRemember ? `<p><strong>下次記得：</strong>${esc(store.nextRemember)}</p>` : ''}${store.everyTimeMust ? `<p><strong>每次必做、必給：</strong>${esc(store.everyTimeMust)}</p>` : ''}</div>` : '';
+  const inlineDraft = payload?.inlineTextDraft?.format === 'inline-text-draft-1' && payload.inlineTextDraft.id === v.id ? payload.inlineTextDraft : null;
+  const shownText = inlineDraft?.after ?? v.text;
   const textBlock = v.conflict
     ? `<p>${highlightLiteral(v.text, query)}</p>`
-    : `<button type="button" class="quick-edit-text" data-quick-edit-text="${esc(v.id)}" aria-label="快速修改這筆拜訪文字"><span>${highlightLiteral(v.text, query)}</span><small>點文字快速修改</small></button>`;
-  return `<article class="note"><div class="note-head"><time>${esc(v.date || '原始日期未提供')}</time><span class="pill">${esc(v.source)}</span></div><button class="text-button store-link" data-node-type="store" data-node-id="${esc(v.store)}">${highlightLiteral(name('store', v.store), query)}</button>${v.conflict ? `<div class="conflict-card">這筆有 ${v.heads.length} 個版本。以下僅顯示其中一個，請先核對。 <button class="text-button" data-review="visit:${esc(v.id)}">處理衝突</button></div>` : ''}${sourceState}${hint}${textBlock}<div class="chips">${v.topics.map(id => chip('topic', id, query)).join('')}${v.people.map(id => chip('person', id, query)).join('')}</div>${v.next ? `<p class="next"><strong>下次跟進</strong>${highlightLiteral(v.next, query)}</p>` : ''}<div class="attachments">${(v.attachments || []).map((a, i) => `<button data-attachment="${esc(v.id)}" data-index="${i}">↧ ${esc(a.name)}</button>`).join('')}</div><div class="note-actions">${!v.conflict ? `<button class="secondary" data-visit-brief="${esc(v.store)}">拜訪重點卡</button>` : ''}${sourceButton(v)}<button class="text-button" data-edit="visit:${esc(v.id)}">編輯</button><button class="text-button" data-history="visit:${esc(v.id)}">歷史 ${v.versions.length}</button><button class="text-button danger" data-delete="visit:${esc(v.id)}">移到回收桶</button></div></article>`;
+    : `<div class="inline-edit-shell ${inlineDraft ? 'editing' : ''}" data-inline-shell="${esc(v.id)}"><div class="inline-edit-text" contenteditable="true" role="textbox" aria-multiline="true" aria-label="直接修改這筆拜訪文字" spellcheck="false" data-inline-edit-text="${esc(v.id)}">${highlightLiteral(shownText, query)}</div><div class="inline-edit-actions" ${inlineDraft ? '' : 'hidden'}><span class="muted" data-inline-state="${esc(v.id)}">${inlineDraft ? '修改草稿已加密保存在這台裝置，尚未寫入正式紀錄。' : ''}</span><button type="button" data-inline-cancel="${esc(v.id)}">取消修改</button><button type="button" class="primary" data-inline-review="${esc(v.id)}">檢查後儲存</button></div></div>`;
+  return `<article class="note"><div class="note-head"><time>${esc(v.date || '原始日期未提供')}</time><span class="pill">${esc(v.source)}</span></div><button class="text-button store-link" data-node-type="store" data-node-id="${esc(v.store)}">${highlightLiteral(name('store', v.store), query)}</button>${storeNotes}${v.conflict ? `<div class="conflict-card">這筆有 ${v.heads.length} 個版本。以下僅顯示其中一個，請先核對。 <button class="text-button" data-review="visit:${esc(v.id)}">處理衝突</button></div>` : ''}${sourceState}${hint}${textBlock}<div class="chips">${v.topics.map(id => chip('topic', id, query)).join('')}${v.people.map(id => chip('person', id, query)).join('')}</div>${v.next ? `<p class="next"><strong>下次跟進</strong>${highlightLiteral(v.next, query)}</p>` : ''}<div class="attachments">${(v.attachments || []).map((a, i) => `<button data-attachment="${esc(v.id)}" data-index="${i}">↧ ${esc(a.name)}</button>`).join('')}</div><div class="note-actions">${!v.conflict ? `<button class="secondary" data-visit-brief="${esc(v.store)}">拜訪重點卡</button>` : ''}${sourceButton(v)}<button class="text-button" data-edit="visit:${esc(v.id)}">編輯</button><button class="text-button" data-history="visit:${esc(v.id)}">歷史 ${v.versions.length}</button><button class="text-button danger" data-delete="visit:${esc(v.id)}">移到回收桶</button></div></article>`;
 }
 function render() {
   if (!payload) return;
@@ -884,7 +887,7 @@ function openEditor(type, id = null, restoreDraft = null) {
     $('editor-save').textContent = '儲存';
     $('discard-draft').hidden = true;
     let fields = input('f-name', `${kinds[type]}名稱`, d.name, 200, true);
-    if (type === 'store') fields += `<div class="field-grid">${input('f-city', '縣市', d.city)}${input('f-district', '地區', d.district)}</div><label>通路<select id="f-channel">${[...new Set(['', '連鎖', '獨立', '加盟', '診所', '其他', ...(d.channel ? [d.channel] : [])])].map(c => `<option value="${esc(c)}" ${c === d.channel ? 'selected' : ''}>${esc(c || '未分類')}</option>`).join('')}</select></label>${input('f-address', '地址', d.address, 2000)}${input('f-map-url', 'Google Maps 網址（只保存，不自動開啟）', d.mapUrl, 2000)}${input('f-attr', '門市屬性／客群', d.attr)}${input('f-contact', '拜訪窗口', d.contact)}`;
+    if (type === 'store') fields += `<div class="field-grid">${input('f-city', '縣市', d.city)}${input('f-district', '地區', d.district)}</div><label>通路<select id="f-channel">${[...new Set(['', '連鎖', '獨立', '加盟', '診所', '其他', ...(d.channel ? [d.channel] : [])])].map(c => `<option value="${esc(c)}" ${c === d.channel ? 'selected' : ''}>${esc(c || '未分類')}</option>`).join('')}</select></label>${input('f-address', '地址', d.address, 2000)}${input('f-map-url', 'Google Maps 網址（只保存，不自動開啟）', d.mapUrl, 2000)}${input('f-attr', '門市屬性／客群', d.attr)}${input('f-contact', '拜訪窗口', d.contact)}<label>下次記得<textarea id="f-next-remember" maxlength="2000">${esc(d.nextRemember || '')}</textarea></label><label>每次必做、必給<textarea id="f-every-time-must" maxlength="2000">${esc(d.everyTimeMust || '')}</textarea></label>`;
     if (type === 'store' && d.csvIdentityPending) fields += '<label class="check"><input type="checkbox" id="f-identity-reviewed">我已核實此門市身分與來源，解除待確認標記並允許關聯分析</label>';
     if (type === 'person') fields += `${input('f-role', '職務／與門市的關係', d.role)}${textarea('f-desc', '身分證據與備註', d.desc)}<label class="check"><input type="checkbox" id="f-confirmed" ${d.confirmed ? 'checked' : ''}> 我已核對此人物的身分</label><label>已確認是同一人時，連到<select id="f-same"><option value="">保持獨立人物</option>${all('person').filter(p => p.id !== id && !p.sameAs).map(p => `<option value="${esc(p.id)}" ${d.sameAs === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label><p class="muted">須先勾選已核對身分。此設定只合併探索路徑，不改寫原始拜訪文字。</p>`;
     if (type === 'topic') fields += textarea('f-desc', '主題定義與備註', d.desc);
@@ -894,6 +897,53 @@ function openEditor(type, id = null, restoreDraft = null) {
 }
 function quickTextParents(record) {
   return (record?.heads || []).map(head => head.id).sort();
+}
+function inlineTextValue(element) { return (element.innerText || '').replace(/\r/g, ''); }
+function beginInlineTextEdit(id, element) {
+  const visit = by('visit', id);
+  if (!visit || visit.deleted || visit.conflict) return false;
+  if (payload?.draft?.format === 'visit-draft-1') { toast('目前有未完成的完整拜訪草稿，請先完成或捨棄後再直接修改文字。'); element.blur(); return false; }
+  const saved = payload?.inlineTextDraft?.format === 'inline-text-draft-1' ? payload.inlineTextDraft : null;
+  if (saved && saved.id !== id) { toast('另一筆拜訪已有未儲存的文字修改，請先完成或取消。'); document.querySelector(`[data-inline-edit-text="${CSS.escape(saved.id)}"]`)?.focus(); return false; }
+  if (!inlineTextContext || inlineTextContext.id !== id) inlineTextContext = { id, before: saved?.id === id ? saved.before : visit.text || '', after: saved?.id === id ? saved.after : visit.text || '', parents: saved?.id === id ? [...saved.parents] : quickTextParents(visit), storeName: name('store', visit.store), date: visit.date || '', source: visit.source || '' };
+  return true;
+}
+async function persistInlineTextDraft() {
+  const ctx = inlineTextContext; if (!ctx || !payload) return;
+  const visit = by('visit', ctx.id), state = document.querySelector(`[data-inline-state="${CSS.escape(ctx.id)}"]`);
+  if (!visit || visit.deleted || visit.conflict || JSON.stringify(quickTextParents(visit)) !== JSON.stringify(ctx.parents)) { if (state) state.textContent = '這筆紀錄已有新版本；目前文字未寫入，請取消後重新開始。'; return; }
+  const draft = ctx.after === ctx.before ? null : { format: 'inline-text-draft-1', id: ctx.id, before: ctx.before, after: ctx.after, parents: [...ctx.parents], updatedAt: new Date().toISOString() };
+  await persist({ ...payload, inlineTextDraft: draft });
+  if (state) state.textContent = draft ? '修改草稿已加密保存在這台裝置，尚未寫入正式紀錄。' : '文字沒有變更。';
+}
+function scheduleInlineTextDraft() {
+  clearTimeout(inlineDraftTimer); const ctx = inlineTextContext;
+  inlineDraftTimer = setTimeout(() => { inlineDraftSaveChain = inlineDraftSaveChain.then(() => ctx === inlineTextContext ? persistInlineTextDraft() : undefined).catch(error => { const state = document.querySelector(`[data-inline-state="${CSS.escape(ctx?.id || '')}"]`); if (state) state.textContent = '草稿儲存失敗：' + error.message; }); }, 250);
+}
+async function flushInlineTextDraft() { clearTimeout(inlineDraftTimer); inlineDraftTimer = null; inlineDraftSaveChain = inlineDraftSaveChain.then(persistInlineTextDraft); await inlineDraftSaveChain; }
+function updateInlineText(id, element) {
+  if (!beginInlineTextEdit(id, element)) return;
+  const next = inlineTextValue(element), shell = element.closest('[data-inline-shell]'), state = shell?.querySelector('[data-inline-state]');
+  if (next.length > 20000) { element.textContent = inlineTextContext.after; if (state) state.textContent = '文字超過長度上限，超出的輸入未保留。'; return; }
+  inlineTextContext.after = next; shell?.classList.toggle('editing', next !== inlineTextContext.before);
+  if (shell) shell.querySelector('.inline-edit-actions').hidden = next === inlineTextContext.before;
+  if (state) state.textContent = next.trim() ? '正在加密保存修改草稿…' : '整段空白不能儲存為正式版本；原文仍安全保留。';
+  scheduleInlineTextDraft();
+}
+async function cancelInlineTextEdit(id) {
+  if (inlineTextContext?.id !== id && payload?.inlineTextDraft?.id !== id) return;
+  clearTimeout(inlineDraftTimer); inlineDraftTimer = null; await inlineDraftSaveChain;
+  await persist({ ...payload, inlineTextDraft: null }); inlineTextContext = null; render(); toast('已取消文字修改，正式紀錄沒有改變。');
+}
+async function reviewInlineTextEdit(id) {
+  const element = document.querySelector(`[data-inline-edit-text="${CSS.escape(id)}"]`);
+  if (!element || !beginInlineTextEdit(id, element)) return;
+  inlineTextContext.after = inlineTextValue(element); await flushInlineTextDraft();
+  const visit = by('visit', id);
+  if (!inlineTextContext.after.trim()) throw new Error('為避免誤刪，不能把整段拜訪文字存成空白。原文仍保留。');
+  if (inlineTextContext.after === inlineTextContext.before) throw new Error('文字沒有變更，尚未寫入任何資料。');
+  if (!visit || visit.conflict || JSON.stringify(quickTextParents(visit)) !== JSON.stringify(inlineTextContext.parents)) throw new Error('這筆拜訪已有新版本，本次沒有寫入；請取消後重新修改。');
+  quickTextContext = { ...inlineTextContext, step: 'confirm' }; renderQuickTextDialog();
 }
 function diffSegmentsHTML(segments) {
   return segments.map(segment => segment.kind === 'same'
@@ -908,7 +958,7 @@ function renderQuickTextDialog() {
   if (ctx.step === 'confirm') {
     const diff = diffTextSegments(ctx.before, ctx.after);
     $('quick-text-body').innerHTML = `<div class="quick-text-scope"><strong>這次只會修改這一筆拜訪的文字欄。</strong><p>門市、日期、來源、主題、人物、附件與 CSV 原始來源不變；修改前文字會留在歷史版本中。</p></div><div class="quick-diff-legend" aria-label="修改標示說明"><span><i class="quick-diff-swatch removed"></i>修改前被刪除／取代</span><span><i class="quick-diff-swatch added"></i>修改後新增／取代</span></div><div class="quick-text-compare"><section><h3>修改前</h3><pre>${diffSegmentsHTML(diff.before)}</pre></section><section><h3>修改後</h3><pre>${diffSegmentsHTML(diff.after)}</pre></section></div>`;
-    $('quick-text-actions').innerHTML = '<button type="button" data-close="quick-text-dialog">取消</button><button type="button" data-quick-text-back>返回修改</button><button type="submit" class="primary">確定建立新版本</button>';
+    $('quick-text-actions').innerHTML = '<button type="button" data-close="quick-text-dialog">取消</button><button type="button" data-quick-text-back>返回直接修改</button><button type="submit" class="primary">確定建立新版本</button>';
   } else {
     $('quick-text-body').innerHTML = `<p><strong>${esc(ctx.storeName)}</strong></p><p class="muted">${esc(ctx.date || '原始日期未提供')} · ${esc(ctx.source || '來源未提供')}</p><div class="quick-text-scope"><strong>安全快速修改</strong><p>這裡只能改文字，不提供刪除。第一次按確認不會寫入正式資料，下一頁還會再顯示修改前／後內容讓你二次確認。</p></div><label>拜訪文字<textarea id="quick-text-value" maxlength="20000" spellcheck="false">${esc(ctx.after ?? ctx.before)}</textarea></label>`;
     $('quick-text-actions').innerHTML = '<button type="button" data-close="quick-text-dialog">取消</button><button type="submit" class="primary">確認修改內容</button>';
@@ -953,8 +1003,9 @@ async function saveQuickTextEdit(event) {
     if (!ctx.after.trim()) throw new Error('為避免誤刪，快速修改不能把整段文字存成空白。');
     const data = structuredClone(visit.heads[0].data);
     data.text = ctx.after;
-    await commitRevision('visit', ctx.id, data, visit.heads.map(head => head.id));
-    $('quick-text-dialog').close(); quickTextContext = null;
+    const bundle = structuredClone(payload.bundle); bundle.schema = 2; bundle.ops.push(revision('visit', ctx.id, data, visit.heads.map(head => head.id), payload.device)); validateBundle(bundle);
+    await persist({ ...payload, bundle, dirty: true, inlineTextDraft: null }); render();
+    $('quick-text-dialog').close(); quickTextContext = null; inlineTextContext = null;
     toast('文字修改已建立為同一筆拜訪的新版本；舊文字與 CSV 原始來源都保留。');
   }, 'quick-text-error');
 }
@@ -996,7 +1047,7 @@ async function saveEditor(event) {
         if (!['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'application/pdf'].includes(f.type) && !/\.heic$/i.test(f.name)) throw new Error('附件只支援 JPEG、PNG、WebP、HEIC 與 PDF。');
         const bytes = new Uint8Array(await f.arrayBuffer()), id = await hashBytes(bytes); blobs[id] = b64(bytes); d.attachments.push({ blob: id, name: f.name.slice(0, 200), mime: f.type || 'application/octet-stream' });
       }
-    } else if (ctx.type === 'store') d = { name: value('f-name'), city: value('f-city'), district: value('f-district'), channel: value('f-channel'), attr: value('f-attr'), contact: value('f-contact'), address: value('f-address'), mapUrl: value('f-map-url') };
+    } else if (ctx.type === 'store') d = { name: value('f-name'), city: value('f-city'), district: value('f-district'), channel: value('f-channel'), attr: value('f-attr'), contact: value('f-contact'), address: value('f-address'), mapUrl: value('f-map-url'), nextRemember: $('f-next-remember').value.trim(), everyTimeMust: $('f-every-time-must').value.trim() };
     else if (ctx.type === 'topic') d = { name: value('f-name'), desc: value('f-desc') };
     else {
       d = { name: value('f-name'), role: value('f-role'), desc: value('f-desc'), confirmed: $('f-confirmed').checked, sameAs: value('f-same') };
@@ -1023,7 +1074,7 @@ async function saveEditor(event) {
 }
 function describeData(type, data) {
   if (type === 'visit') return `${name('store', data.store)} · ${data.date || '原始日期未提供'}\n${data.source}\n${data.sourceMissing ? 'Google 最新匯出：備註缺少（舊文保留）\n' : ''}${data.googleUpdatePending ? `Google 最新文字：${data.googleText}\nApp 文字待人工核對\n` : ''}\n${data.text}\n\n下次跟進：${data.next}\n主題：${data.topics.map(id => name('topic', id)).join('、')}\n人物：${data.people.map(id => name('person', id)).join('、')}\n附件：${data.attachments.map(a => a.name).join('、')}`;
-  const labels = { address: '地址', mapUrl: '地圖網址', lists: '來源清單', name: '名稱', city: '縣市', district: '地區', channel: '通路', attr: '屬性', contact: '窗口', desc: '備註', role: '職務', confirmed: '身分已核對', sameAs: '同一人連結', mergedInto: '已整併至門市 ID', mergeDecision: '整併裁定' };
+  const labels = { address: '地址', mapUrl: '地圖網址', lists: '來源清單', name: '名稱', city: '縣市', district: '地區', channel: '通路', attr: '屬性', contact: '窗口', nextRemember: '下次記得', everyTimeMust: '每次必做、必給', desc: '備註', role: '職務', confirmed: '身分已核對', sameAs: '同一人連結', mergedInto: '已整併至門市 ID', mergeDecision: '整併裁定' };
   const details = Object.entries(data).filter(([k]) => k !== 'csvSources' && k !== 'qualityDistinct').map(([k, v]) => `${labels[k] || k}：${k === 'sameAs' && v ? name('person', v) : v}`);
   if (data.qualityDistinct !== undefined) details.push('此版本保存的不同門市核對：' + data.qualityDistinct.length + ' 組（辨識資料改變後需重新核對）');
   return details.join('\n');
@@ -1074,7 +1125,7 @@ function safeConflictMerge(record) {
   return { safe: true, base, data: result, changes };
 }
 function safeMergeSummary(plan, record) {
-  const labels = { text: '拜訪文字', next: '下次跟進', store: '門市', date: '拜訪日期', source: '紀錄來源', topics: '主題連結', people: '人物連結', name: '名稱', address: '地址', mapUrl: '地圖網址', city: '縣市', district: '地區', channel: '通路', attr: '屬性', contact: '窗口', desc: '備註', role: '職務' };
+  const labels = { text: '拜訪文字', next: '下次跟進', store: '門市', date: '拜訪日期', source: '紀錄來源', topics: '主題連結', people: '人物連結', name: '名稱', address: '地址', mapUrl: '地圖網址', city: '縣市', district: '地區', channel: '通路', attr: '屬性', contact: '窗口', nextRemember: '下次記得', everyTimeMust: '每次必做、必給', desc: '備註', role: '職務' };
   return plan.changes.map(change => {
     const versions = change.heads.map(id => record.heads.findIndex(head => head.id === id) + 1).join('、');
     return `<li>${esc(labels[change.field] || change.field)}：取自版本 ${esc(versions)}</li>`;
@@ -1091,7 +1142,7 @@ function reviewValue(value) {
   return JSON.stringify(value, null, 2);
 }
 function reviewFields(before, after) {
-  const labels = { text: '拜訪文字', next: '下次跟進', store: '門市 ID', date: '拜訪日期', source: '紀錄來源', topics: '主題連結', people: '人物連結', attachments: '附件', name: '名稱', address: '地址', mapUrl: '地圖網址', city: '縣市', district: '地區', channel: '通路', attr: '屬性', contact: '窗口', desc: '備註', role: '職務', confirmed: '身分已核對', sameAs: '人物身分連結', csvSources: 'CSV 來源證據', csvIdentityPending: '門市身分待確認', csvIdentityRules: '門市身分裁定', googleText: 'Google 來源文字', googleUpdatePending: 'Google 文字待核對', sourceMissing: '來源缺失' };
+  const labels = { text: '拜訪文字', next: '下次跟進', store: '門市 ID', date: '拜訪日期', source: '紀錄來源', topics: '主題連結', people: '人物連結', attachments: '附件', name: '名稱', address: '地址', mapUrl: '地圖網址', city: '縣市', district: '地區', channel: '通路', attr: '屬性', contact: '窗口', nextRemember: '下次記得', everyTimeMust: '每次必做、必給', desc: '備註', role: '職務', confirmed: '身分已核對', sameAs: '人物身分連結', csvSources: 'CSV 來源證據', csvIdentityPending: '門市身分待確認', csvIdentityRules: '門市身分裁定', googleText: 'Google 來源文字', googleUpdatePending: 'Google 文字待核對', sourceMissing: '來源缺失' };
   const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])];
   const changed = keys.filter(k => JSON.stringify(before[k]) !== JSON.stringify(after[k]));
   const rows = changed.map(k => {
@@ -1243,7 +1294,9 @@ document.addEventListener('click', event => {
   if (b.dataset.exportArchive) return run(() => exportArchive(b.dataset.exportArchive));
   if (b.dataset.view) return switchView(b.dataset.view);
   if (b.dataset.quickEditText) return openQuickTextEdit(b.dataset.quickEditText);
-  if (b.dataset.quickTextBack !== undefined) { quickTextContext.step = 'edit'; return renderQuickTextDialog(); }
+  if (b.dataset.quickTextBack !== undefined) { const id = quickTextContext?.id; $('quick-text-dialog').close(); quickTextContext = null; return document.querySelector(`[data-inline-edit-text="${CSS.escape(id || '')}"]`)?.focus(); }
+  if (b.dataset.inlineCancel) return run(() => cancelInlineTextEdit(b.dataset.inlineCancel));
+  if (b.dataset.inlineReview) return run(() => reviewInlineTextEdit(b.dataset.inlineReview), null);
   if (b.dataset.quickVisit) return openVisitForStore(b.dataset.quickVisit);
   if (b.dataset.newVisitStore) return openVisitForStore(b.dataset.newVisitStore);
   if (b.dataset.visitBrief) return openVisitBrief(b.dataset.visitBrief);
@@ -1294,12 +1347,14 @@ document.addEventListener('click', event => {
   if (b.id === 'repair-pair') return run(async () => { try { await repairPair(); } catch (e) { recordSyncFailure(e); throw e; } });
 });
 document.addEventListener('keydown', e => { const n = e.target.closest('.node[role="button"]'); if (n && ['Enter', ' '].includes(e.key) && !busy) { e.preventDefault(); if (n.dataset.candidateKey) openCandidateDetail(n.dataset.candidateKey, n.dataset.candidateStore || ''); else navigate(n.dataset.nodeType, n.dataset.nodeId); } });
+document.addEventListener('focusin', event => { const editor = event.target.closest?.('[data-inline-edit-text]'); if (editor) beginInlineTextEdit(editor.dataset.inlineEditText, editor); });
+document.addEventListener('input', event => { const editor = event.target.closest?.('[data-inline-edit-text]'); if (editor) updateInlineText(editor.dataset.inlineEditText, editor); });
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) { clearNearbyPosition(); if (editorContext?.type === 'visit') void flushVisitDraft(); document.body.classList.add('privacy-veil'); if (payload || busy) lockNow(false); }
+  if (document.hidden) { clearNearbyPosition(); if (editorContext?.type === 'visit') void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); document.body.classList.add('privacy-veil'); if (payload || busy) lockNow(false); }
   else if (pendingLock || !payload) { pendingLock = false; document.body.classList.remove('privacy-veil'); showGate(); }
   else { document.body.classList.remove('privacy-veil'); requestNearbyPosition(); }
 });
-window.addEventListener('pagehide', () => { clearNearbyPosition(); if (editorContext?.type === 'visit') void flushVisitDraft(); if (payload || busy) lockNow(false); });
+window.addEventListener('pagehide', () => { clearNearbyPosition(); if (editorContext?.type === 'visit') void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); if (payload || busy) lockNow(false); });
 window.addEventListener('pageshow', () => { if (!payload && !document.hidden) { document.body.classList.remove('privacy-veil'); showGate(); } });
 $('gate-form').addEventListener('submit', initializeOrUnlock); $('editor-form').addEventListener('submit', saveEditor); $('quick-text-form').addEventListener('submit', saveQuickTextEdit);
 $('editor').addEventListener('close', () => editorContext = null);
@@ -1321,7 +1376,7 @@ new ResizeObserver(drawGraph).observe($('graph-wrap'));
 if (!isSecureContext || !crypto.subtle) { $('gate-error').textContent = '需要受信任的 HTTPS 連線。請完成 Mac 與 iPhone 憑證設定，不要略過憑證警告。'; $('gate-submit').disabled = true; }
 else {
   showGate();
-  const draftBusy = () => busy || gateOpening || !!editorContext || $('review').open || $('quick-text-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending() || (!$('gate').hidden && [...$('gate-form').querySelectorAll('input')].some(el => el.value && !['device-name'].includes(el.id)));
+  const draftBusy = () => busy || gateOpening || !!editorContext || !!inlineTextContext || !!payload?.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending() || (!$('gate').hidden && [...$('gate-form').querySelectorAll('input')].some(el => el.value && !['device-name'].includes(el.id)));
   for (const name of ['click', 'submit', 'keydown', 'beforeinput']) document.addEventListener(name, event => { if (updateHolding && event.target.closest('button,input,select,textarea,form,a')) { event.preventDefault(); event.stopImmediatePropagation(); } }, true);
   startUpdates({ api, hasToken: () => !!payload?.token, isBusy: draftBusy, setHold: held => { updateHolding = held; document.body.classList.toggle('update-holding', held); }, notify: toast, onOfflineReady: () => { offlineReady = true; $('secure-state').textContent = '離線介面已備妥。iPhone 請先加入主畫面，再從主畫面進行配對。'; status(); } });
   if (location.hostname === 'localhost') $('secure-state').textContent = '請使用 Mac 顯示的 .local 網址開啟 App，管理頁才使用 localhost。';
