@@ -9,6 +9,7 @@ import { newMeta, derive, seal, unseal, emptyBundle, revision, merge, validateBu
 // Run the actual application functions, with a local in-memory transport and real encryption.
 const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const functions = app.slice(app.indexOf('function programDetail()'), app.indexOf('async function api(')) +
+  app.slice(app.indexOf('function withPendingSync('), app.indexOf('function draftState(')) +
   app.slice(app.indexOf('async function checkConnection()'), app.indexOf('async function persist(')) +
   app.slice(app.indexOf('async function autoSync()'), app.indexOf('function lockNow(')) +
   app.slice(app.indexOf('async function recordUnchangedSync()'), app.indexOf('function switchView('));
@@ -21,7 +22,7 @@ async function fixture() {
 }
 async function client(f, device = 'phone') {
   const elements = new Map(), calls = [], local = { envelope: null };
-  const $ = id => { if (!elements.has(id)) elements.set(id, { textContent: '', hidden: false, open: false }); return elements.get(id); };
+  const $ = id => { if (!elements.has(id)) elements.set(id, { textContent: '', hidden: false, open: false, dataset: {} }); return elements.get(id); };
   const c = vm.createContext({
     ...f, payload: { schema: 1, device, deviceName: device, token: `fictional-${device}`, bundle: structuredClone(f.bundle), dirty: false, serverVersion: 1, lastSync: OLD },
     records: [], lastError: '', lastSyncFailure: null, syncWarning: '', macProgram: null, APP_VERSION, diagnoseConnection, clock: NOW, failure: null, updateHolding: false, autoFetching: false, busy: false, editorContext: null,
@@ -31,9 +32,11 @@ async function client(f, device = 'phone') {
   c.Date = class extends Date { constructor(...args) { super(...(args.length ? args : [c.clock])); } };
   c.persist = async next => {
     if (c.failure === 'disk') throw new Error('本機儲存失敗');
+    next = c.withPendingSync(c.payload, next);
     const encrypted = await seal(next, f.key, f.meta, 'device');
     local.envelope = encrypted; c.payload = next;
   };
+  vm.runInContext(functions, c);
   await c.persist(c.payload);
   c.render = () => { c.records = project(c.payload.bundle); c.status(); };
   c.run = async fn => { if (c.busy || c.updateHolding) return; c.busy = true; try { await fn(); } finally { c.busy = false; } };
@@ -49,7 +52,6 @@ async function client(f, device = 'phone') {
     }
     throw new Error('unexpected route');
   };
-  vm.runInContext(functions, c);
   c.manual = async () => { try { await c.synchronize(); } catch (e) { c.recordSyncFailure(e); throw e; } };
   return { c, calls, local, $ };
 }
@@ -89,6 +91,26 @@ test('failed upload never advances time and preserves local edits for a retry', 
   c.payload.dirty = true; c.failure = 'put';
   await assert.rejects(c.manual()); assert.equal(c.payload.lastSync, OLD); assert.equal(c.payload.dirty, true);
   assert.equal(c.payload.bundle.ops.length, 2); assert.equal(f.remote.version, 1);
+});
+
+test('pending sync count deduplicates repeated edits by entity and clears only after Mac acknowledgement', async () => {
+  const f = await fixture(), { c, $ } = await client(f);
+  const first = revision('visit', 'same-visit', { store: 'fictional-store', date: '2026-09-13', text: '第一版', next: '', source: '測試', topics: [], people: [], attachments: [] }, [], 'phone');
+  let bundle = structuredClone(c.payload.bundle); bundle.ops.push(first);
+  await c.persist({ ...c.payload, bundle, dirty: true }); c.records = project(c.payload.bundle); c.status();
+  bundle = structuredClone(c.payload.bundle); bundle.ops.push(revision('visit', 'same-visit', { ...first.data, text: '第二版' }, [first.id], 'phone'));
+  bundle.ops.push(revision('store', 'second-store', { name: '第二間測試門市', city: '', district: '', channel: '', attr: '', contact: '' }, [], 'phone'));
+  await c.persist({ ...c.payload, bundle, dirty: true }); c.records = project(c.payload.bundle); c.status();
+  assert.equal(c.pendingSyncSummary().count, 2); assert.match($('pending-sync-detail').textContent, /2 項/); assert.match($('pending-sync-detail').textContent, /1 筆拜訪/); assert.match($('pending-sync-detail').textContent, /1 間門市/);
+  c.failure = 'put'; await assert.rejects(c.manual()); assert.equal(c.pendingSyncSummary().count, 2); assert.equal(c.payload.dirty, true);
+  c.failure = null; await c.manual(); assert.equal(c.pendingSyncSummary().count, 0); assert.equal(c.payload.dirty, false); assert.equal($('pending-sync-detail').textContent, '0 筆');
+});
+
+test('legacy dirty state stays honest until one successful sync establishes a counting baseline', async () => {
+  const f = await fixture(), { c, $ } = await client(f);
+  delete c.payload.pendingSync; c.payload.dirty = true; c.records = project(c.payload.bundle); c.status();
+  assert.equal(c.pendingSyncSummary().unknown, true); assert.match($('pending-sync-detail').textContent, /完成一次同步後/);
+  await c.manual(); assert.equal(c.pendingSyncSummary().unknown, false); assert.equal(c.pendingSyncSummary().count, 0);
 });
 
 test('phone and Mac each record their own completion time while real encrypted customer changes converge in both directions', async () => {

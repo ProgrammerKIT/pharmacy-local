@@ -1,6 +1,6 @@
 {
   "name": "pharmacy-local",
-  "version": "1.5.21",
+  "version": "1.5.22",
   "private": true,
   "type": "module",
   "description": "Local-only pharmacy relationship notes. No npm dependencies.",

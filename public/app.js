@@ -69,10 +69,37 @@ async function checkConnection() {
   output.textContent = '檢查時間：' + dateText(result.checkedAt) + '\nMac 服務：' + result.service + '\nHTTPS：' + result.tls + '\n裝置配對：' + result.pairing + (result.version !== null ? '\nMac 目前資料版本：' + result.version : '') + '\n' + result.message;
 }
 async function persist(next) {
+  const previous = payload;
+  next = withPendingSync(previous, next);
   const envelope = await seal(next, key, meta, 'device');
   const rev = await writeLocal(envelope, localRevision, key);
   localRevision = rev; slot = { envelope, revision: rev, unlockKey: key }; payload = next;
   $('save-state').textContent = '手機已保存：已加密儲存於本機';
+}
+function withPendingSync(previous, next) {
+  if (!next.dirty) return { ...next, pendingSync: { entities: [], unknown: false } };
+  const entities = new Set(Array.isArray(previous?.pendingSync?.entities) ? previous.pendingSync.entities : []);
+  const before = new Set((previous?.bundle?.ops || []).map(op => op.id));
+  for (const op of next.bundle?.ops || []) if (!before.has(op.id)) entities.add(op.type + ':' + op.entity);
+  const legacyUnknown = previous?.dirty === true && !previous.pendingSync;
+  return { ...next, pendingSync: { entities: [...entities].sort(), unknown: legacyUnknown && !entities.size } };
+}
+function pendingSyncSummary() {
+  const tracking = payload?.pendingSync;
+  const entities = Array.isArray(tracking?.entities) ? [...new Set(tracking.entities)] : [];
+  const counts = { visit: 0, store: 0, person: 0, topic: 0, source: 0, other: 0 };
+  for (const key of entities) {
+    const type = String(key).split(':', 1)[0];
+    if (Object.hasOwn(counts, type)) counts[type]++; else counts.other++;
+  }
+  return { count: entities.length, counts, unknown: payload?.dirty === true && (tracking?.unknown === true || !tracking) };
+}
+function pendingSyncText(summary) {
+  if (!payload?.dirty) return '0 筆';
+  if (summary.unknown) return '有待同步變更；完成一次同步後即可開始精確計數';
+  const labels = { visit: '筆拜訪', store: '間門市', person: '位人物', topic: '個主題', source: '份來源快照', other: '項其他資料' };
+  const parts = Object.entries(summary.counts).filter(([, count]) => count).map(([type, count]) => count + ' ' + labels[type]);
+  return summary.count + ' 項' + (parts.length ? '（' + parts.join('、') + '）' : '');
 }
 function draftState(message, state = '') {
   const el = $('draft-save-state'); if (!el) return;
@@ -384,7 +411,7 @@ function lockNow(reopen = !document.hidden) {
   resetStoreFilters();
   for (const u of objectURLs) URL.revokeObjectURL(u); objectURLs = [];
   document.querySelectorAll('dialog').forEach(d => d.close());
-  for (const id of ['quality-content', 'focus-header', 'graph', 'graph-pager', 'focus-detail', 'evidence-list', 'store-list', 'visit-list', 'recent-store-list', 'draft-banner-text', 'customer-list', 'entity-list', 'trash-list', 'review-body', 'editor-fields', 'conflict-list', 'connection-detail', 'program-detail', 'local-save-detail', 'mac-ack-detail', 'sync-success-detail', 'sync-failure-detail', 'connection-check', 'device-label', 'sync-result', 'storage-detail']) $(id).replaceChildren();
+  for (const id of ['quality-content', 'focus-header', 'graph', 'graph-pager', 'focus-detail', 'evidence-list', 'store-list', 'visit-list', 'recent-store-list', 'draft-banner-text', 'customer-list', 'entity-list', 'trash-list', 'review-body', 'editor-fields', 'conflict-list', 'connection-detail', 'program-detail', 'local-save-detail', 'mac-ack-detail', 'sync-success-detail', 'sync-failure-detail', 'connection-check', 'device-label', 'sync-result', 'storage-detail', 'sync-health-title', 'sync-health-body', 'pending-sync-detail', 'sync-conflict-count']) $(id).replaceChildren();
   $('connection-check').hidden = true;
   $('editor-form').reset(); $('gate-form').reset(); $('rebuild-connect-form').reset(); $('password').value = ''; $('backup-file').value = '';
   $('workspace').hidden = true; $('gate').hidden = false;
@@ -455,6 +482,7 @@ function recordSyncFailure(error) {
 function status() {
   if (!payload) return;
   const conflicts = records.filter(r => r.conflict).length;
+  const pending = pendingSyncSummary();
   const lastSuccess = payload.lastSync ? dateText(payload.lastSync) : '尚未成功同步';
   $('save-state').textContent = '手機已保存：本機加密資料可用' + (payload.draft ? ' · 有未完成草稿' : '');
   const macAck = !payload.lastSync ? 'Mac 尚未確認收到' : payload.dirty ? `Mac 尚未確認收到這次已完成的變更 · 最近成功同步：${lastSuccess}` : `Mac 已確認收到已完成紀錄 · 資料版本 ${payload.serverVersion || 0} · 最近成功同步：${lastSuccess}`;
@@ -467,6 +495,17 @@ function status() {
   $('mac-ack-detail').textContent = !payload.lastSync ? 'Mac 尚未確認收到此裝置的資料。' : payload.dirty ? `Mac 已確認收到至資料版本 ${payload.serverVersion || 0}；本機仍有變更尚未確認。` : `Mac 已確認收到目前資料版本 ${payload.serverVersion || 0}。`;
   $('sync-success-detail').textContent = (payload.lastSync ? '最近成功同步：' + lastSuccess : '尚未成功同步') + (payload.dirty ? '；另有本機變更等待同步。' : '') + (syncWarning ? '；同步提醒：' + syncWarning : '');
   $('sync-failure-detail').textContent = lastSyncFailure ? dateText(lastSyncFailure.at) + ' · ' + lastSyncFailure.message + (!lastError ? '（之後已成功同步）' : '') : '本次開啟尚無同步失敗紀錄。';
+  let healthState = 'healthy', healthTitle = '同步狀態正常', healthBody = '本機已加密保存，Mac 已確認收到目前的已完成紀錄。';
+  if (!payload.token) { healthState = 'action'; healthTitle = '需要重新配對 Mac'; healthBody = '本機資料仍保留；重新配對並成功同步後，Mac 才會收到變更。'; }
+  else if (lastError) { healthState = 'warning'; healthTitle = '同步尚未完成'; healthBody = '本機資料已加密保存。處理下方失敗原因後可沿用原版本重試，不會因此新增重複拜訪。'; }
+  else if (payload.dirty) { healthState = 'pending'; healthTitle = '有資料等待 Mac 確認'; healthBody = '本機保存成功；App 保持前景且 Mac 可連線時會自動重試。'; }
+  else if (conflicts) { healthState = 'action'; healthTitle = '同步完成，有衝突待核對'; healthBody = '兩台內容都已保留；衝突尚未自動選邊或改寫。'; }
+  else if (syncWarning) { healthState = 'warning'; healthTitle = '資料已同步，Mac 快照需要檢查'; healthBody = syncWarning; }
+  $('sync-health-card').dataset.state = healthState;
+  $('sync-health-title').textContent = healthTitle;
+  $('sync-health-body').textContent = healthBody;
+  $('pending-sync-detail').textContent = pendingSyncText(pending);
+  $('sync-conflict-count').textContent = conflicts + ' 筆';
   $('storage-detail').textContent = `離線介面：${offlineReady ? '已備妥' : '尚待確認，請先保持連線'}。持久儲存：${storagePersistent ? '已獲允許' : '瀏覽器尚未允許，請定期同步及備份'}。資料 ${(new TextEncoder().encode(JSON.stringify(payload.bundle)).length / 1048576).toFixed(2)} / 24 MB（包含歷史與附件）。`;
 }
 function switchView(view) {
