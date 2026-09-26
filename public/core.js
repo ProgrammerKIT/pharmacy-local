@@ -145,7 +145,7 @@ export function validData(type, d) {
   if (type === 'source') return str(d.file, 500) && !!d.file.trim() && str(d.list, 200) && /^[a-f0-9]{64}$/.test(d.blob || '') && str(d.batch, 100) && !!d.batch && Number.isInteger(d.rows) && d.rows >= 0 && d.rows <= 1500 && Array.isArray(d.headers) && d.headers.length <= 100 && d.headers.every(h => str(h, 20000)) && str(d.encoding, 20) && str(d.delimiter, 10) && (d.reviewPackageId === undefined || str(d.reviewPackageId, 100));
   if (type === 'visit') return str(d.store, 100) && str(d.date, 20) && (d.date === '' || /^\d{4}-\d{2}-\d{2}$/.test(d.date)) && str(d.text) && str(d.next) && str(d.source, 100) && ids(d.topics) && ids(d.people) && Array.isArray(d.attachments) && d.attachments.length <= 20 && d.attachments.every(a => plain(a) && str(a.blob, 100) && str(a.name, 200) && str(a.mime, 100));
   if (!str(d.name, 200) || !d.name.trim()) return false;
-  if (type === 'store') return ['district', 'city', 'channel', 'attr', 'contact'].every(k => str(d[k], 500)) && ['address', 'mapUrl'].every(k => d[k] === undefined || str(d[k], 2000)) && (d.lists === undefined || Array.isArray(d.lists) && d.lists.length <= 2000 && d.lists.every(x => str(x, 200)));
+  if (type === 'store') return ['district', 'city', 'channel', 'attr', 'contact'].every(k => str(d[k], 500)) && ['address', 'mapUrl', 'nextRemember', 'everyTimeMust'].every(k => d[k] === undefined || str(d[k], 2000)) && (d.lists === undefined || Array.isArray(d.lists) && d.lists.length <= 2000 && d.lists.every(x => str(x, 200)));
   if (type === 'person') return str(d.role, 500) && str(d.desc) && typeof d.confirmed === 'boolean' && str(d.sameAs ?? '', 100);
   return str(d.desc);
 }

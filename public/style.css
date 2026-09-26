@@ -60,6 +60,8 @@
 .quick-edit-text:hover,.quick-edit-text:focus-visible{background:#f3f8f7;border-color:#b8d8d1}
 .quick-edit-text span{display:block;white-space:pre-wrap;font-size:.94rem;line-height:1.65}
 .quick-edit-text small{display:block;margin-top:6px;color:var(--muted);font-size:.74rem}
+.store-memory{margin:4px 0 12px;padding:10px 12px;border-left:4px solid #a55aa8;background:#fbf5fc;border-radius:0 8px 8px 0}.store-memory p{white-space:pre-wrap;margin:2px 0;overflow-wrap:anywhere}.store-memory strong{color:#704277}
+.inline-edit-shell{margin:0 0 4px}.inline-edit-text{white-space:pre-wrap;overflow-wrap:anywhere;font-size:.94rem;line-height:1.65;padding:8px 10px;border:1px solid transparent;border-radius:9px;min-height:2.4rem;cursor:text}.inline-edit-text:hover{background:#f3f8f7;border-color:#b8d8d1}.inline-edit-text:focus{outline:3px solid #86c6bc;outline-offset:1px;background:#fff}.inline-edit-shell.editing .inline-edit-text{border-color:#71a99f;background:#f8fcfb}.inline-edit-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;padding:7px 4px 10px}.inline-edit-actions .muted{margin-right:auto}.inline-edit-actions[hidden]{display:none}
 .quick-text-scope{border-left:3px solid #7fb5ac;background:#f2f8f7;padding:13px 15px;margin:12px 0 16px}
 .quick-text-scope p{margin:.35rem 0 0}
 .quick-text-compare{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}

@@ -2,6 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { newMeta, derive, seal, unseal, emptyBundle, revision, merge, project, validateBundle, hashBytes, b64 } from '../public/core.js';
 const store = { name: '虛構門市 A', city: '臺北市', district: '大安區', channel: '獨立', attr: '親子', contact: '虛構藥師' };
+
+test('store-only reminders are optional bounded fields and survive normal revisions', () => {
+  const b = emptyBundle('store-reminder-test');
+  const first = revision('store', 's', { ...store, nextRemember: '下次帶試用品', everyTimeMust: '每次提供衛教單' }, [], 'phone'); b.ops.push(first);
+  b.ops.push(revision('store', 's', { ...first.data, contact: '新窗口' }, [first.id], 'mac'));
+  validateBundle(b);
+  const current = project(b).find(record => record.id === 's');
+  assert.equal(current.nextRemember, '下次帶試用品');
+  assert.equal(current.everyTimeMust, '每次提供衛教單');
+  assert.throws(() => revision('store', 'bad', { ...store, nextRemember: 'x'.repeat(2001) }, [], 'phone'));
+});
 const fixture = () => { const b = emptyBundle('test-vault'); b.ops.push(revision('store', 's1', store, [], 'mac')); return b; };
 test('AES-GCM round trip, randomized nonce, wrong password, tampering and purpose isolation', async () => {
   const meta = newMeta(), key = await derive('a-test-password-1234', meta), b = fixture(); b.vaultId = meta.vaultId;
