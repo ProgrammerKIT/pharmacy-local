@@ -2,7 +2,7 @@ import { newMeta, derive, seal, unseal, uuid, emptyBundle, revision, project, me
 import { readLocal, writeLocal, archiveAndReplaceLocal, listLocalArchives, readLocalArchive } from './db.js';
 import { createCSVImport } from './csv-ui.js';
 import { PROFILE_FIELDS, FILL_FIELDS, scanQuality, setDistinctReview, sourceSuggestions, fillProfile } from './csv.js';
-import { entityRule, evidenceKind, sourceTags, groupCSVNotes, storeIdentityPending, relationVisitAllowed, retailChannel, filterStoreDirectory, candidateRelationsForStore, candidateOverview, candidateTrend, visitBriefForStore } from './relations.js';
+import { entityRule, evidenceKind, sourceTags, groupCSVNotes, storeIdentityPending, relationVisitAllowed, retailChannel, filterStoreDirectory, candidateRelationsForStore, candidateOverview, candidateTrend, visitBriefForStore, regionalOptions, regionalInsights } from './relations.js';
 import { APP_VERSION } from './version.js';
 import { startUpdates, requestLocal, diagnoseConnection } from './update-client.js';
 
@@ -21,13 +21,14 @@ function highlightLiteral(value, query) {
   }
   return html + esc(text.slice(last));
 }
-const titles = { explore: '關聯探索', visits: '拜訪', stores: '門市', entities: '人物與主題', csv: '匯入 CSV', quality: '資料整理', sync: '資料與安全', trash: '回收桶' };
+const titles = { explore: '關聯探索', visits: '拜訪', stores: '門市', regional: '區域觀察', entities: '人物與主題', csv: '匯入 CSV', quality: '資料整理', sync: '資料與安全', trash: '回收桶' };
 const kinds = { store: '門市', visit: '拜訪', person: '人物', topic: '主題' };
 let key = null, meta = null, payload = null, slot = null, localRevision = 0, busy = false, pendingLock = false, activeView = 'visits';
 let focus = { type: 'topic', id: '' }, graphPage = 0, trail = [], records = [], editorContext = null, toastTimer, autoTimer, objectURLs = [];
 let lastError = '', offlineReady = false, storagePersistent = false, autoFetching = false, gateOpening = false;
 let qualityTab = 'duplicates', qualityField = '', qualityPage = 0, qualityCache = null, qualityReview = null;
 let storeFilters = { query: '', district: '', kind: '', groups: [] };
+let regionalCity = '', regionalDistrict = '';
 let updateHolding = false, macProgram = null, lastSyncFailure = null, syncWarning = '';
 let draftTimer = null, draftSaveChain = Promise.resolve(), discardingDraft = false, quickTextContext = null, inlineTextContext = null, inlineDraftTimer = null, inlineDraftSaveChain = Promise.resolve(), reminderContext = null, transientResumeState = null;
 let versionReview = null, resolutionPreview = null;
@@ -40,7 +41,7 @@ const name = (type, id) => by(type, id)?.name || (type === 'store' ? '已刪除�
 const dateText = at => at ? new Date(at).toLocaleString('zh-TW', { hour12: false }) : '尚未同步';
 function toast(message) { $('toast').textContent = message; $('toast').classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').classList.remove('show'), 6500); }
 function buttons(disabled) {
-  document.querySelectorAll('button, #csv-view input, #csv-view select, #editor input, #editor select, #editor textarea, #store-reminder-dialog textarea').forEach(el => {
+  document.querySelectorAll('button, #csv-view input, #csv-view select, #regional-view select, #editor input, #editor select, #editor textarea, #store-reminder-dialog textarea').forEach(el => {
     if (el.dataset.close) return;
     if (disabled) { el.dataset.busyDisabled = el.disabled ? '1' : '0'; el.disabled = true; }
     else if (el.dataset.busyDisabled !== undefined) { el.disabled = el.dataset.busyDisabled === '1'; delete el.dataset.busyDisabled; }
@@ -384,6 +385,8 @@ function captureTransientResumeState() {
     qualityField,
     qualityPage,
     storeFilters: structuredClone(storeFilters),
+    regionalCity,
+    regionalDistrict,
     visitSearch: $('visit-search')?.value || '',
     scrollTop: document.scrollingElement?.scrollTop || 0
   };
@@ -400,6 +403,8 @@ function restoreTransientResumeState() {
   storeFilters = state.storeFilters && typeof state.storeFilters === 'object'
     ? { query: state.storeFilters.query || '', district: state.storeFilters.district || '', kind: state.storeFilters.kind || '', groups: Array.isArray(state.storeFilters.groups) ? [...state.storeFilters.groups] : [] }
     : { query: '', district: '', kind: '', groups: [] };
+  regionalCity = typeof state.regionalCity === 'string' ? state.regionalCity : '';
+  regionalDistrict = typeof state.regionalDistrict === 'string' ? state.regionalDistrict : '';
   $('visit-search').value = typeof state.visitSearch === 'string' ? state.visitSearch : '';
   switchView(Object.hasOwn(titles, state.view) ? state.view : 'visits');
   const scrollTop = Number.isFinite(state.scrollTop) && state.scrollTop >= 0 ? state.scrollTop : 0;
@@ -457,7 +462,7 @@ function lockNow(reopen = !document.hidden) {
   resetStoreFilters();
   for (const u of objectURLs) URL.revokeObjectURL(u); objectURLs = [];
   document.querySelectorAll('dialog').forEach(d => d.close());
-  for (const id of ['quality-content', 'focus-header', 'graph', 'graph-pager', 'focus-detail', 'evidence-list', 'store-list', 'visit-list', 'recent-store-list', 'draft-banner-text', 'customer-list', 'entity-list', 'trash-list', 'review-body', 'editor-fields', 'conflict-list', 'connection-detail', 'program-detail', 'local-save-detail', 'mac-ack-detail', 'sync-success-detail', 'sync-failure-detail', 'connection-check', 'device-label', 'sync-result', 'storage-detail', 'sync-health-title', 'sync-health-body', 'pending-sync-detail', 'sync-conflict-count', 'health-audit-title', 'health-audit-time', 'health-audit-list']) $(id).replaceChildren();
+  for (const id of ['quality-content', 'regional-content', 'focus-header', 'graph', 'graph-pager', 'focus-detail', 'evidence-list', 'store-list', 'visit-list', 'recent-store-list', 'draft-banner-text', 'customer-list', 'entity-list', 'trash-list', 'review-body', 'editor-fields', 'conflict-list', 'connection-detail', 'program-detail', 'local-save-detail', 'mac-ack-detail', 'sync-success-detail', 'sync-failure-detail', 'connection-check', 'device-label', 'sync-result', 'storage-detail', 'sync-health-title', 'sync-health-body', 'pending-sync-detail', 'sync-conflict-count', 'health-audit-title', 'health-audit-time', 'health-audit-list']) $(id).replaceChildren();
   $('connection-check').hidden = true;
   $('editor-form').reset(); $('gate-form').reset(); $('rebuild-connect-form').reset(); $('password').value = ''; $('backup-file').value = '';
   $('workspace').hidden = true; $('gate').hidden = false;
@@ -557,7 +562,7 @@ function status() {
 }
 function switchView(view) {
   activeView = view; Object.keys(titles).forEach(v => $(`${v}-view`).hidden = v !== view);
-  const primary = ['quality', 'csv', 'entities', 'explore', 'trash'].includes(view) ? 'sync' : view;
+  const primary = view === 'regional' ? 'stores' : ['quality', 'csv', 'entities', 'explore', 'trash'].includes(view) ? 'sync' : view;
   document.querySelectorAll('.rail [data-view]').forEach(b => b.classList.toggle('active', b.dataset.view === primary));
   $('page-title').textContent = titles[view]; render();
 }
@@ -656,6 +661,7 @@ function render() {
   if (activeView === 'visits') renderVisits();
   if (activeView === 'quality') renderQuality();
   if (activeView === 'stores') renderStores();
+  if (activeView === 'regional') renderRegional();
   if (activeView === 'entities') $('entity-list').innerHTML = [...all('person'), ...all('topic')].map(entityCard).join('') || '<p class="empty">新增人物與主題，讓拜訪紀錄產生連結。</p>';
   if (activeView === 'csv') csvImport.refresh();
   $('conflict-list').innerHTML = records.filter(r => r.conflict).map(r => `<div class="conflict-card"><strong>${esc(r.name || name('store', r.store) + ' · ' + r.date)}</strong><p>${r.heads.length} 個版本待確認</p><button data-review="${r.type}:${esc(r.id)}">比較並處理</button></div>`).join('') || '<p class="muted">目前沒有衝突。</p>';
@@ -740,6 +746,59 @@ function changeStoreFilter(field, value) {
   } else if (field === 'clear') resetStoreFilters();
   else storeFilters[field] = value;
   renderStores();
+}
+function currentRegionalInsights() {
+  return regionalInsights(regionalCity, regionalDistrict, all('visit'), all('store'), all('person'), all('topic'));
+}
+function regionalPercent(value, total) { return total ? `${Math.round(value * 100)}%` : '無比較基準'; }
+function regionalSignalCard(signal, report) {
+  const comparison = report.comparisonStoreCount
+    ? `${report.comparisonLabel} ${signal.comparisonStoreCount}／${report.comparisonStoreCount} 間（${regionalPercent(signal.comparisonRate, report.comparisonStoreCount)}）`
+    : `${report.comparisonLabel}沒有足夠資料`;
+  return `<button type="button" class="regional-signal ${signal.distinctive ? 'standout' : ''}" data-regional-signal="${esc(signal.key)}"><span class="pill">${esc(signal.concentrationLabel)}</span><strong>${esc(signal.name)}</strong><span>${esc(signal.category)} · 本區 ${signal.regionStoreCount}／${report.storeCount} 間（${regionalPercent(signal.regionRate, report.storeCount)}）</span><small>${esc(comparison)} · ${signal.visitCount} 筆相關拜訪 · 最近：${esc(relationDate(signal.latestDate))}</small></button>`;
+}
+function openRegionalSignal(key) {
+  const report = currentRegionalInsights(), signal = [...(report?.explicitSignals || []), ...(report?.candidateSignals || []), ...(report?.emergingSignals || [])].find(item => item.key === key);
+  if (!report || !signal) return toast('這項區域線索已因資料變更而不存在，請重新查看區域觀察。');
+  const sourceText = signal.sourceMode === 'explicit'
+    ? '這個主題來自你已明確連結的拜訪主題。'
+    : signal.sourceMode === 'literal'
+      ? '這不是預設主題，而是目前至少兩間門市的正式拜訪原文出現相同完整字詞；系統保留原句供你判斷它是否具有商業意義。'
+    : '這是依可稽核字詞規則從正式拜訪原文找出的候選線索；每個原句的否定、詢問與提及狀態分開保留。';
+  const comparison = report.comparisonStoreCount
+    ? `${report.label}：${signal.regionStoreCount}／${report.storeCount} 間（${regionalPercent(signal.regionRate, report.storeCount)}）；${report.comparisonLabel}：${signal.comparisonStoreCount}／${report.comparisonStoreCount} 間（${regionalPercent(signal.comparisonRate, report.comparisonStoreCount)}）。`
+    : `${report.comparisonLabel}沒有足夠門市資料，因此只呈現本區共同出現次數，不判定相對集中度。`;
+  const evidence = signal.regionStores.map(store => {
+    const items = (store.evidence || []).slice().sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+    return `<article class="regional-evidence-store"><div class="section-row"><div><strong>${esc(store.storeName)}</strong><p class="muted">${items.length} 條證據 · 最近：${esc(relationDate(store.latestDate || items.map(item => item.date).sort().at(-1)))}</p></div><button type="button" class="text-button" data-regional-store="${esc(store.storeId)}">查看門市</button></div>${items.slice(0, 12).map(item => `<div class="regional-evidence"><span class="pill candidate-status ${esc(item.kind)}">${esc(item.label)}</span><span class="muted">${esc(relationDate(item.date))} · ${esc(item.source || '來源未提供')}</span><blockquote>${esc(item.line || '原文未提供')}</blockquote></div>`).join('')}${items.length > 12 ? `<p class="muted">另有 ${items.length - 12} 條證據，可進入門市查看完整原文。</p>` : ''}</article>`;
+  }).join('');
+  $('review-title').textContent = report.label + '｜' + signal.name;
+  $('review-body').innerHTML = `<div class="candidate-disclaimer"><strong>${esc(signal.concentrationLabel)} · ${esc(signal.category)}</strong><p>${esc(sourceText)}</p><p>${esc(comparison)}</p><p>集中度只代表目前紀錄中有多少門市出現相同線索，不代表實際需求量、產品接受度、因果關係或完整市場母體。</p></div>${evidence || '<p class="empty">目前沒有可顯示的原文證據。</p>'}`;
+  $('review').showModal();
+}
+function renderRegional() {
+  if (!payload) return;
+  const options = regionalOptions(all('store'));
+  if (!options.some(option => option.city === regionalCity)) regionalCity = options[0]?.city || '';
+  const city = options.find(option => option.city === regionalCity), districts = city?.districts || [];
+  if (regionalDistrict && !districts.some(option => option.district === regionalDistrict)) regionalDistrict = '';
+  $('regional-city').innerHTML = options.map(option => `<option value="${esc(option.city)}">${esc(option.city)} · ${option.count} 間</option>`).join('') || '<option value="">尚無可分析縣市</option>';
+  $('regional-city').value = regionalCity;
+  $('regional-district').innerHTML = '<option value="">整個縣市</option>' + districts.map(option => `<option value="${esc(option.district)}">${esc(option.district)} · ${option.count} 間</option>`).join('');
+  $('regional-district').value = regionalDistrict;
+  const report = currentRegionalInsights();
+  if (!report || !report.storeCount) {
+    $('regional-content').innerHTML = '<p class="empty">目前沒有具備安全門市身分與縣市資料的門市可供分析。身分待確認、同步衝突及回收桶資料不會加入。</p>';
+    return;
+  }
+  const combined = [...report.explicitSignals, ...report.candidateSignals, ...report.emergingSignals], standouts = combined.filter(signal => signal.distinctive), shared = combined.filter(signal => !signal.distinctive && signal.regionStoreCount >= 2);
+  const singleCount = combined.filter(signal => signal.regionStoreCount === 1).length;
+  const signalSection = (title, description, items) => `<section class="regional-section"><h3>${title}</h3><p class="muted">${description}</p><div class="regional-signal-list">${items.map(signal => regionalSignalCard(signal, report)).join('') || '<p class="empty">目前沒有符合這個層級的線索。累積更多跨店拜訪紀錄後會自動重新計算。</p>'}</div></section>`;
+  const coverage = report.storesWithVisits === report.storeCount ? '每間門市都有可用拜訪紀錄' : `${report.storesWithVisits}／${report.storeCount} 間有可用拜訪紀錄`;
+  const comparisonWarning = report.comparisonStoreCount < 2 ? '<p class="conflict-card">比較區域少於 2 間門市，本版不會把任何項目標成「區域獨有」或「區域較集中」；仍可查看本區跨店共同線索。</p>' : '';
+  const profiles = report.storeProfiles.map(item => `<article class="regional-profile"><div><strong>${esc(item.storeName)}</strong><span class="muted">${esc([item.channel, ...item.tags].filter(Boolean).join(' · ') || '門市型態未提供')}</span></div>${item.attr ? `<p>${esc(item.attr)}</p>` : ''}<button type="button" class="text-button" data-regional-store="${esc(item.storeId)}">查看門市</button></article>`).join('') || '<p class="empty">本區尚未填寫客群／門市特徵，也沒有可追溯來源標籤。</p>';
+  const channels = report.channels.map(item => `<span class="pill">${esc(item.label)} · ${item.count}</span>`).join('') || '<span class="muted">尚無通路分群</span>';
+  $('regional-content').innerHTML = `<div class="regional-metrics"><div><strong>${report.storeCount}</strong><span>安全納入門市</span></div><div><strong>${report.visitCount}</strong><span>可用拜訪紀錄</span></div><div><strong>${report.storesWithVisits}</strong><span>有紀錄門市</span></div><div><strong>${esc(report.latestDate || '—')}</strong><span>最近拜訪日期</span></div></div><p class="muted">${esc(report.label)} · ${esc(coverage)} · ${report.datedVisitCount} 筆有日期。${report.excludedStoreCount ? `另有 ${report.excludedStoreCount} 間因衝突、回收桶或身分待確認而排除。` : ''}</p>${comparisonWarning}<div class="candidate-disclaimer"><strong>閱讀方式</strong><p>區域突出線索至少要出現在 2 間門市，並和${esc(report.comparisonLabel)}比較。系統只計算既有紀錄的出現比例；所有結論都可點開核對原文。</p></div>${signalSection('區域突出線索', `相對${esc(report.comparisonLabel)}更集中，或目前只在本區跨店出現。這是優先覆盤線索，不是已確認市場結論。`, standouts)}${signalSection('區域內共同線索', '至少在本區 2 間門市出現，但和比較區域的差異尚不足以稱為突出。', shared)}${singleCount ? `<p class="muted regional-single-note">另有 ${singleCount} 項只出現在單一門市，保留在該店的拜訪前重點中，不升級為區域線索。</p>` : ''}<section class="regional-section"><h3>通路分布</h3><div class="chips">${channels}</div></section><section class="regional-section"><h3>客群、門市特徵與來源標籤</h3><p class="muted">直接排列人工門市特徵與可追溯來源標籤，不改寫、不合併，也不從空白欄位猜測。</p><div class="regional-profile-list">${profiles}</div></section>`;
 }
 function renderStores() {
   if (!payload) return;
@@ -1357,6 +1416,8 @@ document.addEventListener('click', event => {
   if (b.id === 'view-archives') return run(openArchives);
   if (b.dataset.exportArchive) return run(() => exportArchive(b.dataset.exportArchive));
   if (b.dataset.view) return switchView(b.dataset.view);
+  if (b.dataset.regionalSignal) return openRegionalSignal(b.dataset.regionalSignal);
+  if (b.dataset.regionalStore) { if ($('review').open) $('review').close(); return navigate('store', b.dataset.regionalStore); }
   if (b.dataset.quickEditText) return openQuickTextEdit(b.dataset.quickEditText);
   if (b.dataset.quickTextBack !== undefined) { const id = quickTextContext?.id; $('quick-text-dialog').close(); quickTextContext = null; return document.querySelector(`[data-inline-edit-text="${CSS.escape(id || '')}"]`)?.focus(); }
   if (b.dataset.inlineCancel) return run(() => cancelInlineTextEdit(b.dataset.inlineCancel));
@@ -1441,6 +1502,8 @@ $('backup-file').addEventListener('change', () => { const f = $('backup-file').f
 $('rebuild-connect-form').addEventListener('submit', adoptRebuilt);
 $('rebuild-dialog').addEventListener('cancel', event => { if (busy) event.preventDefault(); else $('rebuild-connect-form').reset(); });
 for (const prefix of ['', 'customer-']) for (const [id, field] of [['search', 'query'], ['district', 'district'], ['channel', 'kind']]) $(prefix + id).addEventListener(id === 'search' ? 'input' : 'change', event => changeStoreFilter(field, event.target.value));
+$('regional-city').addEventListener('change', event => { regionalCity = event.target.value; regionalDistrict = ''; renderRegional(); });
+$('regional-district').addEventListener('change', event => { regionalDistrict = event.target.value; renderRegional(); });
 $('visit-search').addEventListener('input', renderVisits);
 new ResizeObserver(drawGraph).observe($('graph-wrap'));
 if (!isSecureContext || !crypto.subtle) { $('gate-error').textContent = '需要受信任的 HTTPS 連線。請完成 Mac 與 iPhone 憑證設定，不要略過憑證警告。'; $('gate-submit').disabled = true; }
