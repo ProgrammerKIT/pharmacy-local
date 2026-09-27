@@ -136,6 +136,7 @@ export function validData(type, d) {
   if (d.csvAliases !== undefined && (type !== 'store' || !Array.isArray(d.csvAliases) || d.csvAliases.length > 100 || !d.csvAliases.every(v => str(v, 200)))) return false;
   if (d.csvIdentityRules !== undefined && (type !== 'store' || !Array.isArray(d.csvIdentityRules) || d.csvIdentityRules.length > 200 || !d.csvIdentityRules.every(r => plain(r) && r.decision === 'same' && str(r.mapKey, 500) && r.mapKey && str(r.label, 200) && r.label.trim() && str(r.source, 200) && str(r.decidedAt, 40) && Array.isArray(r.names) && r.names.length > 1 && r.names.length <= 100 && r.names.every(v => str(v, 200) && v.trim()) && Array.isArray(r.addresses) && r.addresses.length <= 100 && r.addresses.every(v => str(v, 2000) && v.trim())))) return false;
   if (d.qualityDistinct !== undefined && (type !== 'store' || !Array.isArray(d.qualityDistinct) || d.qualityDistinct.length > 200 || !d.qualityDistinct.every(r => plain(r) && str(r.store, 100) && str(r.self, 6000) && str(r.other, 6000)))) return false;
+  if (d.enrichmentSources !== undefined && (type !== 'store' || !Array.isArray(d.enrichmentSources) || d.enrichmentSources.length > 50 || !d.enrichmentSources.every(r => plain(r) && r.provider === 'Google Maps 公開資料' && /^0x[a-f0-9]+:0x[a-f0-9]+$/.test(r.featureId || '') && str(r.sourceUrl, 2000) && coordinateFeature(r.sourceUrl) === r.featureId && str(r.sourceAddress, 2000) && !!r.sourceAddress.trim() && str(r.address, 2000) && !!r.address.trim() && str(r.city, 500) && !!r.city.trim() && str(r.district, 500) && !!r.district.trim() && str(r.checkedAt, 40) && Number.isFinite(Date.parse(r.checkedAt))))) return false;
   if (['ruleKey', 'csvTag', 'mentionTerm'].some(k => d[k] !== undefined && !str(d[k], 200))) return false;
   if (d.csvStream !== undefined && !str(d.csvStream, 500)) return false;
   if (d.googleText !== undefined && !str(d.googleText)) return false;
@@ -339,6 +340,101 @@ export function applyCoordinates(bundle, input, expected, device) {
   for(const change of current.changes) {
     const store=stores.get(change.id);
     next.ops.push(revision('store',store.id,{...store.heads[0].data,mapUrl:change.after},change.parents,device));
+  }
+  return validateBundle(next);
+}
+
+const TAIWAN_CITIES = ['臺北市','新北市','桃園市','臺中市','臺南市','高雄市','基隆市','新竹市','嘉義市','新竹縣','苗栗縣','彰化縣','南投縣','雲林縣','嘉義縣','屏東縣','宜蘭縣','花蓮縣','臺東縣','澎湖縣','金門縣','連江縣'];
+export function splitTaiwanAddress(value) {
+  if (typeof value !== 'string') return null;
+  let address = value.trim().replace(/^中華民國(?:\s*（?臺灣）?)?\s*/, '').replace(/^臺灣(?:省)?\s*/, '').replace(/^台灣(?:省)?\s*/, '').replace(/^\d{3,6}\s*/, '');
+  address = address.replace(/^台北市/, '臺北市').replace(/^台中市/, '臺中市').replace(/^台南市/, '臺南市').replace(/^台東縣/, '臺東縣');
+  const city = TAIWAN_CITIES.find(name => address.startsWith(name));
+  if (!city) return null;
+  const district = address.slice(city.length).match(/^(.{1,5}?(?:區|鄉|鎮|市))/)?.[1] || '';
+  if (!district) return null;
+  return { address, city, district };
+}
+export function buildStoreEnrichmentRequest(bundle, generatedAt = new Date().toISOString()) {
+  validateBundle(bundle);
+  if (!Number.isFinite(Date.parse(generatedAt))) throw new Error('補查清單時間不正確。');
+  const stores = project(bundle).filter(store => store.type === 'store' && !store.deleted && !store.conflict && !store.csvIdentityPending && !store.mergedInto);
+  const items = [];
+  for (const store of stores) {
+    const urls = [store.mapUrl, ...(store.csvSources || []).flatMap(source => source.headers.flatMap((header, index) => /^(網址|地圖網址|google\s*maps(?:\s*網址)?|url|map\s*url)$/i.test(header.trim()) ? [source.cells[index]] : []))].filter(Boolean);
+    const ids = [...new Set(urls.map(coordinateFeature).filter(Boolean))];
+    if (ids.length !== 1 || store.address?.trim() && store.city?.trim() && store.district?.trim()) continue;
+    const sourceUrl = urls.find(url => coordinateFeature(url) === ids[0]);
+    items.push({ featureId: ids[0], sourceUrl, sourceNames: [...new Set([store.name, ...(store.csvAliases || [])].map(name => name.trim()).filter(Boolean))] });
+  }
+  items.sort((a, b) => a.featureId.localeCompare(b.featureId));
+  return { format: 'pharmacy-store-enrichment-request-1', generatedAt, items };
+}
+export function validateStoreEnrichment(input) {
+  const fail = () => { throw new Error('門市資料補查檔案格式或地點證據不完整，未修改資料。'); };
+  if (!input || input.format !== 'pharmacy-store-enrichment-1' || !Array.isArray(input.items) || input.items.length > 2000 || input.unresolved !== undefined && (!Array.isArray(input.unresolved) || input.unresolved.length > 2000) || !input.items.length && !input.unresolved?.length) fail();
+  const seen = new Set();
+  const items = input.items.map(item => {
+    if (!plain(item) || typeof item.featureId !== 'string' || !/^0x[a-f0-9]+:0x[a-f0-9]+$/.test(item.featureId) || seen.has(item.featureId) || typeof item.resolvedUrl !== 'string' || item.resolvedUrl.length > 2000 || coordinateFeature(item.resolvedUrl) !== item.featureId || typeof item.googleName !== 'string' || !item.googleName.trim() || item.googleName.length > 500 || !Array.isArray(item.sourceNames) || !item.sourceNames.length || item.sourceNames.length > 100 || item.sourceNames.some(name => typeof name !== 'string' || !name.trim() || name.length > 500) || !item.sourceNames.some(name => name.trim() === item.googleName.trim()) || typeof item.address !== 'string' || !item.address.trim() || item.address.length > 2000 || !Number.isFinite(Date.parse(item.checkedAt))) fail();
+    const location = splitTaiwanAddress(item.address); if (!location) fail();
+    seen.add(item.featureId);
+    return { featureId: item.featureId, resolvedUrl: item.resolvedUrl, googleName: item.googleName.trim(), sourceNames: [...item.sourceNames], sourceAddress: item.address.trim(), checkedAt: item.checkedAt, ...location };
+  });
+  for (const item of input.unresolved || []) {
+    if (!plain(item) || typeof item.featureId !== 'string' || !/^0x[a-f0-9]+:0x[a-f0-9]+$/.test(item.featureId) || seen.has(item.featureId) || !Array.isArray(item.sourceNames) || !item.sourceNames.length || item.sourceNames.length > 100 || item.sourceNames.some(name => typeof name !== 'string' || !name.trim() || name.length > 500) || typeof item.reason !== 'string' || !item.reason.trim() || item.reason.length > 1000) fail();
+    seen.add(item.featureId);
+  }
+  return items;
+}
+export function planStoreEnrichment(bundle, input) {
+  validateBundle(bundle);
+  const items = validateStoreEnrichment(input), lookup = new Map(items.map(item => [item.featureId, item]));
+  const stores = project(bundle).filter(store => store.type === 'store' && (!store.deleted || store.conflict));
+  const evidence = store => {
+    const urls = [store.mapUrl, ...(store.csvSources || []).flatMap(source => source.headers.flatMap((header, index) => /^(網址|地圖網址|google\s*maps(?:\s*網址)?|url|map\s*url)$/i.test(header.trim()) ? [source.cells[index]] : []))].filter(Boolean);
+    const ids = [...new Set(urls.map(coordinateFeature).filter(Boolean))];
+    return { featureId: ids.length === 1 ? ids[0] : '', ambiguous: ids.length !== 1 };
+  };
+  const evidenceByStore = new Map(stores.map(store => [store.id, evidence(store)]));
+  const counts = new Map(); for (const value of evidenceByStore.values()) if (value.featureId) counts.set(value.featureId, (counts.get(value.featureId) || 0) + 1);
+  const changes = [], exceptions = [], used = new Set();
+  for (const store of stores) {
+    const proof = evidenceByStore.get(store.id), item = lookup.get(proof.featureId); let reason = '';
+    if (store.conflict || store.csvIdentityPending || store.deleted || store.mergedInto) reason = '版本衝突或身分待確認';
+    else if (proof.ambiguous) reason = '缺少唯一 Google 地點識別或來源識別不一致';
+    else if (!item) continue;
+    else if (counts.get(proof.featureId) > 1) reason = '相同 Google 地點識別對應多筆門市，需先核對身分';
+    else if (store.name.trim() !== item.googleName || !item.sourceNames.some(name => name.trim() === store.name.trim())) reason = 'Google 名稱與目前門市名稱不同，需重新核對身分';
+    else if (store.address?.trim() && store.address.trim() !== item.address) reason = '現有地址與公開資料不同，不自動覆蓋';
+    else if (store.city?.trim() && store.city.trim().replace(/^台/, '臺') !== item.city) reason = '現有縣市與地址拆分結果不同，不自動覆蓋';
+    else if (store.district?.trim() && store.district.trim() !== item.district) reason = '現有行政區與地址拆分結果不同，不自動覆蓋';
+    const additions = reason ? {} : Object.fromEntries([['address', item.address], ['city', item.city], ['district', item.district]].filter(([field]) => !store[field]?.trim()));
+    if (!reason && !Object.keys(additions).length) reason = '地址、縣市與行政區已有一致資料，不需修改';
+    if (reason) exceptions.push({ id: store.id, name: store.name, featureId: proof.featureId, reason });
+    else {
+      used.add(item.featureId);
+      changes.push({ id: store.id, name: store.name, parents: store.heads.map(head => head.id).sort(), before: { address: store.address || '', city: store.city || '', district: store.district || '' }, additions, source: { provider: 'Google Maps 公開資料', featureId: item.featureId, sourceUrl: item.resolvedUrl, sourceAddress: item.sourceAddress, address: item.address, city: item.city, district: item.district, checkedAt: item.checkedAt } });
+    }
+  }
+  for (const item of items) if (!used.has(item.featureId) && !exceptions.some(entry => entry.featureId === item.featureId)) exceptions.push({ id: '', name: item.googleName, featureId: item.featureId, reason: '目前資料庫找不到可安全對應的門市' });
+  for (const item of input.unresolved || []) {
+    const storesForFeature = stores.filter(store => evidenceByStore.get(store.id).featureId === item.featureId);
+    if (storesForFeature.length) for (const store of storesForFeature) exceptions.push({ id: store.id, name: store.name, featureId: item.featureId, reason: '公開資料補查未完成：' + item.reason });
+    else exceptions.push({ id: '', name: item.sourceNames[0], featureId: item.featureId, reason: '公開資料補查未完成：' + item.reason });
+  }
+  changes.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant') || a.id.localeCompare(b.id));
+  exceptions.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant') || a.featureId.localeCompare(b.featureId));
+  return { vaultId: bundle.vaultId, changes, exceptions };
+}
+export function applyStoreEnrichment(bundle, input, expected, device) {
+  const current = planStoreEnrichment(bundle, input);
+  if (JSON.stringify(current) !== JSON.stringify(expected)) throw new Error('資料或補查結果已改變，請重新預覽；尚未套用。');
+  if (!current.changes.length) throw new Error('沒有可安全補上的門市資料。');
+  const next = structuredClone(bundle), stores = new Map(project(bundle).map(store => [store.id, store]));
+  for (const change of current.changes) {
+    const store = stores.get(change.id), prior = store.heads[0].data.enrichmentSources || [];
+    const data = { ...store.heads[0].data, ...change.additions, enrichmentSources: [...prior.slice(-49), change.source] };
+    next.ops.push(revision('store', store.id, data, change.parents, device));
   }
   return validateBundle(next);
 }

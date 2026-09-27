@@ -1,4 +1,4 @@
-import { newMeta, derive, seal, unseal, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates, readonlyHealthAudit } from './core.js';
+import { newMeta, derive, seal, unseal, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates, buildStoreEnrichmentRequest, planStoreEnrichment, applyStoreEnrichment, readonlyHealthAudit } from './core.js';
 import { readLocal, writeLocal, archiveAndReplaceLocal, listLocalArchives, readLocalArchive } from './db.js';
 import { createCSVImport } from './csv-ui.js';
 import { PROFILE_FIELDS, FILL_FIELDS, scanQuality, setDistinctReview, sourceSuggestions, fillProfile } from './csv.js';
@@ -31,7 +31,7 @@ let storeFilters = { query: '', district: '', kind: '', groups: [] };
 let updateHolding = false, macProgram = null, lastSyncFailure = null, syncWarning = '';
 let draftTimer = null, draftSaveChain = Promise.resolve(), discardingDraft = false, quickTextContext = null, inlineTextContext = null, inlineDraftTimer = null, inlineDraftSaveChain = Promise.resolve(), reminderContext = null, transientResumeState = null;
 let versionReview = null, resolutionPreview = null;
-let coordinatePreview = null;
+let coordinatePreview = null, enrichmentPreview = null;
 let nearbyState = { status: 'idle', position: null, message: '' }, nearbyRequest = 0, nearbyDenied = false;
 const csvImport = createCSVImport({ host: $('csv-view'), getState: () => payload, run, saveBundle: async bundle => { await persist({ ...payload, bundle, dirty: true }); render(); }, notify: toast, exportReport: report => download(JSON.stringify({ ...report, appVersion: APP_VERSION }, null, 2), 'pharmacy-import-preview.json', 'application/json'), downloadSource: (blob, filename) => { if (!confirm('原始 CSV 是明文檔案。請確認下載到自己的本機資料夾，避開 iCloud Drive。')) return; download(unb64(payload.bundle.blobs[blob]), filename.replace(/[\/\\]/g, '_'), 'application/octet-stream'); } });
 const all = type => records.filter(r => r.type === type && (!r.deleted || r.conflict));
@@ -188,6 +188,34 @@ async function commitCoordinates() {
   await persist({ ...payload, bundle, dirty: true });
   coordinatePreview = null; $('review').close(); render();
   toast('座標已加密儲存；舊網址與原始來源保留。');
+}
+function exportStoreEnrichmentRequest() {
+  const request = buildStoreEnrichmentRequest(payload.bundle);
+  if (!request.items.length) throw new Error('目前沒有同時具備唯一 Google 地點識別與待補地址欄位的安全候選。');
+  if (!confirm(`將匯出 ${request.items.length} 間門市的 Google 地點識別、名稱與地圖網址，供公開資料補查。\n檔案含門市名稱，請只存到自己的本機資料夾，避開 iCloud Drive，也不要上傳 GitHub。`)) return;
+  download(JSON.stringify(request, null, 2), `pharmacy-store-enrichment-request-${new Date().toISOString().slice(0, 10)}.json`, 'application/json');
+}
+async function previewStoreEnrichmentFile(file) {
+  if (!payload || editorContext || csvImport.hasPending() || $('review').open) throw new Error('請先完成目前編輯或預覽。');
+  if (file.size > 2 * 1024 * 1024) throw new Error('門市資料補查檔案超過 2 MB，未載入。');
+  const sessionKey = key, input = JSON.parse(await file.text());
+  if (!payload || key !== sessionKey || pendingLock || document.hidden) return;
+  const plan = planStoreEnrichment(payload.bundle, input);
+  enrichmentPreview = { input, plan, sessionKey }; coordinatePreview = null; versionReview = null; resolutionPreview = null;
+  const labels = { address: '地址', city: '縣市', district: '行政區' };
+  $('review-title').textContent = '門市地址自動補全：正式套用前預覽';
+  $('review-body').innerHTML = `<div class="enrichment-summary"><strong>可安全補全 ${plan.changes.length} 間</strong><span>例外／不修改 ${plan.exceptions.length} 間</span></div><p>確認後只補上目前空白的地址、縣市與行政區，建立一般門市新版本並保存 Google 地點識別、公開地址、補查時間與來源網址。既有非空白欄位、拜訪原文、CSV 與 Source Snapshot 不會被覆蓋。</p><p>任何名稱、地點識別或既有資料不一致都保留在例外清單，這次不修改。取消或關閉不寫入資料。</p>` +
+    plan.changes.map(change => `<article class="enrichment-change"><h3>${esc(change.name)}</h3>${Object.entries(change.additions).map(([field, value]) => `<p><strong>${esc(labels[field])}</strong><span>${esc(change.before[field] || '未提供')} → ${esc(value)}</span></p>`).join('')}<small>Google Maps 公開資料 · ${esc(dateText(change.source.checkedAt))}</small></article>`).join('') +
+    `<details class="enrichment-exceptions" ${plan.exceptions.length ? '' : 'hidden'}><summary>查看 ${plan.exceptions.length} 間例外與原因</summary>${plan.exceptions.map(item => `<article><strong>${esc(item.name || item.featureId)}</strong><p>${esc(item.reason)}</p></article>`).join('')}</details><div class="dialog-footer"><button data-close="review">取消，不修改</button>${plan.changes.length ? `<button id="apply-store-enrichment" class="primary">確認補全這 ${plan.changes.length} 間門市</button>` : ''}</div>`;
+  $('review').showModal();
+}
+async function commitStoreEnrichment() {
+  const preview = enrichmentPreview;
+  if (!preview || !payload || preview.sessionKey !== key || pendingLock || document.hidden || !$('review').open) throw new Error('預覽已失效，請重新載入檔案。');
+  const bundle = applyStoreEnrichment(payload.bundle, preview.input, preview.plan, payload.device);
+  await persist({ ...payload, bundle, dirty: true });
+  const count = preview.plan.changes.length; enrichmentPreview = null; $('review').close(); render();
+  toast(`已補全 ${count} 間門市；來源與舊版本已保留，等待加密同步。`);
 }
 function visitStoreSearchText(store) {
   return [store.name, ...(store.csvAliases || []), store.city, store.district, store.address, store.channel]
@@ -424,7 +452,7 @@ async function autoSync() {
 function lockNow(reopen = !document.hidden) {
   if (busy || editorContext || inlineTextContext || reminderContext || payload?.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('store-reminder-dialog')?.open || csvImport.hasPending()) { pendingLock = true; document.body.classList.add('privacy-veil'); return; }
   captureTransientResumeState();
-  pendingLock = false; coordinatePreview = null; clearNearbyPosition(); versionReview = null; resolutionPreview = null; inlineTextContext = null; reminderContext = null; clearTimeout(inlineDraftTimer); inlineDraftTimer = null; clearInterval(autoTimer); key = null; meta = null; payload = null; records = []; trail = []; editorContext = null; lastError = ''; macProgram = null; lastSyncFailure = null; syncWarning = '';
+  pendingLock = false; coordinatePreview = null; enrichmentPreview = null; clearNearbyPosition(); versionReview = null; resolutionPreview = null; inlineTextContext = null; reminderContext = null; clearTimeout(inlineDraftTimer); inlineDraftTimer = null; clearInterval(autoTimer); key = null; meta = null; payload = null; records = []; trail = []; editorContext = null; lastError = ''; macProgram = null; lastSyncFailure = null; syncWarning = '';
   csvImport.reset(); qualityCache = null; qualityReview = null; qualityTab = 'duplicates'; qualityField = ''; qualityPage = 0;
   resetStoreFilters();
   for (const u of objectURLs) URL.revokeObjectURL(u); objectURLs = [];
@@ -1349,6 +1377,8 @@ document.addEventListener('click', event => {
   if (b.dataset.qualityMark) return run(saveQualityReview);
   if (b.dataset.qualityPage) { qualityPage = Math.max(0, qualityPage + Number(b.dataset.qualityPage)); return renderQuality(); }
   if (b.id === 'quality-refresh') { qualityCache = null; qualityPage = 0; return renderQuality(); }
+  if (b.id === 'export-store-enrichment') return run(exportStoreEnrichmentRequest);
+  if (b.id === 'import-store-enrichment') return $('store-enrichment-file').click();
   if (b.dataset.fillSuggestion) { const field = b.dataset.fillSuggestion, suggestion = editorContext?.suggestions?.[field]?.[Number(b.dataset.suggestionIndex)]; if (suggestion && editorContext.fillFields.includes(field)) $('fill-' + field).value = suggestion.value; return; }
   if (b.dataset.edit) return openEditor(...b.dataset.edit.split(':'));
   if (b.dataset.review) return openReview(...b.dataset.review.split(':'), true);
@@ -1370,6 +1400,7 @@ document.addEventListener('click', event => {
   if (b.dataset.graphPage) { graphPage = Math.max(0, graphPage + Number(b.dataset.graphPage)); drawGraph(); return; }
   if (b.id === 'import-coordinates') return $('coordinate-file').click();
   if (b.id === 'apply-coordinates') return run(commitCoordinates);
+  if (b.id === 'apply-store-enrichment') return run(commitStoreEnrichment);
   if (b.id === 'nearby-retry') return requestNearbyPosition(true);
   if (b.id === 'new-note') return openEditor('visit');
   if (b.id === 'back-node') { const previous = trail.pop(); if (previous) navigate(previous.type, previous.id, false); return; }
@@ -1425,4 +1456,5 @@ $('review').addEventListener('change', event => { if (event.target.id === 'confl
 $('review').addEventListener('cancel', event => { if (busy) event.preventDefault(); });
 
 $('coordinate-file').addEventListener('change', () => { const file = $('coordinate-file').files[0]; $('coordinate-file').value = ''; if (file) run(() => previewCoordinateFile(file)); });
+$('store-enrichment-file').addEventListener('change', () => { const file = $('store-enrichment-file').files[0]; $('store-enrichment-file').value = ''; if (file) run(() => previewStoreEnrichmentFile(file)); });
 $('review').addEventListener('close', () => { coordinatePreview = null; });

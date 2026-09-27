@@ -72,6 +72,9 @@ test('mobile-first runtime files are valid JavaScript and expose the daily captu
   assert.match(html, /▦ 門市/);
   assert.match(html, /⚙ 資料與安全/);
   assert.match(html, /class="panel management-hub"/);
+  assert.match(html, /id="export-store-enrichment"/);
+  assert.match(html, /id="import-store-enrichment"/);
+  assert.match(html, /id="store-enrichment-file"/);
   assert.match(app, /拜訪前｜/);
   assert.match(app, /開始記錄這次拜訪/);
   assert.match(app, /展開全部.*筆歷史紀錄/);
@@ -213,7 +216,7 @@ test('quick text edit creates one new visit revision and preserves every non-tex
 });
 
 test('SOP1 explicitly separates App daily notes from Google CSV imports and keeps retention undecided', () => {
-  assert.equal(SOP1_VERSION, '1.2.15');
+  assert.equal(SOP1_VERSION, '1.2.16');
   assert.match(sop, /### A\. App 日常記錄/);
   assert.match(sop, /### B\. Google CSV 外部資料匯入/);
   assert.match(sop, /### C\. 同步與備份/);
@@ -234,6 +237,9 @@ test('SOP1 explicitly separates App daily notes from Google CSV imports and keep
   assert.match(sop, /拜訪、門市、資料與安全/);
   assert.match(sop, /不得建立摘要 revision 或回寫任何 entity/);
   assert.match(sop, /不得以介面重整、自動化、匯入或同步繞過/);
+  assert.match(sop, /門市地址批次補全/);
+  assert.match(sop, /只補空白的 address、city、district/);
+  assert.match(sop, /不得加入 GitHub、release 或測試資料/);
   assert.match(sop, /二次確認頁必須以明顯 highlight 標示/);
   assert.match(sop, /非關閉式 App 切換/);
   assert.match(sop, /不得把使用者硬切回「拜訪紀錄」/);
