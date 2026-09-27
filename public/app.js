@@ -29,7 +29,7 @@ let lastError = '', offlineReady = false, storagePersistent = false, autoFetchin
 let qualityTab = 'duplicates', qualityField = '', qualityPage = 0, qualityCache = null, qualityReview = null;
 let storeFilters = { query: '', district: '', kind: '', groups: [] };
 let updateHolding = false, macProgram = null, lastSyncFailure = null, syncWarning = '';
-let draftTimer = null, draftSaveChain = Promise.resolve(), discardingDraft = false, quickTextContext = null, inlineTextContext = null, inlineDraftTimer = null, inlineDraftSaveChain = Promise.resolve(), transientResumeState = null;
+let draftTimer = null, draftSaveChain = Promise.resolve(), discardingDraft = false, quickTextContext = null, inlineTextContext = null, inlineDraftTimer = null, inlineDraftSaveChain = Promise.resolve(), reminderContext = null, transientResumeState = null;
 let versionReview = null, resolutionPreview = null;
 let coordinatePreview = null;
 let nearbyState = { status: 'idle', position: null, message: '' }, nearbyRequest = 0, nearbyDenied = false;
@@ -40,7 +40,7 @@ const name = (type, id) => by(type, id)?.name || (type === 'store' ? '已刪除�
 const dateText = at => at ? new Date(at).toLocaleString('zh-TW', { hour12: false }) : '尚未同步';
 function toast(message) { $('toast').textContent = message; $('toast').classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').classList.remove('show'), 6500); }
 function buttons(disabled) {
-  document.querySelectorAll('button, #csv-view input, #csv-view select, #editor input, #editor select, #editor textarea').forEach(el => {
+  document.querySelectorAll('button, #csv-view input, #csv-view select, #editor input, #editor select, #editor textarea, #store-reminder-dialog textarea').forEach(el => {
     if (el.dataset.close) return;
     if (disabled) { el.dataset.busyDisabled = el.disabled ? '1' : '0'; el.disabled = true; }
     else if (el.dataset.busyDisabled !== undefined) { el.disabled = el.dataset.busyDisabled === '1'; delete el.dataset.busyDisabled; }
@@ -405,13 +405,13 @@ async function runPeriodicHealthAudit(force = false) {
   renderHealthAudit();
 }
 async function autoSync() {
-  if (updateHolding || autoFetching || !payload?.token || document.hidden || busy || editorContext || inlineTextContext || payload.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending()) return;
+  if (updateHolding || autoFetching || !payload?.token || document.hidden || busy || editorContext || inlineTextContext || reminderContext || payload.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('store-reminder-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending()) return;
   const sessionKey = key;
   autoFetching = true;
   try {
     // Offline probes never block editing or take the write lock, and carry no customer content.
     const remote = await api('/api/version');
-    if (updateHolding || !payload || key !== sessionKey || document.hidden || busy || editorContext || inlineTextContext || payload.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending()) return;
+    if (updateHolding || !payload || key !== sessionKey || document.hidden || busy || editorContext || inlineTextContext || reminderContext || payload.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('store-reminder-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending()) return;
     await run(async () => {
       try {
         if (payload.dirty || remote.version !== payload.serverVersion) await synchronize();
@@ -422,9 +422,9 @@ async function autoSync() {
   finally { autoFetching = false; }
 }
 function lockNow(reopen = !document.hidden) {
-  if (busy || editorContext || inlineTextContext || payload?.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || csvImport.hasPending()) { pendingLock = true; document.body.classList.add('privacy-veil'); return; }
+  if (busy || editorContext || inlineTextContext || reminderContext || payload?.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('store-reminder-dialog')?.open || csvImport.hasPending()) { pendingLock = true; document.body.classList.add('privacy-veil'); return; }
   captureTransientResumeState();
-  pendingLock = false; coordinatePreview = null; clearNearbyPosition(); versionReview = null; resolutionPreview = null; inlineTextContext = null; clearTimeout(inlineDraftTimer); inlineDraftTimer = null; clearInterval(autoTimer); key = null; meta = null; payload = null; records = []; trail = []; editorContext = null; lastError = ''; macProgram = null; lastSyncFailure = null; syncWarning = '';
+  pendingLock = false; coordinatePreview = null; clearNearbyPosition(); versionReview = null; resolutionPreview = null; inlineTextContext = null; reminderContext = null; clearTimeout(inlineDraftTimer); inlineDraftTimer = null; clearInterval(autoTimer); key = null; meta = null; payload = null; records = []; trail = []; editorContext = null; lastError = ''; macProgram = null; lastSyncFailure = null; syncWarning = '';
   csvImport.reset(); qualityCache = null; qualityReview = null; qualityTab = 'duplicates'; qualityField = ''; qualityPage = 0;
   resetStoreFilters();
   for (const u of objectURLs) URL.revokeObjectURL(u); objectURLs = [];
@@ -603,7 +603,8 @@ function noteHTML(v, query = '') {
   const evidence = rule ? evidenceKind(v.text, rule) : null;
   const hint = evidence?.lines.length ? `<div class="evidence-hint ${evidence.kind}"><strong>${esc(evidence.label)} · 字詞線索</strong>${evidence.lines.map(line => `<blockquote>${esc(line)}</blockquote>`).join('')}</div>` : '';
   const sourceState = v.sourceMissing ? '<div class="conflict-card">Google 最新匯出已沒有這段備註；程式保留最後內容，未刪除。</div>' : v.googleUpdatePending ? `<div class="conflict-card">Google 備註已有新版；你曾在 App 修改原文，因此先保留 App 文字。<details><summary>查看 Google 最新文字</summary><p>${esc(v.googleText)}</p></details></div>` : '';
-  const store = by('store', v.store), storeNotes = store && (store.nextRemember || store.everyTimeMust) ? `<div class="store-memory">${store.nextRemember ? `<p><strong>下次記得：</strong>${esc(store.nextRemember)}</p>` : ''}${store.everyTimeMust ? `<p><strong>每次必做、必給：</strong>${esc(store.everyTimeMust)}</p>` : ''}</div>` : '';
+  const store = by('store', v.store), hasStoreNotes = !!store && !!(store.nextRemember || store.everyTimeMust);
+  const storeNotes = store && !store.conflict ? `<div class="store-memory ${hasStoreNotes ? '' : 'empty'}">${store.nextRemember ? `<p><strong>下次記得：</strong>${esc(store.nextRemember)}</p>` : ''}${store.everyTimeMust ? `<p><strong>每次必做、必給：</strong>${esc(store.everyTimeMust)}</p>` : ''}<button type="button" class="text-button store-reminder-edit" data-store-reminder="${esc(store.id)}">${hasStoreNotes ? '修改門市提醒' : '＋ 填寫門市提醒'}</button></div>` : '';
   const inlineDraft = payload?.inlineTextDraft?.format === 'inline-text-draft-1' && payload.inlineTextDraft.id === v.id ? payload.inlineTextDraft : null;
   const shownText = inlineDraft?.after ?? v.text;
   const textBlock = v.conflict
@@ -899,6 +900,32 @@ function quickTextParents(record) {
   return (record?.heads || []).map(head => head.id).sort();
 }
 function inlineTextValue(element) { return (element.innerText || '').replace(/\r/g, ''); }
+function openStoreReminder(storeId) {
+  const store = by('store', storeId);
+  if (!store || store.deleted || store.conflict) return toast('這間門市目前有衝突或已移到回收桶，請先完成核對。');
+  if (inlineTextContext && inlineTextContext.after !== inlineTextContext.before) return toast('請先完成或取消目前的拜訪文字修改。');
+  inlineTextContext = null;
+  reminderContext = { id: store.id, parents: store.heads.map(head => head.id).sort() };
+  $('store-reminder-title').textContent = store.name + ' · 門市提醒';
+  $('store-reminder-next').value = store.nextRemember || '';
+  $('store-reminder-every').value = store.everyTimeMust || '';
+  $('store-reminder-error').textContent = '';
+  $('store-reminder-dialog').showModal();
+  $('store-reminder-next').focus();
+}
+async function saveStoreReminder(event) {
+  event.preventDefault();
+  await run(async () => {
+    const ctx = reminderContext, store = ctx && by('store', ctx.id);
+    if (!ctx || !store || store.deleted || store.conflict || JSON.stringify(store.heads.map(head => head.id).sort()) !== JSON.stringify(ctx.parents)) throw new Error('這間門市已有新版本，本次沒有寫入；請關閉後重新開啟。');
+    const nextRemember = $('store-reminder-next').value.trim(), everyTimeMust = $('store-reminder-every').value.trim();
+    if (nextRemember === (store.nextRemember || '') && everyTimeMust === (store.everyTimeMust || '')) { $('store-reminder-dialog').close(); reminderContext = null; return toast('門市提醒沒有變更。'); }
+    const data = { ...structuredClone(store.heads[0].data), nextRemember, everyTimeMust };
+    await commitRevision('store', store.id, data, ctx.parents);
+    $('store-reminder-dialog').close(); reminderContext = null;
+    toast('門市提醒已儲存並套用到這間門市的全部拜訪紀錄。');
+  }, 'store-reminder-error');
+}
 function beginInlineTextEdit(id, element) {
   const visit = by('visit', id);
   if (!visit || visit.deleted || visit.conflict) return false;
@@ -1282,11 +1309,11 @@ document.addEventListener('click', event => {
   const node = event.target.closest('[data-node-type]'); if (node && !busy) return navigate(node.dataset.nodeType, node.dataset.nodeId);
   if (!b) return;
   if (b.dataset.close) {
-    if (['rebuild-dialog', 'quick-text-dialog', 'review'].includes(b.dataset.close) && busy) return;
+    if (['rebuild-dialog', 'quick-text-dialog', 'store-reminder-dialog', 'review'].includes(b.dataset.close) && busy) return;
     if (b.dataset.close === 'editor' && editorContext?.type === 'visit') return run(async () => {
       await flushVisitDraft(); $('editor').close(); editorContext = null; render();
     }, 'editor-error');
-    $(b.dataset.close).close(); if (b.dataset.close === 'rebuild-dialog') $('rebuild-connect-form').reset(); if (b.dataset.close === 'editor') editorContext = null; return;
+    $(b.dataset.close).close(); if (b.dataset.close === 'rebuild-dialog') $('rebuild-connect-form').reset(); if (b.dataset.close === 'editor') editorContext = null; if (b.dataset.close === 'store-reminder-dialog') reminderContext = null; return;
   }
   if (updateHolding || busy || !payload) return;
   if (b.id === 'connect-rebuilt') { if (editorContext || csvImport.hasPending()) return toast('請先儲存編輯或取消匯入預覽。'); $('rebuild-connect-form').reset(); $('rebuild-connect-error').textContent = ''; $('rebuild-dialog').showModal(); return; }
@@ -1297,6 +1324,7 @@ document.addEventListener('click', event => {
   if (b.dataset.quickTextBack !== undefined) { const id = quickTextContext?.id; $('quick-text-dialog').close(); quickTextContext = null; return document.querySelector(`[data-inline-edit-text="${CSS.escape(id || '')}"]`)?.focus(); }
   if (b.dataset.inlineCancel) return run(() => cancelInlineTextEdit(b.dataset.inlineCancel));
   if (b.dataset.inlineReview) return run(() => reviewInlineTextEdit(b.dataset.inlineReview), null);
+  if (b.dataset.storeReminder) return openStoreReminder(b.dataset.storeReminder);
   if (b.dataset.quickVisit) return openVisitForStore(b.dataset.quickVisit);
   if (b.dataset.newVisitStore) return openVisitForStore(b.dataset.newVisitStore);
   if (b.dataset.visitBrief) return openVisitBrief(b.dataset.visitBrief);
@@ -1356,10 +1384,12 @@ document.addEventListener('visibilitychange', () => {
 });
 window.addEventListener('pagehide', () => { clearNearbyPosition(); if (editorContext?.type === 'visit') void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); if (payload || busy) lockNow(false); });
 window.addEventListener('pageshow', () => { if (!payload && !document.hidden) { document.body.classList.remove('privacy-veil'); showGate(); } });
-$('gate-form').addEventListener('submit', initializeOrUnlock); $('editor-form').addEventListener('submit', saveEditor); $('quick-text-form').addEventListener('submit', saveQuickTextEdit);
+$('gate-form').addEventListener('submit', initializeOrUnlock); $('editor-form').addEventListener('submit', saveEditor); $('quick-text-form').addEventListener('submit', saveQuickTextEdit); $('store-reminder-form').addEventListener('submit', saveStoreReminder);
 $('editor').addEventListener('close', () => editorContext = null);
 $('quick-text-dialog').addEventListener('close', () => { quickTextContext = null; $('quick-text-error').textContent = ''; });
 $('quick-text-dialog').addEventListener('cancel', event => { if (busy) event.preventDefault(); });
+$('store-reminder-dialog').addEventListener('close', () => { reminderContext = null; $('store-reminder-error').textContent = ''; });
+$('store-reminder-dialog').addEventListener('cancel', event => { if (busy) event.preventDefault(); });
 $('editor-fields').addEventListener('input', event => {
   if (event.target.id === 'f-store-search') { refreshVisitStoreOptions(event.target.value); return; }
   if (editorContext?.type === 'visit' && event.target.id !== 'f-files') scheduleVisitDraftSave();
@@ -1376,7 +1406,7 @@ new ResizeObserver(drawGraph).observe($('graph-wrap'));
 if (!isSecureContext || !crypto.subtle) { $('gate-error').textContent = '需要受信任的 HTTPS 連線。請完成 Mac 與 iPhone 憑證設定，不要略過憑證警告。'; $('gate-submit').disabled = true; }
 else {
   showGate();
-  const draftBusy = () => busy || gateOpening || !!editorContext || !!inlineTextContext || !!payload?.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending() || (!$('gate').hidden && [...$('gate-form').querySelectorAll('input')].some(el => el.value && !['device-name'].includes(el.id)));
+  const draftBusy = () => busy || gateOpening || !!editorContext || !!inlineTextContext || !!reminderContext || !!payload?.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('store-reminder-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending() || (!$('gate').hidden && [...$('gate-form').querySelectorAll('input')].some(el => el.value && !['device-name'].includes(el.id)));
   for (const name of ['click', 'submit', 'keydown', 'beforeinput']) document.addEventListener(name, event => { if (updateHolding && event.target.closest('button,input,select,textarea,form,a')) { event.preventDefault(); event.stopImmediatePropagation(); } }, true);
   startUpdates({ api, hasToken: () => !!payload?.token, isBusy: draftBusy, setHold: held => { updateHolding = held; document.body.classList.toggle('update-holding', held); }, notify: toast, onOfflineReady: () => { offlineReady = true; $('secure-state').textContent = '離線介面已備妥。iPhone 請先加入主畫面，再從主畫面進行配對。'; status(); } });
   if (location.hostname === 'localhost') $('secure-state').textContent = '請使用 Mac 顯示的 .local 網址開啟 App，管理頁才使用 localhost。';
