@@ -44,7 +44,7 @@ test('mobile auto location requests once, uses bounded fresh fixes, and only ren
  const h=harness();const before=JSON.stringify(h.c.payload);h.c.requestNearbyPosition();h.c.requestNearbyPosition();assert.equal(h.calls(),1);
  assert.deepEqual({...h.options()},{enableHighAccuracy:true,timeout:15000,maximumAge:0});
  h.success()({coords:{latitude:25,longitude:121,accuracy:20},timestamp:Date.now()});
- assert.equal((h.$('recent-store-list').innerHTML.match(/data-quick-visit/g)||[]).length,3);
+ assert.equal((h.$('recent-store-list').innerHTML.match(/data-(?:quick-visit|visit-brief)/g)||[]).length,3);
  assert.match(h.$('nearby-status').textContent,/直線距離/);assert.equal(JSON.stringify(h.c.payload),before);
 });
 test('desktop never requests geolocation, including retry, and renders recent-store cards',()=>{

@@ -47,8 +47,8 @@ test('mobile-first runtime files are valid JavaScript and expose the daily captu
   assert.match(app, /function openCandidateOverview\(/);
   assert.match(app, /function openVisitBrief\(/);
   assert.match(app, /data-visit-brief=/);
-  assert.match(app, /拜訪前重點卡（唯讀）/);
-  assert.match(app, /只排列既有欄位與原文/);
+  assert.match(app, /拜訪前｜/);
+  assert.match(app, /只排列你已填寫的欄位、正式拜訪原文與可追溯候選/);
   assert.match(app, /function openQuickTextEdit\(/);
   assert.match(app, /async function saveQuickTextEdit\(/);
   assert.match(app, /contenteditable="true"/);
@@ -68,7 +68,18 @@ test('mobile-first runtime files are valid JavaScript and expose the daily captu
   assert.match(app, /async function saveStoreReminder\(/);
   assert.match(html, /id="store-reminder-dialog"/);
   assert.match(html, /這次不會修改拜訪文字或其他門市資料/);
-  assert.ok(app.indexOf("store.nextRemember ?") < app.indexOf("store.everyTimeMust ?"), 'store reminders render in the requested order');
+  assert.match(html, /▤ 拜訪/);
+  assert.match(html, /▦ 門市/);
+  assert.match(html, /⚙ 資料與安全/);
+  assert.match(html, /class="panel management-hub"/);
+  assert.match(app, /拜訪前｜/);
+  assert.match(app, /開始記錄這次拜訪/);
+  assert.match(app, /展開全部.*筆歷史紀錄/);
+  assert.match(app, /不生成或改寫正式拜訪內容/);
+  assert.match(app, /class="advanced-fields"/);
+  assert.match(app, /地址與系統資料/);
+  const storeNotesSource = app.slice(app.indexOf('const storeNotes ='), app.indexOf('const inlineDraft'));
+  assert.ok(storeNotesSource.indexOf("store.nextRemember ?") < storeNotesSource.indexOf("store.everyTimeMust ?"), 'store reminders render in the requested order');
   assert.match(app, /快速修改不能把整段文字存成空白/);
   assert.match(app, /這次只會修改這一筆拜訪的文字欄/);
   assert.match(app, /diffTextSegments\(ctx\.before, ctx\.after\)/);
@@ -202,7 +213,7 @@ test('quick text edit creates one new visit revision and preserves every non-tex
 });
 
 test('SOP1 explicitly separates App daily notes from Google CSV imports and keeps retention undecided', () => {
-  assert.equal(SOP1_VERSION, '1.2.14');
+  assert.equal(SOP1_VERSION, '1.2.15');
   assert.match(sop, /### A\. App 日常記錄/);
   assert.match(sop, /### B\. Google CSV 外部資料匯入/);
   assert.match(sop, /### C\. 同步與備份/);
@@ -220,6 +231,9 @@ test('SOP1 explicitly separates App daily notes from Google CSV imports and keep
   assert.match(sop, /每張拜訪紀錄卡的門市名稱正下方/);
   assert.match(sop, /沒有內容時仍顯示填寫入口/);
   assert.match(sop, /快捷視窗只修改這兩欄/);
+  assert.match(sop, /拜訪、門市、資料與安全/);
+  assert.match(sop, /不得建立摘要 revision 或回寫任何 entity/);
+  assert.match(sop, /不得以介面重整、自動化、匯入或同步繞過/);
   assert.match(sop, /二次確認頁必須以明顯 highlight 標示/);
   assert.match(sop, /非關閉式 App 切換/);
   assert.match(sop, /不得把使用者硬切回「拜訪紀錄」/);
