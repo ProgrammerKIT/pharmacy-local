@@ -61,6 +61,13 @@ test('mobile-first runtime files are valid JavaScript and expose the daily captu
   assert.match(app, /每次必做、必給：/);
   assert.match(app, /id="f-next-remember"/);
   assert.match(app, /id="f-every-time-must"/);
+  assert.match(app, /data-store-reminder=/);
+  assert.match(app, /填寫門市提醒/);
+  assert.match(app, /修改門市提醒/);
+  assert.match(app, /function openStoreReminder\(/);
+  assert.match(app, /async function saveStoreReminder\(/);
+  assert.match(html, /id="store-reminder-dialog"/);
+  assert.match(html, /這次不會修改拜訪文字或其他門市資料/);
   assert.ok(app.indexOf("store.nextRemember ?") < app.indexOf("store.everyTimeMust ?"), 'store reminders render in the requested order');
   assert.match(app, /快速修改不能把整段文字存成空白/);
   assert.match(app, /這次只會修改這一筆拜訪的文字欄/);
@@ -195,7 +202,7 @@ test('quick text edit creates one new visit revision and preserves every non-tex
 });
 
 test('SOP1 explicitly separates App daily notes from Google CSV imports and keeps retention undecided', () => {
-  assert.equal(SOP1_VERSION, '1.2.13');
+  assert.equal(SOP1_VERSION, '1.2.14');
   assert.match(sop, /### A\. App 日常記錄/);
   assert.match(sop, /### B\. Google CSV 外部資料匯入/);
   assert.match(sop, /### C\. 同步與備份/);
@@ -210,6 +217,9 @@ test('SOP1 explicitly separates App daily notes from Google CSV imports and keep
   assert.match(sop, /單純點擊或移動游標不寫入資料/);
   assert.match(sop, /同一時間只允許一筆行內文字草稿/);
   assert.match(sop, /下次記得.*每次必做、必給/);
+  assert.match(sop, /每張拜訪紀錄卡的門市名稱正下方/);
+  assert.match(sop, /沒有內容時仍顯示填寫入口/);
+  assert.match(sop, /快捷視窗只修改這兩欄/);
   assert.match(sop, /二次確認頁必須以明顯 highlight 標示/);
   assert.match(sop, /非關閉式 App 切換/);
   assert.match(sop, /不得把使用者硬切回「拜訪紀錄」/);
