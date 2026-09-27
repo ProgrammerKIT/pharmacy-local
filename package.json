@@ -1,9 +1,9 @@
 {
   "name": "pharmacy-local",
-  "version": "1.5.27",
+  "version": "1.5.28",
   "private": true,
   "type": "module",
   "description": "Local-only pharmacy relationship notes. No npm dependencies.",
   "engines": { "node": ">=22" },
-  "scripts": { "start": "node supervisor.mjs", "setup": "node scripts/setup.mjs", "test": "node --test test/*.test.mjs", "release": "node scripts/release.mjs" }
+  "scripts": { "start": "node supervisor.mjs", "setup": "node scripts/setup.mjs", "test": "node --test test/*.test.mjs", "release": "node scripts/release.mjs", "enrich": "node scripts/google-maps-enrichment.mjs" }
 }
