@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import { emptyBundle, revision, project, splitTaiwanAddress, buildStoreEnrichmentRequest, validateStoreEnrichment, planStoreEnrichment, applyStoreEnrichment, newMeta, derive, seal, unseal, merge } from '../public/core.js';
-import { parseGoogleMapsPublicPage, enrichRequest } from '../scripts/google-maps-enrichment.mjs';
+import { parseRenderedGoogleMapsPlace, enrichRequest } from '../scripts/google-maps-enrichment.mjs';
 
 const featureId = '0x123:0x456';
 const url = `https://www.google.com/maps/place/fictional/data=!1s${featureId}!3d25!4d121`;
@@ -17,18 +17,53 @@ test('Taiwan address splitting is deterministic and rejects incomplete public ad
   assert.equal(splitTaiwanAddress('只有路名沒有縣市'), null);
 });
 
-test('public-page lookup accepts one exact-name address and isolates uncertain results', async () => {
+test('rendered Google Maps lookup requires exact feature, current name and a Taiwan address', async () => {
   const requestItem = { featureId, sourceUrl: url, sourceNames: ['虛構測試藥局'] };
-  const html = '<html><head><meta property="og:title" content="虛構測試藥局 - Google Maps"><meta property="og:description" content="100 臺北市中正區忠孝東路一段1號"></head></html>';
-  assert.equal(parseGoogleMapsPublicPage(html, requestItem).address, '臺北市中正區忠孝東路一段1號');
-  assert.throws(() => parseGoogleMapsPublicPage(html.replace('虛構測試藥局 - Google Maps', '另一間門市 - Google Maps'), requestItem), /名稱已變更/);
-  const fetcher = async () => ({ ok: true, status: 200, headers: { get: () => 'text/html; charset=utf-8' }, text: async () => html });
-  const result = await enrichRequest({ format: 'pharmacy-store-enrichment-request-1', items: [requestItem] }, { fetcher, pause: async () => {} });
+  const rendered = { heading: '虛構測試藥局', address: '100 臺北市中正區忠孝東路一段1號', finalUrl: url };
+  assert.equal(parseRenderedGoogleMapsPlace(rendered, requestItem, '2026-09-27T00:00:00Z').address, rendered.address);
+  assert.throws(() => parseRenderedGoogleMapsPlace({ ...rendered, heading: '另一間門市' }, requestItem), /名稱與目前門市名稱不同/);
+  assert.throws(() => parseRenderedGoogleMapsPlace({ ...rendered, finalUrl: url.replace(featureId, '0x999:0xaaa') }, requestItem), /地點識別不一致/);
+  assert.throws(() => parseRenderedGoogleMapsPlace({ ...rendered, address: '' }, requestItem), /沒有地址欄位/);
+  assert.throws(() => parseRenderedGoogleMapsPlace({ ...rendered, address: '只有路名' }, requestItem), /地址無法拆分/);
+  const lookup = async () => rendered;
+  const result = await enrichRequest({ format: 'pharmacy-store-enrichment-request-1', items: [requestItem] }, { lookup, concurrency: 1 });
   assert.equal(result.items.length, 1); assert.equal(result.unresolved.length, 0); validateStoreEnrichment(result);
-  const changed = async () => ({ ok: true, status: 200, headers: { get: () => 'text/html' }, text: async () => html.replace('虛構測試藥局 - Google Maps', '另一間門市 - Google Maps') });
-  const uncertain = await enrichRequest({ format: 'pharmacy-store-enrichment-request-1', items: [requestItem] }, { fetcher: changed, pause: async () => {} });
+  const changed = async () => ({ ...rendered, heading: '另一間門市' });
+  const uncertain = await enrichRequest({ format: 'pharmacy-store-enrichment-request-1', items: [requestItem] }, { lookup: changed, concurrency: 1 });
   assert.equal(uncertain.items.length, 0); assert.equal(uncertain.unresolved.length, 1); validateStoreEnrichment(uncertain);
   const plan = planStoreEnrichment(bundle(), uncertain); assert.equal(plan.changes.length, 0); assert.match(plan.exceptions[0].reason, /公開資料補查未完成/);
+});
+
+test('browser lookup retries transient failures, preserves order and isolates permanent failures', async () => {
+  const requests = [0, 1, 2].map(index => {
+    const id = `0x123:0x45${index}`;
+    return { featureId: id, sourceUrl: url.replace(featureId, id), sourceNames: [`虛構測試藥局${index}`] };
+  });
+  const attempts = new Map(), progress = [];
+  const result = await enrichRequest({ format: 'pharmacy-store-enrichment-request-1', items: requests }, {
+    concurrency: 2,
+    retries: 1,
+    onProgress: value => progress.push(value.completed),
+    lookup: async item => {
+      const count = (attempts.get(item.featureId) || 0) + 1; attempts.set(item.featureId, count);
+      if (item === requests[0] && count === 1) throw new Error('Google Maps 頁面載入逾時');
+      if (item === requests[2]) return { heading: '不同名稱', address: '臺北市中正區忠孝東路1號', finalUrl: item.sourceUrl };
+      return { heading: item.sourceNames[0], address: '臺北市中正區忠孝東路1號', finalUrl: item.sourceUrl };
+    },
+  });
+  assert.deepEqual(result.items.map(item => item.featureId), requests.slice(0, 2).map(item => item.featureId));
+  assert.equal(result.unresolved.length, 1); assert.match(result.unresolved[0].reason, /名稱與目前門市名稱不同/);
+  assert.equal(attempts.get(requests[0].featureId), 2); assert.equal(attempts.get(requests[2].featureId), 1);
+  assert.deepEqual(progress.sort((a, b) => a - b), [1, 2, 3]);
+});
+
+test('lookup rejects unsafe requests before navigation and aborts on browser failure', async () => {
+  const requestItem = { featureId, sourceUrl: url, sourceNames: ['虛構測試藥局'] };
+  let calls = 0;
+  await assert.rejects(enrichRequest({ format: 'pharmacy-store-enrichment-request-1', items: [{ ...requestItem, sourceUrl: `https://evil.example/maps/data=!1s${featureId}` }] }, { lookup: async () => { calls++; } }), /Google 地點證據/);
+  assert.equal(calls, 0);
+  await assert.rejects(enrichRequest({ format: 'pharmacy-store-enrichment-request-1', items: [requestItem] }, { lookup: async () => { throw new Error('隔離瀏覽器已停止'); }, retries: 3 }), /隔離瀏覽器已停止/);
+  await assert.rejects(enrichRequest({ format: 'pharmacy-store-enrichment-request-1', items: [requestItem, requestItem] }, { lookup: async () => ({}) }), /重複 Google 地點識別/);
 });
 
 test('request exports only safe incomplete stores with one Google feature identity', () => {

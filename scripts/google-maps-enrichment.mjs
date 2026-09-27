@@ -1,57 +1,132 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { coordinateFeature, splitTaiwanAddress } from '../public/core.js';
+import { coordinateFeature, splitTaiwanAddress, validateStoreEnrichment } from '../public/core.js';
+import { ChromeMapsBrowser, chromeDefaults } from './chrome-maps-browser.mjs';
 
 const GOOGLE_HOSTS = new Set(['www.google.com', 'maps.google.com', 'www.google.com.tw', 'maps.google.com.tw']);
-const cityPattern = '(?:臺北市|台北市|新北市|桃園市|臺中市|台中市|臺南市|台南市|高雄市|基隆市|新竹市|嘉義市|新竹縣|苗栗縣|彰化縣|南投縣|雲林縣|嘉義縣|屏東縣|宜蘭縣|花蓮縣|臺東縣|台東縣|澎湖縣|金門縣|連江縣)';
-const addressPattern = new RegExp(`(?:\\d{3,6}\\s*)?${cityPattern}.{1,5}?(?:區|鄉|鎮|市).{1,70}?號(?:之\\d+)?(?:\\d+樓)?`, 'g');
 
-function decodeText(value) {
-  return value.replace(/\\u([0-9a-f]{4})/gi, (_m, code) => String.fromCharCode(parseInt(code, 16)))
-    .replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#(\d+);/g, (_m, code) => String.fromCodePoint(Number(code)));
+export function validateLookupItem(item) {
+  if (!item || !/^0x[a-f0-9]+:0x[a-f0-9]+$/.test(item.featureId || '') || typeof item.sourceUrl !== 'string' || item.sourceUrl.length > 2000 || coordinateFeature(item.sourceUrl) !== item.featureId || !Array.isArray(item.sourceNames) || !item.sourceNames.length || item.sourceNames.length > 100 || item.sourceNames.some(name => typeof name !== 'string' || !name.trim() || name.length > 500)) throw new Error('補查清單項目缺少安全的 Google 地點證據');
+  const url = new URL(item.sourceUrl);
+  if (url.protocol !== 'https:' || !GOOGLE_HOSTS.has(url.hostname) || url.username || url.password || url.port) throw new Error('只允許 Google Maps HTTPS 公開頁面');
+  return item;
 }
-export function parseGoogleMapsPublicPage(html, requestItem) {
-  if (typeof html !== 'string' || html.length > 20 * 1024 * 1024) throw new Error('公開頁面內容無法安全解析');
-  const decoded = decodeText(html);
-  const title = decodeText(decoded.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i)?.[1] || decoded.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1] || '').replace(/\s*[-–]\s*Google(?: 地圖| Maps).*$/i, '').trim();
-  if (!title) throw new Error('公開頁面缺少可核對的門市名稱');
-  if (!requestItem.sourceNames.some(name => name.trim() === title)) throw new Error(`公開名稱已變更：${title}`);
-  const addresses = [...new Set((decoded.match(addressPattern) || []).map(value => splitTaiwanAddress(value)?.address).filter(Boolean))];
-  if (addresses.length !== 1) throw new Error(addresses.length ? '公開頁面出現多個不同地址，需人工核對' : '公開頁面沒有唯一且可拆分的臺灣地址');
-  return { featureId: requestItem.featureId, resolvedUrl: requestItem.sourceUrl, googleName: title, sourceNames: [...new Set([...requestItem.sourceNames, title])], address: addresses[0], checkedAt: new Date().toISOString() };
+
+export function parseRenderedGoogleMapsPlace(rendered, requestItem, checkedAt = new Date().toISOString()) {
+  validateLookupItem(requestItem);
+  if (!rendered || typeof rendered.heading !== 'string' || typeof rendered.address !== 'string' || typeof rendered.finalUrl !== 'string') throw new Error('Google Maps 動態頁面資料不完整');
+  if (coordinateFeature(rendered.finalUrl) !== requestItem.featureId) throw new Error('Google 地點識別不一致');
+  const googleName = rendered.heading.trim();
+  if (googleName !== requestItem.sourceNames[0].trim()) throw new Error('Google 公開名稱與目前門市名稱不同');
+  if (!rendered.address.trim()) throw new Error('Google Maps 公開頁面沒有地址欄位');
+  if (!splitTaiwanAddress(rendered.address)) throw new Error('Google 公開地址無法拆分縣市與行政區');
+  return {
+    featureId: requestItem.featureId,
+    resolvedUrl: requestItem.sourceUrl,
+    googleName,
+    sourceNames: [...new Set(requestItem.sourceNames.map(name => name.trim()))],
+    address: rendered.address.trim(),
+    checkedAt,
+  };
 }
-export async function fetchGoogleMapsPublicItem(item, fetcher = fetch) {
-  if (!item || !/^0x[a-f0-9]+:0x[a-f0-9]+$/.test(item.featureId || '') || coordinateFeature(item.sourceUrl || '') !== item.featureId || !Array.isArray(item.sourceNames) || !item.sourceNames.length) throw new Error('補查清單項目缺少安全的 Google 地點證據');
-  const url = new URL(item.sourceUrl); if (url.protocol !== 'https:' || !GOOGLE_HOSTS.has(url.hostname) || url.username || url.password) throw new Error('只允許 Google Maps HTTPS 公開頁面');
-  url.searchParams.set('hl', 'zh-TW');
-  const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 20000);
-  try {
-    const response = await fetcher(url, { redirect: 'follow', credentials: 'omit', signal: controller.signal, headers: { Accept: 'text/html', 'Accept-Language': 'zh-TW,zh;q=0.9' } });
-    if (!response.ok) throw new Error(`公開頁面回應 ${response.status}`);
-    const type = response.headers.get('content-type') || ''; if (!type.includes('text/html')) throw new Error('公開頁面格式不是 HTML');
-    return parseGoogleMapsPublicPage(await response.text(), item);
-  } finally { clearTimeout(timeout); }
-}
-export async function enrichRequest(request, { fetcher = fetch, pause = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
-  if (!request || request.format !== 'pharmacy-store-enrichment-request-1' || !Array.isArray(request.items) || !request.items.length || request.items.length > 2000) throw new Error('補查清單格式不正確');
-  const items = [], unresolved = [], seen = new Set();
-  for (const requestItem of request.items) {
-    if (seen.has(requestItem.featureId)) throw new Error('補查清單含重複 Google 地點識別'); seen.add(requestItem.featureId);
-    try { items.push(await fetchGoogleMapsPublicItem(requestItem, fetcher)); }
-    catch (error) { unresolved.push({ featureId: requestItem.featureId || '', sourceNames: Array.isArray(requestItem.sourceNames) ? requestItem.sourceNames : [], reason: error.message }); }
-    if (requestItem !== request.items.at(-1)) await pause(250);
+
+export async function enrichRequest(request, { lookup, concurrency = 4, retries = 1, onProgress = () => {} } = {}) {
+  if (!request || request.format !== 'pharmacy-store-enrichment-request-1' || !Array.isArray(request.items) || !request.items.length || request.items.length > 2000 || typeof lookup !== 'function' || !Number.isInteger(concurrency) || concurrency < 1 || concurrency > 6 || !Number.isInteger(retries) || retries < 0 || retries > 3) throw new Error('補查清單格式或執行設定不正確');
+  const seen = new Set();
+  for (const item of request.items) {
+    validateLookupItem(item);
+    if (seen.has(item.featureId)) throw new Error('補查清單含重複 Google 地點識別');
+    seen.add(item.featureId);
   }
-  return { format: 'pharmacy-store-enrichment-1', generatedAt: new Date().toISOString(), items, unresolved };
+  const results = new Array(request.items.length);
+  let cursor = 0, completed = 0;
+  const worker = async workerIndex => {
+    while (true) {
+      const index = cursor++;
+      if (index >= request.items.length) return;
+      const requestItem = request.items[index];
+      let error = null;
+      for (let attempt = 0; attempt <= retries; attempt++) {
+        try {
+          const rendered = await lookup(requestItem, { workerIndex, attempt });
+          results[index] = { item: parseRenderedGoogleMapsPlace(rendered, requestItem) };
+          error = null;
+          break;
+        } catch (caught) {
+          const message = caught instanceof Error && caught.message ? caught.message : 'Google Maps 補查失敗';
+          if (/隔離瀏覽器已停止|隔離瀏覽器未連線/.test(message)) throw new Error(message);
+          error = new Error(message);
+          if (/名稱與目前門市名稱不同|地址無法拆分|地點識別不一致|缺少安全的 Google 地點證據/.test(message)) break;
+        }
+      }
+      if (error) results[index] = { unresolved: { featureId: requestItem.featureId, sourceNames: requestItem.sourceNames, reason: error.message } };
+      completed++;
+      onProgress({ completed, total: request.items.length });
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, request.items.length) }, (_, index) => worker(index)));
+  const output = {
+    format: 'pharmacy-store-enrichment-1',
+    generatedAt: new Date().toISOString(),
+    items: results.flatMap(result => result.item ? [result.item] : []),
+    unresolved: results.flatMap(result => result.unresolved ? [result.unresolved] : []),
+  };
+  validateStoreEnrichment(output);
+  return output;
+}
+
+function option(args, name, fallback = '') {
+  const index = args.indexOf(name);
+  return index < 0 ? fallback : args[index + 1];
 }
 
 async function main() {
-  const args = process.argv.slice(2), requestPath = args[args.indexOf('--request') + 1], outputPath = args[args.indexOf('--output') + 1];
-  if (!requestPath || !outputPath || args.includes('--help')) throw new Error('用法：npm run enrich -- --request <補查清單.json> --output <補查結果.json>');
+  const args = process.argv.slice(2);
+  const requestPath = option(args, '--request'), outputPath = option(args, '--output');
+  const concurrency = Number(option(args, '--concurrency', '4'));
+  const timeout = Number(option(args, '--timeout-ms', String(chromeDefaults.timeout)));
+  const chromePath = option(args, '--chrome');
+  if (!requestPath || !outputPath || args.includes('--help') || !Number.isInteger(timeout) || timeout < 5_000 || timeout > 120_000) throw new Error('用法：npm run enrich -- --request <補查清單.json> --output <補查結果.json> [--concurrency 1-6] [--timeout-ms 5000-120000] [--chrome <執行檔>]');
+  if (fs.existsSync(path.resolve(outputPath))) throw new Error('輸出檔案已存在；為避免覆蓋私人資料，請指定新的檔名。');
   const request = JSON.parse(fs.readFileSync(path.resolve(requestPath), 'utf8'));
-  const result = await enrichRequest(request);
-  const fd = fs.openSync(path.resolve(outputPath), 'wx', 0o600);
-  try { fs.writeFileSync(fd, JSON.stringify(result, null, 2)); } finally { fs.closeSync(fd); }
-  console.log(`完成：取得 ${result.items.length} 間；待人工核對 ${result.unresolved.length} 間。結果只寫入指定本機檔案。`);
+  const browser = await new ChromeMapsBrowser({ chromePath, timeout }).start();
+  const workers = new Map();
+  let lastReported = 0;
+  let stopping = false;
+  const stop = exitCode => {
+    if (stopping) return;
+    stopping = true;
+    browser.close().finally(() => process.exit(exitCode));
+  };
+  const onInterrupt = () => stop(130);
+  const onTerminate = () => stop(143);
+  process.once('SIGINT', onInterrupt);
+  process.once('SIGTERM', onTerminate);
+  try {
+    const result = await enrichRequest(request, {
+      concurrency,
+      retries: 1,
+      lookup: async (item, { workerIndex }) => {
+        if (!workers.has(workerIndex)) workers.set(workerIndex, await browser.createWorker());
+        return browser.lookup(workers.get(workerIndex), item.sourceUrl);
+      },
+      onProgress: ({ completed, total }) => {
+        if (completed === total || completed - lastReported >= 10) {
+          lastReported = completed;
+          console.log(`補查進度：${completed}/${total}`);
+        }
+      },
+    });
+    const fd = fs.openSync(path.resolve(outputPath), 'wx', 0o600);
+    try { fs.writeFileSync(fd, JSON.stringify(result, null, 2)); } finally { fs.closeSync(fd); }
+    console.log(`完成：取得 ${result.items.length} 間；待人工核對 ${result.unresolved.length} 間。結果只寫入指定本機檔案。`);
+  } finally {
+    process.removeListener('SIGINT', onInterrupt);
+    process.removeListener('SIGTERM', onTerminate);
+    for (const worker of workers.values()) await browser.closeWorker(worker);
+    await browser.close();
+  }
 }
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main().catch(error => { console.error(error.message); process.exitCode = 1; });
