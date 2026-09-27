@@ -164,6 +164,133 @@ export function candidateTrend(candidate, now = new Date()) {
   return { currentVisits: seenCurrent.size, previousVisits: seenPrevious.size, currentStores: currentStores.size, previousStores: previousStores.size };
 }
 
+const canonicalCity = value => String(value || '').trim().replace(/^台/u, '臺');
+const canonicalDistrict = value => String(value || '').trim();
+const safeRegionalStore = store => !!store && !store.deleted && !store.conflict && !storeIdentityPending(store);
+
+export function regionalOptions(stores) {
+  const cities = new Map();
+  for (const store of stores.filter(safeRegionalStore)) {
+    const city = canonicalCity(store.city), district = canonicalDistrict(store.district);
+    if (!city) continue;
+    if (!cities.has(city)) cities.set(city, { city, count: 0, districts: new Map() });
+    const entry = cities.get(city); entry.count++;
+    if (district) entry.districts.set(district, (entry.districts.get(district) || 0) + 1);
+  }
+  return [...cities.values()].map(entry => ({
+    city: entry.city,
+    count: entry.count,
+    districts: [...entry.districts].map(([district, count]) => ({ district, count })).sort((a, b) => a.district.localeCompare(b.district, 'zh-Hant')),
+  })).sort((a, b) => a.city.localeCompare(b.city, 'zh-Hant'));
+}
+
+function regionalSignal(meta, regionStores, comparisonStores, scopeTotal, comparisonTotal) {
+  const regionStoreCount = regionStores.length, comparisonStoreCount = comparisonStores.length;
+  const regionRate = scopeTotal ? regionStoreCount / scopeTotal : 0;
+  const comparisonRate = comparisonTotal ? comparisonStoreCount / comparisonTotal : 0;
+  const difference = regionRate - comparisonRate;
+  const enoughComparison = comparisonTotal >= 2;
+  const distinctive = regionStoreCount >= 2 && enoughComparison && (comparisonStoreCount === 0 || difference >= 0.15 && regionRate >= comparisonRate * 1.5);
+  const concentrationLabel = distinctive
+    ? comparisonStoreCount === 0 ? '區域獨有線索' : '區域較集中'
+    : regionStoreCount >= 2 ? '區域內共同出現' : '單店線索';
+  const allEvidence = regionStores.flatMap(store => store.evidence || []);
+  const statusCounts = {};
+  for (const evidence of allEvidence) statusCounts[evidence.kind || 'unknown'] = (statusCounts[evidence.kind || 'unknown'] || 0) + 1;
+  const visitCount = new Set(allEvidence.map(item => item.visitId)).size;
+  const latestDate = allEvidence.map(item => dateKey(item.date)).filter(Boolean).sort().at(-1) || '';
+  return { ...meta, regionStores, comparisonStores, regionStoreCount, comparisonStoreCount, regionRate, comparisonRate, difference, distinctive, concentrationLabel, visitCount, lineCount: allEvidence.length, latestDate, statusCounts };
+}
+
+const REGIONAL_STOP_WORDS = new Set(['我們','你們','他們','這個','那個','這邊','這裡','目前','已經','還是','就是','覺得','可以','可能','因為','所以','但是','然後','以及','而且','如果','沒有','不是','很多','比較','一個','一次','今天','昨天','明天','店裡','門市','藥局','客人','客戶','藥師','使用','需要','知道','提供','產品','問題','附近','現在','時候','自己','對方','有點','應該','不會','不能','不要','一起','這次','下次']);
+const REGIONAL_KNOWN_TERMS = new Set([...TOPIC_RULES, ...EXTRA_CANDIDATE_RULES].flatMap(rule => rule.terms).map(term => term.normalize('NFKC').toLocaleLowerCase('zh-Hant')));
+const regionalSegmenter = typeof Intl?.Segmenter === 'function' ? new Intl.Segmenter('zh-Hant', { granularity: 'word' }) : null;
+function regionalWords(text) {
+  const raw = String(text || '').normalize('NFKC');
+  const segments = regionalSegmenter ? [...regionalSegmenter.segment(raw)].filter(item => item.isWordLike).map(item => item.segment) : raw.match(/[A-Za-z][A-Za-z0-9-]{1,23}|[\p{Script=Han}]{2,8}/gu) || [];
+  return [...new Set(segments.map(word => word.trim()).filter(word => {
+    const normalized = word.toLocaleLowerCase('zh-Hant');
+    return normalized.length >= 2 && normalized.length <= 24 && !REGIONAL_STOP_WORDS.has(word) && !REGIONAL_KNOWN_TERMS.has(normalized) && !/^\d+(?:[./:-]\d+)*$/u.test(word);
+  }))];
+}
+
+// Read-only regional comparison. It only indexes current safe records and retains evidence links.
+// A repeated mention measures concentration of wording, not demand, acceptance, or causation.
+export function regionalInsights(cityInput, districtInput, visits, stores, people = [], topics = []) {
+  const city = canonicalCity(cityInput), district = canonicalDistrict(districtInput);
+  if (!city) return null;
+  const before = stores.filter(store => canonicalCity(store.city) === city && (!district || canonicalDistrict(store.district) === district));
+  const safeStores = stores.filter(safeRegionalStore), scopeStores = safeStores.filter(store => canonicalCity(store.city) === city && (!district || canonicalDistrict(store.district) === district));
+  const comparisonStores = district
+    ? safeStores.filter(store => canonicalCity(store.city) === city && canonicalDistrict(store.district) && canonicalDistrict(store.district) !== district)
+    : safeStores.filter(store => canonicalCity(store.city) && canonicalCity(store.city) !== city);
+  const scopeIds = new Set(scopeStores.map(store => store.id)), comparisonIds = new Set(comparisonStores.map(store => store.id));
+  const usableVisits = visits.filter(visit => !visit.deleted && !visit.conflict && relationVisitAllowed(visit, safeStores));
+  const scopeVisits = usableVisits.filter(visit => scopeIds.has(visit.store));
+  const comparisonVisits = usableVisits.filter(visit => comparisonIds.has(visit.store));
+  const candidateMap = new Map(), comparisonCandidateMap = new Map();
+  const addCandidate = (map, store, candidate) => {
+    if (!candidate.key.startsWith('topic:')) return;
+    if (!map.has(candidate.key)) map.set(candidate.key, { key: 'candidate:' + candidate.key, candidateKey: candidate.key, name: candidate.name, category: candidate.category, sourceMode: 'candidate', stores: [] });
+    map.get(candidate.key).stores.push({ storeId: store.id, storeName: store.name, visitCount: candidate.visitCount, latestDate: candidate.latestDate, statusLabel: candidate.statusLabel, statusKind: candidate.statusKind, evidence: candidate.evidence.map(item => ({ ...item, storeId: store.id, storeName: store.name })) });
+  };
+  for (const store of scopeStores) for (const candidate of candidateRelationsForStore(store.id, scopeVisits, scopeStores, people)) addCandidate(candidateMap, store, candidate);
+  for (const store of comparisonStores) for (const candidate of candidateRelationsForStore(store.id, comparisonVisits, comparisonStores, people)) addCandidate(comparisonCandidateMap, store, candidate);
+  const candidateSignals = [...candidateMap.entries()].map(([key, item]) => regionalSignal(item, item.stores, comparisonCandidateMap.get(key)?.stores || [], scopeStores.length, comparisonStores.length));
+
+  const validTopics = new Map(topics.filter(topic => !topic.deleted && !topic.conflict).map(topic => [topic.id, topic]));
+  const explicitFor = (sourceVisits, ids) => {
+    const map = new Map();
+    for (const visit of sourceVisits) for (const topicId of visit.topics || []) {
+      const topic = validTopics.get(topicId); if (!topic || !ids.has(visit.store)) continue;
+      if (!map.has(topicId)) map.set(topicId, { key: 'explicit:' + topicId, topicId, name: topic.name, category: '已明確連結主題', sourceMode: 'explicit', stores: new Map() });
+      const item = map.get(topicId), store = stores.find(value => value.id === visit.store);
+      if (!item.stores.has(visit.store)) item.stores.set(visit.store, { storeId: visit.store, storeName: store?.name || '', evidence: [] });
+      item.stores.get(visit.store).evidence.push({ storeId: visit.store, storeName: store?.name || '', visitId: visit.id, date: visit.date || '', source: visit.source || '', field: 'topic', line: visit.text || '', label: '已明確連結', kind: 'explicit' });
+    }
+    return map;
+  };
+  const explicitMap = explicitFor(scopeVisits, scopeIds), comparisonExplicitMap = explicitFor(comparisonVisits, comparisonIds);
+  const explicitSignals = [...explicitMap.entries()].map(([topicId, item]) => regionalSignal({ ...item, stores: undefined }, [...item.stores.values()], [...(comparisonExplicitMap.get(topicId)?.stores.values() || [])], scopeStores.length, comparisonStores.length));
+  const literalFor = (sourceVisits, ids) => {
+    const map = new Map();
+    for (const visit of sourceVisits) {
+      if (!ids.has(visit.store)) continue;
+      const store = stores.find(value => value.id === visit.store);
+      for (const line of String(visit.text || '').split(/\r?\n/u).filter(Boolean)) for (const term of regionalWords(line)) {
+        const key = term.toLocaleLowerCase('zh-Hant');
+        if (!map.has(key)) map.set(key, { key: 'literal:' + key, term, name: term, category: '未預設的跨店字詞', sourceMode: 'literal', stores: new Map() });
+        const item = map.get(key);
+        if (!item.stores.has(visit.store)) item.stores.set(visit.store, { storeId: visit.store, storeName: store?.name || '', evidence: [] });
+        item.stores.get(visit.store).evidence.push({ storeId: visit.store, storeName: store?.name || '', visitId: visit.id, date: visit.date || '', source: visit.source || '', field: 'text', line, label: '相同字詞', kind: 'literal' });
+      }
+    }
+    return map;
+  };
+  const literalMap = literalFor(scopeVisits, scopeIds), comparisonLiteralMap = literalFor(comparisonVisits, comparisonIds);
+  const emergingSignals = [...literalMap.entries()].map(([term, item]) => regionalSignal({ ...item, stores: undefined }, [...item.stores.values()], [...(comparisonLiteralMap.get(term)?.stores.values() || [])], scopeStores.length, comparisonStores.length)).filter(item => item.regionStoreCount >= 2);
+  const sortSignals = (a, b) => Number(b.distinctive) - Number(a.distinctive) || b.difference - a.difference || b.regionStoreCount - a.regionStoreCount || b.visitCount - a.visitCount || a.name.localeCompare(b.name, 'zh-Hant');
+  candidateSignals.sort(sortSignals); explicitSignals.sort(sortSignals); emergingSignals.sort(sortSignals);
+  const storeProfiles = scopeStores.map(store => ({
+    storeId: store.id, storeName: store.name, attr: String(store.attr || '').trim(), channel: String(store.channel || '').trim(), tags: sourceTags(store),
+  })).filter(store => store.attr || store.tags.length).sort((a, b) => a.storeName.localeCompare(b.storeName, 'zh-Hant'));
+  const channels = new Map();
+  for (const store of scopeStores) { const label = retailChannel(store).label; channels.set(label, (channels.get(label) || 0) + 1); }
+  return {
+    city, district, label: district ? `${city} ${district}` : city,
+    comparisonLabel: district ? `${city}其他行政區` : '其他縣市',
+    storeCount: scopeStores.length,
+    comparisonStoreCount: comparisonStores.length,
+    excludedStoreCount: Math.max(0, before.length - scopeStores.length),
+    visitCount: scopeVisits.length,
+    datedVisitCount: scopeVisits.filter(visit => dateKey(visit.date)).length,
+    storesWithVisits: new Set(scopeVisits.map(visit => visit.store)).size,
+    latestDate: scopeVisits.map(visit => dateKey(visit.date)).filter(Boolean).sort().at(-1) || '',
+    candidateSignals, explicitSignals, emergingSignals: emergingSignals.slice(0, 30), storeProfiles,
+    channels: [...channels].map(([label, count]) => ({ label, count })).sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, 'zh-Hant')),
+  };
+}
+
 // Read-only name-based channels. This is not store identity or corporate ownership.
 // Only 佑全 / 健康人生 is a user-confirmed cross-name equivalence.
 export const RETAIL_CHANNELS = Object.freeze([

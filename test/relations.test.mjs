@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { TOPIC_RULES, termFound, evidenceKind, sourceTags, candidateRelationsForStore, candidateOverview, candidateTrend, visitBriefForStore } from '../public/relations.js';
+import { TOPIC_RULES, termFound, evidenceKind, sourceTags, candidateRelationsForStore, candidateOverview, candidateTrend, visitBriefForStore, regionalOptions, regionalInsights } from '../public/relations.js';
 import { prepareCSV, planCSV, buildCSVImport } from '../public/csv.js';
 import { newMeta, derive, seal, unseal, emptyBundle, project } from '../public/core.js';
 import { rekeyInitial, installInitialCustomer } from '../scripts/initial-customer.mjs';
@@ -76,6 +76,53 @@ test('visit brief is a bounded read-only view and excludes unsafe records withou
   assert.deepEqual(brief.recent.map(x=>x.visitId),['v1','v2']);assert.ok(brief.candidates.some(x=>x.key==='topic:dryeye'));
   assert.equal(visitBriefForStore('s2',visits,stores),null);assert.equal(visitBriefForStore('s3',visits,stores),null);
   assert.deepEqual({stores,visits},before);
+});
+test('regional insights compare cross-store evidence without upgrading mentions into market facts',()=>{
+  const stores=[
+    {id:'a',name:'北市甲店',city:'台北市',district:'中正區',attr:'長者與上班族',channel:'社區型'},
+    {id:'b',name:'北市乙店',city:'臺北市',district:'中正區',attr:'附近診所客群',channel:'社區型'},
+    {id:'c',name:'北市他區',city:'臺北市',district:'大安區',attr:'',channel:'商圈型'},
+    {id:'d',name:'新北甲店',city:'新北市',district:'板橋區',attr:'',channel:'社區型'},
+    {id:'e',name:'新北乙店',city:'新北市',district:'新莊區',attr:'',channel:'社區型'},
+  ];
+  const visits=[
+    {id:'v1',store:'a',date:'2026-09-20',source:'現場',text:'乾眼客人詢問單支包裝\n夜間配送需要確認',topics:['t1'],people:[],deleted:false,conflict:false},
+    {id:'v2',store:'b',date:'2026-09-21',source:'現場',text:'目前沒有乾眼需求\n夜間配送仍在討論',topics:['t1'],people:[],deleted:false,conflict:false},
+    {id:'v3',store:'c',date:'2026-09-22',source:'現場',text:'價格問題',topics:[],people:[],deleted:false,conflict:false},
+    {id:'v4',store:'d',date:'2026-09-23',source:'現場',text:'陳列調整',topics:[],people:[],deleted:false,conflict:false},
+    {id:'v5',store:'e',date:'2026-09-24',source:'現場',text:'課程資訊',topics:[],people:[],deleted:false,conflict:false},
+  ];
+  const topics=[{id:'t1',name:'乾眼照護',deleted:false,conflict:false}], before=structuredClone({stores,visits,topics});
+  const city=regionalInsights('臺北市','',visits,stores,[],topics), district=regionalInsights('臺北市','中正區',visits,stores,[],topics);
+  assert.equal(city.storeCount,3);assert.equal(city.comparisonStoreCount,2);assert.equal(city.visitCount,3);
+  const dry=city.candidateSignals.find(item=>item.candidateKey==='topic:dryeye');
+  assert.equal(dry.regionStoreCount,2);assert.equal(dry.comparisonStoreCount,0);assert.equal(dry.distinctive,true);assert.equal(dry.concentrationLabel,'區域獨有線索');
+  assert.equal(dry.statusCounts.question,1);assert.equal(dry.statusCounts.negative,1);
+  const explicit=city.explicitSignals.find(item=>item.topicId==='t1');assert.equal(explicit.regionStoreCount,2);assert.equal(explicit.sourceMode,'explicit');
+  const novel=city.emergingSignals.find(item=>['夜間','配送'].includes(item.name));assert.equal(novel.regionStoreCount,2);assert.equal(novel.sourceMode,'literal');assert.equal(novel.distinctive,true);
+  assert.equal(city.storeProfiles.length,2);assert.equal(district.comparisonLabel,'臺北市其他行政區');assert.equal(district.comparisonStoreCount,1);
+  assert.equal(district.candidateSignals.find(item=>item.candidateKey==='topic:dryeye').distinctive,false);
+  assert.deepEqual({stores,visits,topics},before);
+});
+test('regional options and analysis exclude conflicted, deleted and identity-pending stores',()=>{
+  const stores=[
+    {id:'safe',name:'安全門市',city:'臺中市',district:'西區'},
+    {id:'pending',name:'待確認',city:'臺中市',district:'西區',csvIdentityPending:true},
+    {id:'conflict',name:'衝突',city:'臺中市',district:'西區',conflict:true},
+    {id:'deleted',name:'回收桶',city:'臺中市',district:'西區',deleted:true},
+  ];
+  const visits=[{id:'ok',store:'safe',date:'2026-09-20',source:'現場',text:'乾眼',topics:[],people:[],deleted:false,conflict:false},{id:'blocked',store:'pending',date:'2026-09-21',source:'現場',text:'乾眼',topics:[],people:[],deleted:false,conflict:false}];
+  assert.deepEqual(regionalOptions(stores),[{city:'臺中市',count:1,districts:[{district:'西區',count:1}]}]);
+  const report=regionalInsights('台中市','西區',visits,stores);
+  assert.equal(report.storeCount,1);assert.equal(report.excludedStoreCount,3);assert.equal(report.visitCount,1);assert.equal(report.candidateSignals[0].concentrationLabel,'單店線索');
+  assert.equal(regionalInsights('', '', visits, stores),null);
+});
+test('regional observation UI is reachable from stores and explains its read-only evidence limits',()=>{
+  const root=new URL('../',import.meta.url),html=fs.readFileSync(new URL('public/index.html',root),'utf8'),app=fs.readFileSync(new URL('public/app.js',root),'utf8');
+  assert.match(html,/id="regional-view"/);assert.match(html,/data-view="regional"/);assert.match(html,/id="regional-city"/);assert.match(html,/id="regional-district"/);
+  assert.match(app,/function renderRegional\(/);assert.match(app,/不代表實際需求量、產品接受度、因果關係或完整市場母體/);
+  const body=app.slice(app.indexOf('function renderRegional('),app.indexOf('function renderStores('));
+  assert.doesNotMatch(body,/persist\(|commitRevision\(|apply/);
 });
 test('initial customer package rekeys locally; delivery password cannot decrypt new vault',async()=>{
   const meta=newMeta(), bundle=emptyBundle(meta.vaultId), delivery='delivery-password-strong', own='personal-password-strong';
