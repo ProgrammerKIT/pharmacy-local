@@ -6,16 +6,45 @@ export function relationVisitAllowed(visit, stores) {
   const store = stores.find(s => s.id === visit.store);
   return !!store && !storeIdentityPending(store);
 }
+// Auditable business vocabulary used only to read existing visit text.
+// These definitions never expand, replace, or write back the user's original wording.
+export const DOMAIN_GLOSSARY = Object.freeze([
+  { key: 'complete', name: 'C／Complete／康復力（康富力）', category: '產品／品類', definition: 'C、Complete、康復力與康富力皆指同一項產品。', aliases: ['C', 'Complete', '康復力', '康富力'] },
+  { key: 'ha', name: '玻尿酸／HA', category: '產品／品類', definition: 'HA 指玻尿酸；HAMD 指玻尿酸瓶裝；HAUD 指玻尿酸單支裝。', aliases: ['玻尿酸', 'HA', 'HAMD', 'HAUD'] },
+  { key: 'dose-md', name: 'MD／瓶裝', category: '產品／劑型', definition: 'MD 指瓶裝；HAMD 是玻尿酸瓶裝。', aliases: ['MD', 'HAMD'] },
+  { key: 'dose-ud', name: 'UD／單支裝', category: '產品／劑型', definition: 'UD 指單支裝；HAUD 是玻尿酸單支裝。', aliases: ['UD', 'HAUD'] },
+  { key: 'dose-mdpf', name: 'MDPF／無防腐劑瓶裝', category: '產品／劑型', definition: 'MDPF 指瓶裝且不含防腐劑。', aliases: ['MDPF'] },
+  { key: 'nv', name: 'N＋V／白內障術後用藥', category: '產品／品類', definition: 'N＋V 指白內障術後用藥。', aliases: ['N＋V', 'N+V'] },
+  { key: 'p2', name: 'P2／第二大產品分類', category: '產品／分類', definition: 'P2 指業務產品的第二大分類。', aliases: ['P2'] },
+  { key: 'artificial-tears', name: 'AF／AT／人工淚液', category: '產品／品類', definition: 'AF 與 AT 都指人工淚液。', aliases: ['AF', 'AT', '人工淚液'] },
+  { key: 'dt', name: 'DT／淚膜藥膏', category: '產品／品類', definition: 'DT 指淚膜藥膏。', aliases: ['DT', '淚膜藥膏'] },
+  { key: 'ao', name: 'AO／AO 清潔液', category: '產品／品類', definition: 'AO 指 AO 清潔液。', aliases: ['AO', 'AO 清潔液'] },
+  { key: 'potential', name: 'P／Potential／Pool', category: '客戶／潛力', definition: 'P、Potential 與 Pool 表示潛力大或小。', aliases: ['P', 'Potential', 'Pool'] },
+  { key: 'training', name: 'CME／現場上課', category: '主題／需求', definition: 'CME 與 C M E 都指現場上課。', aliases: ['CME', 'C M E', '現場上課', '上課', '課程', '訓練'] },
+  { key: 'ka', name: 'KA／關鍵決策人', category: '人物／角色', definition: 'KA 指關鍵決策人。', aliases: ['KA', '關鍵決策人'] },
+  { key: 'rtd', name: 'RTD／大型活動', category: '活動／作業', definition: 'RTD 指大型活動。', aliases: ['RTD', '大型活動'] },
+  { key: 'dk', name: 'DK／大昌物流', category: '通路／作業', definition: 'DK 指大昌物流。', aliases: ['DK', '大昌物流'] },
+  { key: 'notfieyes', name: 'NotfiEYES／回報系統', category: '系統／作業', definition: 'NotfiEYES 指回報系統。', aliases: ['NotfiEYES'] },
+  { key: 'offtake', name: 'offtake／門市實質銷售', category: '銷售／指標', definition: 'offtake 與 off-take 都指門市的實質銷售。', aliases: ['offtake', 'off-take'] },
+  { key: 'part-time', name: 'pt／part-time／兼職', category: '人物／角色', definition: 'pt 與 Pt 都指 part-time，也就是兼職。', aliases: ['pt', 'part-time', '兼職'] },
+  { key: 'cataract', name: 'Cata／白內障', category: '主題／需求', definition: 'Cata 指白內障。', aliases: ['Cata', '白內障'] },
+  { key: 'tn', name: 'TN／淚然瓶裝 15 ml', category: '產品／品類', definition: 'TN 指淚然瓶裝 15 ml。', aliases: ['TN'] },
+  { key: 'tnf', name: 'TNF／TNF32／淚然單支裝 32 入', category: '產品／品類', definition: 'TNF 與 TNF32 都指淚然單支裝 32 入。', aliases: ['TNF', 'TNF32'] },
+].map(item => Object.freeze({ ...item, aliases: Object.freeze([...item.aliases]) })));
+const glossaryRule = key => {
+  const item = DOMAIN_GLOSSARY.find(entry => entry.key === key);
+  if (!item) throw new Error(`Missing domain glossary rule: ${key}`);
+  return { key: item.key, name: item.name, category: item.category, definition: item.definition, terms: [...item.aliases] };
+};
 export const TOPIC_RULES = [
   { key: 'ortho', name: '角膜塑型片', category: '產品／品類', terms: ['角膜塑型', '角膜塑形', '塑形片', '塑型片'] },
-  { key: 'ha', name: '玻尿酸／HA', category: '產品／品類', terms: ['玻尿酸', 'HA', 'HAUD', 'HAMD'] },
+  ...['complete', 'ha', 'dose-md', 'dose-ud', 'dose-mdpf', 'nv', 'p2', 'artificial-tears', 'dt', 'ao', 'potential'].map(glossaryRule),
   { key: 'price', name: '價格與毛利', category: '主題／需求', terms: ['價格', '比價', '便宜', '毛利', '太貴', '很貴'], candidateTerms: ['價格', '比價', '便宜', '毛利'] },
   { key: 'display', name: '陳列', category: '主題／需求', terms: ['陳列'] },
-  { key: 'training', name: '課程與訓練', category: '主題／需求', terms: ['上課', '課程', '訓練', 'CME'] },
+  ...['training', 'ka', 'rtd', 'dk', 'notfieyes', 'offtake', 'part-time', 'cataract', 'tn', 'tnf'].map(glossaryRule),
   { key: 'sample', name: '試用品', category: '產品／品類', terms: ['試用', 'Sample'] },
   { key: 'preservative', name: '防腐劑', category: '產品／品類', terms: ['防腐'] },
   { key: 'unit', name: '單支包裝', category: '產品／品類', terms: ['單支'] },
-  { key: 'cataract', name: '白內障', category: '主題／需求', terms: ['白內障', 'Cata'] },
   { key: 'laser', name: '近視雷射', category: '主題／需求', terms: ['雷射', '雷視'] },
   { key: 'dryeye', name: '乾眼', category: '主題／需求', terms: ['乾眼'] },
   { key: 'rx', name: '處方與診所', category: '主題／需求', terms: ['處方', '眼科', '診所'] },
@@ -116,7 +145,7 @@ export function candidateRelationsForStore(storeId, visits, stores, people = [])
       const visitText = String(visit.text || ''), found = evidenceKind(visitText, rule);
       for (const item of found.items || []) evidence.push({ visitId: visit.id, date: visit.date || '', source: visit.source || '', field: 'text', line: item.line, visitText, label: item.label, kind: item.kind });
     }
-    if (evidence.length) output.push(summarizeCandidate({ key: 'topic:' + rule.key, name: rule.name, category: rule.category, ruleKey: TOPIC_RULES.some(item => item.key === rule.key) ? rule.key : undefined, sourceMode: 'candidate' }, evidence));
+    if (evidence.length) output.push(summarizeCandidate({ key: 'topic:' + rule.key, name: rule.name, category: rule.category, definition: rule.definition || '', ruleKey: TOPIC_RULES.some(item => item.key === rule.key) ? rule.key : undefined, sourceMode: 'candidate' }, evidence));
   }
   const followups = eligible.filter(visit => String(visit.next || '').trim()).map(visit => ({
     visitId: visit.id, date: visit.date || '', source: visit.source || '', field: 'next', line: visit.next.trim(), visitText: String(visit.text || ''), label: '已明確填寫', kind: 'explicit'
@@ -165,7 +194,7 @@ export function candidateOverview(visits, stores, people = []) {
     for (const candidate of candidateRelationsForStore(store.id, visits, stores, people)) {
       let item = aggregated.get(candidate.key);
       if (!item) {
-        item = { key: candidate.key, name: candidate.name, category: candidate.category, ruleKey: candidate.ruleKey, personId: candidate.personId, sourceMode: candidate.sourceMode, stores: [], storeCount: 0, visitCount: 0, lineCount: 0, latestDate: '' };
+        item = { key: candidate.key, name: candidate.name, category: candidate.category, definition: candidate.definition || '', ruleKey: candidate.ruleKey, personId: candidate.personId, sourceMode: candidate.sourceMode, stores: [], storeCount: 0, visitCount: 0, lineCount: 0, latestDate: '' };
         aggregated.set(candidate.key, item);
       }
       item.stores.push({ storeId: store.id, storeName: store.name, visitCount: candidate.visitCount, lineCount: candidate.lineCount, latestDate: candidate.latestDate, statusLabel: candidate.statusLabel, statusKind: candidate.statusKind, evidence: candidate.evidence });
@@ -256,7 +285,7 @@ export function regionalInsights(cityInput, districtInput, visits, stores, peopl
   const candidateMap = new Map(), comparisonCandidateMap = new Map();
   const addCandidate = (map, store, candidate) => {
     if (!candidate.key.startsWith('topic:')) return;
-    if (!map.has(candidate.key)) map.set(candidate.key, { key: 'candidate:' + candidate.key, candidateKey: candidate.key, name: candidate.name, category: candidate.category, sourceMode: 'candidate', stores: [] });
+    if (!map.has(candidate.key)) map.set(candidate.key, { key: 'candidate:' + candidate.key, candidateKey: candidate.key, name: candidate.name, category: candidate.category, definition: candidate.definition || '', sourceMode: 'candidate', stores: [] });
     map.get(candidate.key).stores.push({ storeId: store.id, storeName: store.name, visitCount: candidate.visitCount, latestDate: candidate.latestDate, statusLabel: candidate.statusLabel, statusKind: candidate.statusKind, evidence: candidate.evidence.map(item => ({ ...item, storeId: store.id, storeName: store.name })) });
   };
   for (const store of scopeStores) for (const candidate of candidateRelationsForStore(store.id, scopeVisits, scopeStores, people)) addCandidate(candidateMap, store, candidate);

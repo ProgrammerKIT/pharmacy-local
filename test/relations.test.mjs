@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { TOPIC_RULES, termFound, evidenceKind, sourceTags, candidateRelationsForStore, candidateOverview, candidateTrend, groupVisitBriefText, visitBriefForStore, regionalOptions, regionalInsights } from '../public/relations.js';
+import { DOMAIN_GLOSSARY, TOPIC_RULES, termFound, evidenceKind, sourceTags, candidateRelationsForStore, candidateOverview, candidateTrend, groupVisitBriefText, visitBriefForStore, regionalOptions, regionalInsights } from '../public/relations.js';
 import { prepareCSV, planCSV, buildCSVImport } from '../public/csv.js';
 import { newMeta, derive, seal, unseal, emptyBundle, project } from '../public/core.js';
 import { rekeyInitial, installInitialCustomer } from '../scripts/initial-customer.mjs';
@@ -31,6 +31,34 @@ test('relationship matching preserves negative, mixed, question and name-compari
   assert.equal(evidenceKind('名字甲很像名字乙',{key:'person-mention',terms:['名字乙']}).label,'含外貌比喻，非人際關係證據');
   assert.equal(termFound('CHA CHA','HA'),false);assert.equal(termFound('HAUD','HA'),false);
   assert.equal(termFound('給 Sample 試用','sample'),true);assert.equal(termFound('SAMPLE123','Sample'),false);
+});
+
+test('domain glossary keeps approved shorthand meanings and exposes them as traceable read-only candidates',()=>{
+  const glossary=new Map(DOMAIN_GLOSSARY.map(item=>[item.key,item]));
+  assert.deepEqual(glossary.get('complete').aliases,['C','Complete','康復力','康富力']);
+  assert.equal(glossary.get('ha').definition,'HA 指玻尿酸；HAMD 指玻尿酸瓶裝；HAUD 指玻尿酸單支裝。');
+  assert.deepEqual(glossary.get('dose-md').aliases,['MD','HAMD']);
+  assert.deepEqual(glossary.get('dose-ud').aliases,['UD','HAUD']);
+  assert.deepEqual(glossary.get('dose-mdpf').aliases,['MDPF']);
+  assert.deepEqual(glossary.get('training').aliases.slice(0,2),['CME','C M E']);
+  assert.deepEqual(glossary.get('tnf').aliases,['TNF','TNF32']);
+  for(const key of ['nv','p2','artificial-tears','dt','ao','potential','ka','rtd','dk','notfieyes','offtake','part-time','cataract','tn']) assert.ok(glossary.has(key),key);
+
+  assert.equal(termFound('CME','C'),false);
+  assert.equal(termFound('P2','P'),false);
+  assert.equal(termFound('TNF32','TN'),false);
+  assert.equal(termFound('HAMD','MD'),false);
+  assert.equal(termFound('今天是 Pt 排班','pt'),true);
+  assert.equal(termFound('門市有 off-take 數字','off-take'),true);
+
+  const stores=[{id:'s1',name:'虛構藥局',csvIdentityPending:false}];
+  const text=['C','Complete','康復力','康富力','HAMD','HAUD','N+V','P2','AF 與 AT','DT','AO','MD','UD','MDPF','P Potential Pool','C M E','KA','RTD','DK','NotfiEYES','off-take','Pt','Cata','TN','TNF32'].join('\n');
+  const visits=[{id:'v1',store:'s1',date:'2026-09-28',source:'現場觀察',text,next:'',topics:[],people:[],deleted:false,conflict:false}];
+  const before=structuredClone({stores,visits}), candidates=candidateRelationsForStore('s1',visits,stores);
+  const keys=new Set(candidates.map(item=>item.key));
+  for(const key of DOMAIN_GLOSSARY.map(item=>'topic:'+item.key)) assert.ok(keys.has(key),key);
+  assert.equal(candidates.find(item=>item.key==='topic:ha').definition,glossary.get('ha').definition);
+  assert.deepEqual({stores,visits},before);
 });
 
 test('candidate relations are read-only evidence indexes with explicit status and cross-store summary',()=>{

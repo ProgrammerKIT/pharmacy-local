@@ -1,4 +1,11 @@
-# 藥局關係筆記 v1.5.32 · 可追溯拜訪前重點
+# 藥局關係筆記 v1.5.33 · 業務縮寫與同義詞主檔
+
+## v1.5.33 業務縮寫與同義詞主檔
+
+- 集中建立唯讀業務詞彙主檔，涵蓋 C／Complete／康復力（康富力）、HA／HAMD／HAUD、N＋V、P2、AF／AT、DT、AO、MD／UD／MDPF、P／Potential／Pool、CME、KA、RTD、DK、NotfiEYES、offtake、pt、Cata 及 TN／TNF／TNF32。
+- HAMD 同時識別為玻尿酸與瓶裝，HAUD 同時識別為玻尿酸與單支裝；點開候選或區域線索時顯示詞彙定義，並保留命中的原句、日期與來源。
+- 單字母及短縮寫採完整詞界比對，避免把 CME 當成 C、P2 當成 P、TNF32 當成 TN，或把 HAMD 內的字尾誤當成獨立 MD。
+- 詞彙只用於當下畫面的唯讀候選與區域觀察，不展開或改寫拜訪原文，不建立主題、提醒或 revision，不修改門市、CSV、Source Snapshot、備份或同步資料。SOP1 1.2.21。
 
 ## v1.5.32 可追溯拜訪前重點
 
