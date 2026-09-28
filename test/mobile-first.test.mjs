@@ -43,13 +43,14 @@ test('mobile-first runtime files are valid JavaScript and expose the daily captu
   assert.match(app, /function refreshVisitStoreOptions\(/);
   assert.match(app, /data-new-visit-store=/);
   assert.match(app, /function openVisitForStore\(/);
+  assert.match(app, /openVisitBrief\(storeId, \{ capture: true \}\)/);
   assert.match(app, /event\.target\.id === 'f-store-search'/);
   assert.match(app, /async function discardVisitDraft\(/);
   assert.match(app, /function openCandidateDetail\(/);
   assert.match(app, /function openCandidateOverview\(/);
   assert.match(app, /function openVisitBrief\(/);
   assert.match(app, /data-visit-brief=/);
-  assert.match(app, /拜訪前｜/);
+  assert.match(app, /單店拜訪｜/);
   assert.match(app, /只排列你已填寫的欄位、正式拜訪原文與可追溯候選/);
   assert.match(app, /function openQuickTextEdit\(/);
   assert.match(app, /async function saveQuickTextEdit\(/);
@@ -77,8 +78,22 @@ test('mobile-first runtime files are valid JavaScript and expose the daily captu
   assert.match(html, /id="export-store-enrichment"/);
   assert.match(html, /id="import-store-enrichment"/);
   assert.match(html, /id="store-enrichment-file"/);
-  assert.match(app, /拜訪前｜/);
+  assert.match(app, /單店拜訪｜/);
   assert.match(app, /開始記錄這次拜訪/);
+  assert.match(app, /function singleStoreCaptureHTML\(/);
+  assert.match(app, /id="single-store-capture-form"/);
+  assert.match(app, /id="single-store-text"/);
+  assert.match(app, /id="single-store-next"/);
+  assert.match(app, /更多欄位：日期、來源、人物、主題與附件/);
+  assert.match(app, /source \|\| '未指定'/);
+  assert.match(app, /form="single-store-capture-form"/);
+  assert.match(app, /async function saveSingleStoreVisit\(/);
+  assert.match(app, /await flushVisitDraft\(\)/);
+  assert.match(app, /dirty: true, draft: null/);
+  assert.match(app, /你仍停留在這間門市/);
+  assert.match(app, /請先完成或收起這次拜訪紀錄/);
+  assert.match(style, /#single-store-text\{[^}]*min-height/);
+  assert.match(style, /review-persistent-actions\.capture-active/);
   assert.match(app, /展開全部.*筆歷史紀錄/);
   assert.match(app, /不生成或改寫正式拜訪內容/);
   assert.match(html, /id="review-persistent-actions"/);
@@ -93,6 +108,7 @@ test('mobile-first runtime files are valid JavaScript and expose the daily captu
   const visitBriefSource = app.slice(app.indexOf('function openVisitBrief('), app.indexOf('function canonicalPerson('));
   assert.doesNotMatch(visitBriefSource, /<h3>\$\{esc\(brief\.store\.name\)\}<\/h3>/);
   assert.ok(visitBriefSource.indexOf('${reminders}') < visitBriefSource.indexOf('brief-followups'));
+  assert.ok(visitBriefSource.indexOf('singleStoreCaptureHTML()') < visitBriefSource.indexOf('brief-followups'));
   assert.ok(visitBriefSource.indexOf('brief-followups') < visitBriefSource.indexOf('brief-secondary'));
   assert.ok(visitBriefSource.indexOf('brief-secondary') < visitBriefSource.indexOf('brief-history'));
   assert.match(visitBriefSource, /review-persistent-actions/);
@@ -200,6 +216,52 @@ test('a local draft survives encryption without creating a formal visit revision
   assert.equal(relationVisitAllowed(visit, records.filter(r => r.type === 'store')), false);
 });
 
+test('single-store quick capture creates exactly one formal visit only on submit and stays on the same store', async () => {
+  const bundle = emptyBundle('single-store-capture-test');
+  const storeData = { name: '虛構單店藥局', city: '臺北市', district: '測試區', channel: '', attr: '', contact: '', address: '', mapUrl: '', csvIdentityPending: false };
+  bundle.ops.push(revision('store', 'store-one', storeData, [], 'phone'));
+  bundle.ops.push(revision('topic', 'topic-one', { name: '虛構主題', desc: '' }, [], 'phone'));
+  bundle.ops.push(revision('person', 'person-one', { name: '虛構藥師', role: '', desc: '', confirmed: false, sameAs: '' }, [], 'phone'));
+  validateBundle(bundle);
+  assert.equal(project(bundle).filter(record=>record.type==='visit').length,0);
+
+  const nodes = new Map([
+    ['review',{open:true,dataset:{singleStoreId:'store-one'}}],
+    ['single-store-text',{value:'逐字保存的本次拜訪原文'}],
+    ['single-store-date',{value:'2026-09-28'}],
+    ['single-store-source',{value:'現場觀察'}],
+    ['single-store-next',{value:'下次帶資料'}],
+    ['single-store-files',{files:[]}]
+  ]);
+  const stores = project(bundle).filter(record=>record.type==='store');
+  let persisted = null, reopened = '', message = '';
+  const context = vm.createContext({
+    singleStoreContext:{storeId:'store-one',id:'visit-one',parents:[],draftTouched:true}, payload:{bundle,device:'phone',draft:{format:'visit-draft-1'}}, draftTimer:null,
+    $:id=>nodes.get(id), document:{querySelectorAll:selector=>selector.includes('single-topic')?[{value:'topic-one'}]:selector.includes('single-person')?[{value:'person-one'}]:[]},
+    by:(type,id)=>type==='store'?stores.find(store=>store.id===id):null, storeIdentityPending, flushVisitDraft:async()=>{},
+    hashBytes:async()=>'', b64:()=>'', revision, validateBundle, structuredClone, Uint8Array, clearTimeout,
+    persist:async next=>{persisted=structuredClone(next);context.payload=next;}, render:()=>{}, openVisitBrief:id=>{reopened=id;}, toast:value=>{message=value;},
+    run:async fn=>fn()
+  });
+  const captureSource=app.slice(app.indexOf('function captureVisitDraft('),app.indexOf('function applyVisitDraft('));
+  vm.runInContext(captureSource,context);
+  const pending=context.captureVisitDraft();
+  assert.equal(pending.format,'visit-draft-1');assert.equal(pending.baseData,null);assert.equal(pending.fields.store,'store-one');
+  assert.equal(pending.fields.text,'逐字保存的本次拜訪原文');assert.equal(pending.fields.next,'下次帶資料');
+  context.payload.draft=pending;
+  assert.equal(project(context.payload.bundle).filter(record=>record.type==='visit').length,0);
+
+  const source=app.slice(app.indexOf('async function saveSingleStoreVisit('),app.indexOf('function openVisitBrief('));
+  vm.runInContext(source,context);
+  let prevented=false;await context.saveSingleStoreVisit({preventDefault(){prevented=true;}});
+  assert.equal(prevented,true);assert.equal(persisted.draft,null);assert.equal(persisted.dirty,true);
+  const visit=project(persisted.bundle).find(record=>record.type==='visit');
+  assert.equal(visit.store,'store-one');assert.equal(visit.text,'逐字保存的本次拜訪原文');assert.equal(visit.next,'下次帶資料');
+  assert.deepEqual(visit.topics,['topic-one']);assert.deepEqual(visit.people,['person-one']);assert.deepEqual(visit.attachments,[]);
+  assert.equal(project(persisted.bundle).filter(record=>record.type==='visit').length,1);
+  assert.equal(reopened,'store-one');assert.match(message,/仍停留在這間門市/);assert.equal(context.singleStoreContext,null);
+});
+
 test('quick text confirmation highlights only changed portions without changing either input', () => {
   const before = '- 第一行維持不變\n- 原本是玻尿酸\n- 最後一行';
   const after = '- 第一行維持不變\n- 原本是單支裝\n- 新增追問\n- 最後一行';
@@ -263,7 +325,7 @@ test('quick text edit creates one new visit revision and preserves every non-tex
 
 test('SOP1 explicitly separates App daily notes from Google CSV imports and keeps retention undecided', () => {
   assert.equal(SOP1_VERSION, '1.2.16');
-  assert.match(sop, /流程版本：1\.2\.21/);
+  assert.match(sop, /流程版本：1\.2\.22/);
   assert.match(sop, /### A\. App 日常記錄/);
   assert.match(sop, /### B\. Google CSV 外部資料匯入/);
   assert.match(sop, /### C\. 同步與備份/);
@@ -287,6 +349,10 @@ test('SOP1 explicitly separates App daily notes from Google CSV imports and keep
   assert.match(sop, /唯讀詞彙主檔/);
   assert.match(sop, /不得展開、替換或寫回拜訪原文/);
   assert.match(sop, /CME.*C.*P2.*P.*TNF32.*TN/);
+  assert.match(sop, /「單店拜訪」把同一門市/);
+  assert.match(sop, /資訊來源不得猜填/);
+  assert.match(sop, /沿用 `visit-draft-1` 本機加密草稿/);
+  assert.match(sop, /完成後仍停留在同一門市/);
   assert.match(sop, /門市地址批次補全/);
   assert.match(sop, /只補空白的 address、city、district/);
   assert.match(sop, /不得加入 GitHub、release 或測試資料/);

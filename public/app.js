@@ -30,7 +30,7 @@ let qualityTab = 'duplicates', qualityField = '', qualityPage = 0, qualityCache 
 let storeFilters = { query: '', district: '', kind: '', groups: [] };
 let regionalCity = '', regionalDistrict = '';
 let updateHolding = false, macProgram = null, lastSyncFailure = null, syncWarning = '';
-let draftTimer = null, draftSaveChain = Promise.resolve(), discardingDraft = false, quickTextContext = null, inlineTextContext = null, inlineDraftTimer = null, inlineDraftSaveChain = Promise.resolve(), reminderContext = null, transientResumeState = null;
+let draftTimer = null, draftSaveChain = Promise.resolve(), discardingDraft = false, singleStoreContext = null, quickTextContext = null, inlineTextContext = null, inlineDraftTimer = null, inlineDraftSaveChain = Promise.resolve(), reminderContext = null, transientResumeState = null;
 let versionReview = null, resolutionPreview = null;
 let coordinatePreview = null, enrichmentPreview = null;
 let nearbyState = { status: 'idle', position: null, message: '' }, nearbyRequest = 0, nearbyDenied = false;
@@ -64,7 +64,7 @@ function resetDialogScroll(dialog) {
 function setReviewMode(mode) {
   const review = $('review'), actions = $('review-persistent-actions');
   review.classList.toggle('visit-brief-dialog', mode === 'visit-brief');
-  if (mode !== 'visit-brief') { actions.hidden = true; actions.replaceChildren(); }
+  if (mode !== 'visit-brief') { delete review.dataset.singleStoreId; singleStoreContext = null; actions.hidden = true; actions.replaceChildren(); }
 }
 function openDialog(dialog, { reviewMode = '' } = {}) {
   if (dialog.id === 'review') setReviewMode(reviewMode);
@@ -75,7 +75,7 @@ function openDialog(dialog, { reviewMode = '' } = {}) {
   requestAnimationFrame(() => { if (dialog.open) resetDialogScroll(dialog); });
 }
 function buttons(disabled) {
-  document.querySelectorAll('button, #csv-view input, #csv-view select, #regional-view select, #editor input, #editor select, #editor textarea, #store-reminder-dialog textarea').forEach(el => {
+  document.querySelectorAll('button, #csv-view input, #csv-view select, #regional-view select, #editor input, #editor select, #editor textarea, #review input, #review select, #review textarea, #store-reminder-dialog textarea').forEach(el => {
     if (el.dataset.close) return;
     if (disabled) { el.dataset.busyDisabled = el.disabled ? '1' : '0'; el.disabled = true; }
     else if (el.dataset.busyDisabled !== undefined) { el.disabled = el.dataset.busyDisabled === '1'; delete el.dataset.busyDisabled; }
@@ -137,7 +137,7 @@ function pendingSyncText(summary) {
   return summary.count + ' 項' + (parts.length ? '（' + parts.join('、') + '）' : '');
 }
 function draftState(message, state = '') {
-  const el = $('draft-save-state'); if (!el) return;
+  const el = singleStoreContext ? $('single-store-draft-state') : $('draft-save-state'); if (!el) return;
   el.textContent = message; el.dataset.state = state;
 }
 function recentStores(limit = 6) {
@@ -176,7 +176,7 @@ function renderQuickVisit() {
   const fallback = mobile && !located.length ? '<p class="nearby-fallback-label">先顯示最近使用的門市（不是距離排序）</p>' : '';
   $('recent-store-list').innerHTML = fallback + entries.map(({ store, distance }) => {
     const range = Number.isFinite(distance) ? (distance < 1000 ? `約 ${Math.round(distance / 10) * 10} 公尺` : `約 ${(distance / 1000).toFixed(1)} 公里`) + ' · 直線距離' : store.district || '地區未提供';
-    return `<button type="button" class="recent-store" ${storeIdentityPending(store) ? `data-quick-visit="${esc(store.id)}"` : `data-visit-brief="${esc(store.id)}"`}><strong>${esc(store.name)}</strong><small>${esc(range)}</small>${storeIdentityPending(store) ? '<small>身分待確認 · 直接記錄拜訪</small>' : '<small>先看拜訪前重點</small>'}</button>`;
+    return `<button type="button" class="recent-store" ${storeIdentityPending(store) ? `data-quick-visit="${esc(store.id)}"` : `data-visit-brief="${esc(store.id)}"`}><strong>${esc(store.name)}</strong><small>${esc(range)}</small>${storeIdentityPending(store) ? '<small>身分待確認 · 直接記錄拜訪</small>' : '<small>查看重點並記錄拜訪</small>'}</button>`;
   }).join('') || '<p class="muted">目前沒有可用門市，可按「新增拜訪」開始記錄。</p>';
 }
 function requestNearbyPosition(force = false) {
@@ -285,9 +285,23 @@ function openVisitForStore(storeId) {
     return resumeVisitDraft();
   }
   focus = { type: 'store', id: storeId };
-  openEditor('visit');
+  if (storeIdentityPending(store)) return openEditor('visit');
+  openVisitBrief(storeId, { capture: true });
 }
 function captureVisitDraft() {
+  if (singleStoreContext && $('review').open && !$('single-store-capture-form')?.hidden) {
+    const ctx = singleStoreContext;
+    const checked = name => [...document.querySelectorAll(`#single-store-capture-form [name="${name}"]:checked`)].map(el => el.value);
+    return {
+      format: 'visit-draft-1', savedAt: new Date().toISOString(), id: ctx.id, parents: [...ctx.parents], baseData: null,
+      fields: {
+        store: ctx.storeId, date: $('single-store-date')?.value || '', source: $('single-store-source')?.value || '',
+        text: $('single-store-text')?.value || '', next: $('single-store-next')?.value || '',
+        topics: checked('single-topic'), people: checked('single-person'), keepAttachments: [],
+        newStoreName: '', newStoreDistrict: '', newStoreMapUrl: '', newStorePending: true
+      }
+    };
+  }
   const ctx = editorContext; if (!ctx || ctx.type !== 'visit' || !$('editor').open) return null;
   const val = id => $(id)?.value ?? '';
   const checked = name => [...document.querySelectorAll(`#editor [name="${name}"]:checked`)].map(el => el.value);
@@ -304,6 +318,16 @@ function captureVisitDraft() {
 }
 function applyVisitDraft(draft) {
   if (!draft || draft.format !== 'visit-draft-1' || !draft.fields) return;
+  if (singleStoreContext && $('single-store-capture-form')) {
+    const f = draft.fields, set = (id, value) => { const el = $(id); if (el && value !== undefined) el.value = value; };
+    set('single-store-date', f.date); set('single-store-source', f.source); set('single-store-text', f.text); set('single-store-next', f.next);
+    for (const [name, field] of [['single-topic', 'topics'], ['single-person', 'people']]) {
+      const selected = new Set(f[field] || []);
+      document.querySelectorAll(`#single-store-capture-form [name="${name}"]`).forEach(el => { el.checked = selected.has(el.value); });
+    }
+    draftState('已存於本機 · ' + dateText(draft.savedAt), 'saved');
+    return;
+  }
   if ($('discard-draft')) $('discard-draft').hidden = false;
   const f = draft.fields, set = (id, value) => { const el = $(id); if (el && value !== undefined) el.value = value; };
   set('f-store', f.store); set('f-date', f.date); set('f-source', f.source); set('f-text', f.text); set('f-next', f.next);
@@ -328,6 +352,7 @@ async function persistVisitDraftNow() {
   draftState('儲存中…', 'saving');
   try {
     await persist({ ...payload, draft });
+    if (singleStoreContext?.id === draft.id) singleStoreContext.draftTouched = false;
     if (editorContext?.type === 'visit' && editorContext.id === draft.id) editorContext.draftTouched = false;
     status();
     draftState('已存於本機 · ' + dateText(draft.savedAt), 'saved');
@@ -338,16 +363,18 @@ async function persistVisitDraftNow() {
   }
 }
 function scheduleVisitDraftSave() {
-  if (discardingDraft || !editorContext || editorContext.type !== 'visit') return;
-  editorContext.draftTouched = true;
-  if ($('discard-draft')) $('discard-draft').hidden = false;
+  const ctx = singleStoreContext || (editorContext?.type === 'visit' ? editorContext : null);
+  if (discardingDraft || !ctx) return;
+  ctx.draftTouched = true;
+  if (!singleStoreContext && $('discard-draft')) $('discard-draft').hidden = false;
   draftState('儲存中…', 'saving'); clearTimeout(draftTimer);
   draftTimer = setTimeout(() => {
     draftSaveChain = draftSaveChain.catch(() => {}).then(persistVisitDraftNow).catch(() => {});
   }, 350);
 }
 function flushVisitDraft() {
-  if (discardingDraft || !editorContext || editorContext.type !== 'visit' || !editorContext.draftTouched) return draftSaveChain.catch(() => {});
+  const ctx = singleStoreContext || (editorContext?.type === 'visit' ? editorContext : null);
+  if (discardingDraft || !ctx || !ctx.draftTouched) return draftSaveChain.catch(() => {});
   clearTimeout(draftTimer); draftTimer = null;
   draftSaveChain = draftSaveChain.catch(() => {}).then(persistVisitDraftNow);
   return draftSaveChain;
@@ -355,22 +382,33 @@ function flushVisitDraft() {
 function resumeVisitDraft() {
   const draft = payload?.draft;
   if (!draft || draft.format !== 'visit-draft-1') return toast('目前沒有可恢復的草稿。');
+  const store = !draft.baseData && draft.fields?.store && draft.fields.store !== '__new__' ? by('store', draft.fields.store) : null;
+  if (store && !store.deleted && !store.conflict && !storeIdentityPending(store)) {
+    focus = { type: 'store', id: store.id };
+    return openVisitBrief(store.id, { capture: true, restoreDraft: draft });
+  }
   const id = draft.baseData ? draft.id : null;
   openEditor('visit', id, draft);
 }
 async function discardVisitDraft() {
   const activeVisit = editorContext?.type === 'visit';
+  const activeSingleStore = !!singleStoreContext;
   const hasSavedDraft = payload?.draft?.format === 'visit-draft-1';
-  const hasPendingInput = activeVisit && editorContext.draftTouched;
+  const hasPendingInput = activeVisit && editorContext.draftTouched || activeSingleStore && singleStoreContext.draftTouched;
   if (!hasSavedDraft && !hasPendingInput) return toast('目前沒有未完成草稿需要捨棄。');
   if (!confirm('確認捨棄這份未完成草稿？\n只會刪除這份尚未完成的本機草稿與目前尚未保存的輸入；不會刪除或修改任何既有門市、正式拜訪或歷史版本。')) return;
   discardingDraft = true;
   try {
     clearTimeout(draftTimer); draftTimer = null;
     if (activeVisit) editorContext.draftTouched = false;
+    if (activeSingleStore) singleStoreContext.draftTouched = false;
     await draftSaveChain.catch(() => {});
     if (payload?.draft?.format === 'visit-draft-1') await persist({ ...payload, draft: null });
     if (activeVisit) { $('editor').close(); editorContext = null; }
+    if (activeSingleStore) {
+      const storeId = singleStoreContext.storeId; singleStoreContext = null;
+      openVisitBrief(storeId);
+    }
     render(); status();
     toast('未完成草稿已從這台裝置捨棄；既有門市、正式拜訪與歷史版本未變更。');
   } finally {
@@ -652,7 +690,75 @@ function briefTraceHTML(occurrences, field = 'text') {
   const label = items.length > 1 ? `查看 ${items.length} 筆原始紀錄` : '查看同筆原始拜訪文字';
   return `<details class="brief-trace"><summary>${label}</summary>${items.map(item => `<article class="brief-trace-item"><div><time>${esc(item.date || '原始日期未提供')}</time>${item.source ? `<span class="pill">${esc(item.source)}</span>` : ''}</div>${field === 'next' ? `<p><strong>下次跟進原文</strong></p><blockquote>${esc(item.text || '原文未提供')}</blockquote><p class="muted">同筆拜訪原文</p><pre>${esc(item.visitText || '原文未提供')}</pre>` : `<pre>${esc(item.text || '原文未提供')}</pre>`}</article>`).join('')}</details>`;
 }
-function openVisitBrief(storeId) {
+function singleStoreCaptureHTML() {
+  const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  const options = ['', '現場觀察', '藥師主動提及', '詢問後回覆', '其他'];
+  const pick = (type, inputName) => all(type).map(item => `<label class="check"><input type="checkbox" name="${inputName}" value="${esc(item.id)}">${esc(item.name)}</label>`).join('') || '<p class="muted">目前尚未建立可選項目，可直接完成拜訪紀錄。</p>';
+  return `<form id="single-store-capture-form" class="single-store-capture" hidden><div class="single-store-capture-head"><div><p class="eyebrow">QUICK CAPTURE</p><h3>記錄這次拜訪</h3></div><span class="pill">門市已固定</span></div><label>原始拜訪內容<textarea id="single-store-text" maxlength="20000" placeholder="直接輸入這次拜訪內容" spellcheck="false"></textarea></label><label>下次跟進（選填）<textarea id="single-store-next" maxlength="20000" placeholder="例如：下次確認庫存"></textarea></label><details class="single-store-more"><summary>更多欄位：日期、來源、人物、主題與附件</summary><div class="field-grid"><label>拜訪日期（未知可留空）<input type="date" id="single-store-date" value="${today}"></label><label>資訊來源<select id="single-store-source">${options.map(source => `<option value="${esc(source)}">${esc(source || '未指定')}</option>`).join('')}</select></label></div><label>相關主題</label><div class="check-grid">${pick('topic', 'single-topic')}</div><label>提及人物</label><div class="check-grid">${pick('person', 'single-person')}</div><label>附件（每個上限 3 MB）<input type="file" id="single-store-files" multiple accept="image/jpeg,image/png,image/webp,image/heic,application/pdf"></label><p class="muted">新選的附件無法靠草稿跨 App 關閉保存；完成紀錄前若 App 被系統終止，請重新選擇附件。</p></details><p id="single-store-draft-state" class="draft-state" role="status">尚未變更</p><p class="muted">輸入會先加密保存成本機草稿；只有按「完成紀錄」才建立正式拜訪版本。</p><p id="single-store-error" class="error" role="alert"></p></form>`;
+}
+function singleStoreIdleActions(storeId) {
+  const draft = payload?.draft?.format === 'visit-draft-1' ? payload.draft : null;
+  if (draft && (!draft.baseData && draft.fields?.store === storeId)) return '<button type="button" class="primary" data-start-single-store-capture>繼續未完成的拜訪紀錄</button>';
+  if (draft) return '<button type="button" class="primary" data-resume-single-draft>先完成目前的未完成草稿</button>';
+  return '<button type="button" class="primary" data-start-single-store-capture>＋ 開始記錄這次拜訪</button>';
+}
+function activateSingleStoreCapture(restoreDraft = null) {
+  const storeId = $('review').dataset.singleStoreId, store = by('store', storeId);
+  if (!store || store.deleted || store.conflict || storeIdentityPending(store)) return toast('這間門市目前無法使用單店快速記錄，請先核對門市狀態。');
+  const draft = restoreDraft || (payload?.draft?.format === 'visit-draft-1' && !payload.draft.baseData && payload.draft.fields?.store === storeId ? payload.draft : null);
+  if (payload?.draft?.format === 'visit-draft-1' && !draft) return resumeSingleDraftFromReview();
+  singleStoreContext = { storeId, id: draft?.id || uuid(), parents: [...(draft?.parents || [])], draftTouched: false };
+  const form = $('single-store-capture-form'); form.hidden = false;
+  if (draft) applyVisitDraft(draft);
+  $('review-persistent-actions').innerHTML = '<button type="button" class="danger" data-discard-single-store-draft>捨棄草稿</button><button type="button" data-collapse-single-store-capture>先收起</button><button type="submit" form="single-store-capture-form" class="primary">完成紀錄</button>';
+  $('review-persistent-actions').classList.add('capture-active');
+  form.scrollIntoView({ block: 'start' });
+  queueMicrotask(() => { try { $('single-store-text')?.focus({ preventScroll: true }); } catch { $('single-store-text')?.focus(); } });
+}
+function resumeSingleDraftFromReview() {
+  singleStoreContext = null;
+  if ($('review').open) $('review').close();
+  resumeVisitDraft();
+}
+async function collapseSingleStoreCapture() {
+  if (!singleStoreContext) return;
+  const storeId = singleStoreContext.storeId;
+  await flushVisitDraft(); singleStoreContext = null;
+  $('single-store-capture-form').hidden = true;
+  const actions = $('review-persistent-actions'); actions.classList.remove('capture-active'); actions.innerHTML = singleStoreIdleActions(storeId);
+}
+async function closeSingleStoreReview() {
+  if (singleStoreContext) await flushVisitDraft();
+  singleStoreContext = null; $('review').close();
+}
+async function saveSingleStoreVisit(event) {
+  event.preventDefault(); await run(async () => {
+    const ctx = singleStoreContext;
+    if (!ctx || !$('review').open || $('review').dataset.singleStoreId !== ctx.storeId) throw new Error('單店畫面已變更，這次沒有建立紀錄。');
+    await flushVisitDraft();
+    const store = by('store', ctx.storeId);
+    if (!store || store.deleted || store.conflict || storeIdentityPending(store)) throw new Error('門市狀態已變更，這次沒有建立紀錄；請重新核對門市。');
+    const text = $('single-store-text').value;
+    if (!text.trim()) throw new Error('請填寫拜訪內容。');
+    const checked = name => [...document.querySelectorAll(`#single-store-capture-form [name="${name}"]:checked`)].map(input => input.value);
+    const data = {
+      store: ctx.storeId, date: $('single-store-date').value.trim(), source: $('single-store-source').value.trim(), text,
+      next: $('single-store-next').value, topics: checked('single-topic'), people: checked('single-person'), attachments: []
+    };
+    const blobs = {};
+    for (const file of $('single-store-files').files) {
+      if (file.size > 3 * 1024 * 1024) throw new Error(`${file.name} 超過 3 MB。`);
+      if (!['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'application/pdf'].includes(file.type) && !/\.heic$/i.test(file.name)) throw new Error('附件只支援 JPEG、PNG、WebP、HEIC 與 PDF。');
+      const bytes = new Uint8Array(await file.arrayBuffer()), id = await hashBytes(bytes); blobs[id] = b64(bytes); data.attachments.push({ blob: id, name: file.name.slice(0, 200), mime: file.type || 'application/octet-stream' });
+    }
+    const bundle = structuredClone(payload.bundle); bundle.schema = 2;
+    bundle.ops.push(revision('visit', ctx.id, data, ctx.parents, payload.device)); Object.assign(bundle.blobs, blobs); validateBundle(bundle);
+    await persist({ ...payload, bundle, dirty: true, draft: null });
+    clearTimeout(draftTimer); draftTimer = null; singleStoreContext = null; render(); openVisitBrief(ctx.storeId);
+    toast('拜訪已完成並保存於手機；你仍停留在這間門市，等待 Mac 確認收到。');
+  }, 'single-store-error');
+}
+function openVisitBrief(storeId, { capture = false, restoreDraft = null } = {}) {
   const brief = visitBriefForStore(storeId, all('visit'), all('store'), all('person'));
   if (!brief) return toast('這間門市目前有衝突、身分待確認或已移到回收桶，無法建立重點卡。');
   const location = [brief.store.city, brief.store.district, brief.store.channel].filter(Boolean).join(' · ') || '地區／通路未提供';
@@ -668,11 +774,14 @@ function openVisitBrief(storeId) {
     return `<article class="brief-linked-item"><div>${linked}<span class="muted">${item.visitCount} 筆明確連結</span></div>${briefTraceHTML(item.occurrences)}</article>`;
   }).filter(Boolean).join('');
   const explicit = explicitItems ? `<section class="visit-brief-section"><h3>已明確連結的人物與主題</h3><p class="muted">每項連結都保留建立它的拜訪原文。</p><div class="brief-linked-list">${explicitItems}</div></section>` : '';
-  $('review-title').textContent = '拜訪前｜' + brief.store.name;
-  $('review-body').innerHTML = `<div class="visit-brief-head"><p>${esc(location)} · ${brief.visitCount} 筆可用紀錄 · 最近：${esc(relationDate(brief.latestDate))}</p></div>${reminders}<section class="visit-brief-section brief-followups"><h3>明確填寫的下次跟進</h3>${followups}</section><details class="brief-secondary"><summary>查看人物、主題、原文候選與最近拜訪原文</summary><div class="candidate-disclaimer"><strong>內容來源與限制</strong><p>只排列你已填寫的欄位、正式拜訪原文與可追溯候選；不生成或改寫正式拜訪內容。只把全半形、英文字母大小寫與空白差異視為相同內容，標點或用詞不同仍分開；完整歷史永遠保留每一筆。</p></div>${explicit}<section class="visit-brief-section"><h3>原文候選提示</h3><p class="muted">點選每個候選可核對命中的原句、日期、來源與原文狀態。</p><div class="candidate-chip-list">${candidates}</div></section><section class="visit-brief-section"><h3>最近 ${recentCount} 筆拜訪原文${brief.recent.length < recentCount ? ` · 合併顯示 ${brief.recent.length} 組` : ''}</h3>${recent}</section></details><details class="brief-history"><summary>展開全部 ${history.length} 筆歷史紀錄</summary><p class="muted">這裡不去重，逐筆保留正式拜訪原文與下次跟進。</p>${historyHTML}</details>`;
-  $('review-persistent-actions').innerHTML = `<button type="button" class="primary" data-new-visit-store="${esc(storeId)}">＋ 開始記錄這次拜訪</button>`;
+  singleStoreContext = null; $('review').dataset.singleStoreId = storeId;
+  $('review-title').textContent = '單店拜訪｜' + brief.store.name;
+  $('review-body').innerHTML = `<div class="visit-brief-head"><p>${esc(location)} · ${brief.visitCount} 筆可用紀錄 · 最近：${esc(relationDate(brief.latestDate))}</p></div>${reminders}${singleStoreCaptureHTML()}<section class="visit-brief-section brief-followups"><h3>明確填寫的下次跟進</h3>${followups}</section><details class="brief-secondary"><summary>查看人物、主題、原文候選與最近拜訪原文</summary><div class="candidate-disclaimer"><strong>內容來源與限制</strong><p>只排列你已填寫的欄位、正式拜訪原文與可追溯候選；不生成或改寫正式拜訪內容。只把全半形、英文字母大小寫與空白差異視為相同內容，標點或用詞不同仍分開；完整歷史永遠保留每一筆。</p></div>${explicit}<section class="visit-brief-section"><h3>原文候選提示</h3><p class="muted">點選每個候選可核對命中的原句、日期、來源與原文狀態。</p><div class="candidate-chip-list">${candidates}</div></section><section class="visit-brief-section"><h3>最近 ${recentCount} 筆拜訪原文${brief.recent.length < recentCount ? ` · 合併顯示 ${brief.recent.length} 組` : ''}</h3>${recent}</section></details><details class="brief-history"><summary>展開全部 ${history.length} 筆歷史紀錄</summary><p class="muted">這裡不去重，逐筆保留正式拜訪原文與下次跟進。</p>${historyHTML}</details>`;
+  $('review-persistent-actions').classList.remove('capture-active');
+  $('review-persistent-actions').innerHTML = singleStoreIdleActions(storeId);
   $('review-persistent-actions').hidden = false;
   openDialog($('review'), { reviewMode: 'visit-brief' });
+  if (capture) activateSingleStoreCapture(restoreDraft);
 }
 function canonicalPerson(id) { const seen = new Set(); let r = by('person', id); while (r?.sameAs && !r.conflict && !seen.has(r.id)) { seen.add(r.id); r = by('person', r.sameAs); } return r?.id || id; }
 function related(f = focus) {
@@ -712,7 +821,7 @@ function render() {
   $('conflict-list').innerHTML = records.filter(r => r.conflict).map(r => `<div class="conflict-card"><strong>${esc(r.name || name('store', r.store) + ' · ' + r.date)}</strong><p>${r.heads.length} 個版本待確認</p><button data-review="${r.type}:${esc(r.id)}">比較並處理</button></div>`).join('') || '<p class="muted">目前沒有衝突。</p>';
   if (activeView === 'trash') $('trash-list').innerHTML = records.filter(r => r.deleted && !r.conflict).map(r => `<article class="panel"><span class="pill">${kinds[r.type]}${r.mergedInto ? ' · 已整併' : ''}</span><h3>${esc(r.name || name('store', r.store) + ' · ' + r.date)}</h3><p>${r.mergedInto ? '已依裁定整併至：' + esc(name('store', r.mergedInto)) + '。原版本與歷史仍保留。' : esc(r.text || r.desc || r.contact || '')}</p><button data-restore="${r.type}:${esc(r.id)}">還原</button> <button data-history="${r.type}:${esc(r.id)}">查看歷史</button></article>`).join('') || '<p class="empty">回收桶是空的。</p>';
 }
-function entityCard(r) { const advanced = `${sourceButton(r)}<button class="text-button" data-edit="${r.type}:${esc(r.id)}">完整編輯</button><button class="text-button" data-history="${r.type}:${esc(r.id)}">歷史</button><button class="text-button danger" data-delete="${r.type}:${esc(r.id)}">刪除</button>`; return `<article class="panel"><span class="pill ${r.conflict ? 'warn' : ''}">${kinds[r.type]}${r.conflict ? ' · 有衝突' : ''}${storeIdentityPending(r) ? ' · 需要後續的確認' : ''}</span><h3>${esc(r.name)}</h3>${r.type === 'store' ? '<span class="pill retail-label">' + esc(retailChannel(r).label) + '</span>' : ''}${r.csvAliases?.length ? '<p class="muted">來源名稱：' + r.csvAliases.map(esc).join('／') + '</p>' : ''}<p>${esc(r.type === 'store' ? `${r.attr}\n${r.contact}` : r.type === 'person' ? `${r.confirmed ? '身分已核對' : '身分待確認'} · ${r.role}${r.sameAs ? '\n連到：' + name('person', r.sameAs) : ''}` : r.desc)}</p><div class="note-actions">${r.type === 'store' && !r.conflict ? `${!storeIdentityPending(r) ? `<button class="primary" data-visit-brief="${esc(r.id)}">拜訪前重點</button>` : ''}<button class="secondary" data-new-visit-store="${esc(r.id)}">＋ 新增拜訪</button>` : ''}<details class="more-actions"><summary>更多操作</summary><div>${advanced}</div></details></div></article>`; }
+function entityCard(r) { const advanced = `${sourceButton(r)}<button class="text-button" data-edit="${r.type}:${esc(r.id)}">完整編輯</button><button class="text-button" data-history="${r.type}:${esc(r.id)}">歷史</button><button class="text-button danger" data-delete="${r.type}:${esc(r.id)}">刪除</button>`; return `<article class="panel"><span class="pill ${r.conflict ? 'warn' : ''}">${kinds[r.type]}${r.conflict ? ' · 有衝突' : ''}${storeIdentityPending(r) ? ' · 需要後續的確認' : ''}</span><h3>${esc(r.name)}</h3>${r.type === 'store' ? '<span class="pill retail-label">' + esc(retailChannel(r).label) + '</span>' : ''}${r.csvAliases?.length ? '<p class="muted">來源名稱：' + r.csvAliases.map(esc).join('／') + '</p>' : ''}<p>${esc(r.type === 'store' ? `${r.attr}\n${r.contact}` : r.type === 'person' ? `${r.confirmed ? '身分已核對' : '身分待確認'} · ${r.role}${r.sameAs ? '\n連到：' + name('person', r.sameAs) : ''}` : r.desc)}</p><div class="note-actions">${r.type === 'store' && !r.conflict ? `${!storeIdentityPending(r) ? `<button class="primary" data-visit-brief="${esc(r.id)}">單店拜訪</button>` : ''}<button class="secondary" data-new-visit-store="${esc(r.id)}">＋ 新增拜訪</button>` : ''}<details class="more-actions"><summary>更多操作</summary><div>${advanced}</div></details></div></article>`; }
 function qualityReport() {
   if (qualityCache?.bundle !== payload.bundle) qualityCache = { bundle: payload.bundle, report: scanQuality(records) };
   return qualityCache.report;
@@ -1446,17 +1555,22 @@ async function repairPair() {
 }
 document.addEventListener('click', event => {
   const b = event.target.closest('button');
-  const candidate = event.target.closest('[data-candidate-key]'); if (candidate && !busy) return openCandidateDetail(candidate.dataset.candidateKey, candidate.dataset.candidateStore || '');
-  const node = event.target.closest('[data-node-type]'); if (node && !busy) return navigate(node.dataset.nodeType, node.dataset.nodeId);
+  const candidate = event.target.closest('[data-candidate-key]'); if (candidate && !busy) return singleStoreContext ? toast('請先完成或收起這次拜訪紀錄，再查看候選原文。') : openCandidateDetail(candidate.dataset.candidateKey, candidate.dataset.candidateStore || '');
+  const node = event.target.closest('[data-node-type]'); if (node && !busy) return singleStoreContext ? toast('請先完成或收起這次拜訪紀錄，再切換頁面。') : navigate(node.dataset.nodeType, node.dataset.nodeId);
   if (!b) return;
   if (b.dataset.close) {
     if (['rebuild-dialog', 'quick-text-dialog', 'store-reminder-dialog', 'review'].includes(b.dataset.close) && busy) return;
+    if (b.dataset.close === 'review' && singleStoreContext) return run(closeSingleStoreReview, 'single-store-error');
     if (b.dataset.close === 'editor' && editorContext?.type === 'visit') return run(async () => {
       await flushVisitDraft(); $('editor').close(); editorContext = null; render();
     }, 'editor-error');
     $(b.dataset.close).close(); if (b.dataset.close === 'rebuild-dialog') $('rebuild-connect-form').reset(); if (b.dataset.close === 'editor') editorContext = null; if (b.dataset.close === 'store-reminder-dialog') reminderContext = null; return;
   }
   if (updateHolding || busy || !payload) return;
+  if (b.dataset.startSingleStoreCapture !== undefined) return activateSingleStoreCapture();
+  if (b.dataset.resumeSingleDraft !== undefined) return resumeSingleDraftFromReview();
+  if (b.dataset.collapseSingleStoreCapture !== undefined) return run(collapseSingleStoreCapture, 'single-store-error');
+  if (b.dataset.discardSingleStoreDraft !== undefined) return run(discardVisitDraft, 'single-store-error');
   if (b.id === 'connect-rebuilt') { if (editorContext || csvImport.hasPending()) return toast('請先儲存編輯或取消匯入預覽。'); $('rebuild-connect-form').reset(); $('rebuild-connect-error').textContent = ''; openDialog($('rebuild-dialog')); return; }
   if (b.id === 'view-archives') return run(openArchives);
   if (b.dataset.exportArchive) return run(() => exportArchive(b.dataset.exportArchive));
@@ -1467,7 +1581,7 @@ document.addEventListener('click', event => {
   if (b.dataset.quickTextBack !== undefined) { const id = quickTextContext?.id; $('quick-text-dialog').close(); quickTextContext = null; return document.querySelector(`[data-inline-edit-text="${CSS.escape(id || '')}"]`)?.focus(); }
   if (b.dataset.inlineCancel) return run(() => cancelInlineTextEdit(b.dataset.inlineCancel));
   if (b.dataset.inlineReview) return run(() => reviewInlineTextEdit(b.dataset.inlineReview), null);
-  if (b.dataset.storeReminder) { if ($('review').open) $('review').close(); return openStoreReminder(b.dataset.storeReminder); }
+  if (b.dataset.storeReminder) { if (singleStoreContext) return toast('請先完成或收起這次拜訪紀錄，再修改門市提醒。'); if ($('review').open) $('review').close(); return openStoreReminder(b.dataset.storeReminder); }
   if (b.dataset.quickVisit) return openVisitForStore(b.dataset.quickVisit);
   if (b.dataset.newVisitStore) { if ($('review').open) $('review').close(); return openVisitForStore(b.dataset.newVisitStore); }
   if (b.dataset.visitBrief) return openVisitBrief(b.dataset.visitBrief);
@@ -1511,7 +1625,7 @@ document.addEventListener('click', event => {
   if (b.id === 'new-note') return openEditor('visit');
   if (b.id === 'back-node') { const previous = trail.pop(); if (previous) navigate(previous.type, previous.id, false); return; }
   if (b.id === 'candidate-overview') return openCandidateOverview();
-  if (b.dataset.candidateStore) { $('review').close(); return navigate('store', b.dataset.candidateStore); }
+  if (b.dataset.candidateStore) { if (singleStoreContext) return toast('請先完成或收起這次拜訪紀錄，再切換門市。'); $('review').close(); return navigate('store', b.dataset.candidateStore); }
   if (b.id === 'conflict-link') return switchView('sync');
   if (['sync-button', 'sync-now'].includes(b.id)) return run(async () => { try { await synchronize(); toast(`同步成功：${dateText(payload.lastSync)}。另一台裝置連線同步後會接收更新。`); } catch (e) { recordSyncFailure(e); throw e; } });
   if (b.id === 'check-connection') return run(checkConnection);
@@ -1524,13 +1638,14 @@ document.addEventListener('keydown', e => { const n = e.target.closest('.node[ro
 document.addEventListener('focusin', event => { const editor = event.target.closest?.('[data-inline-edit-text]'); if (editor) beginInlineTextEdit(editor.dataset.inlineEditText, editor); });
 document.addEventListener('input', event => { const editor = event.target.closest?.('[data-inline-edit-text]'); if (editor) updateInlineText(editor.dataset.inlineEditText, editor); });
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) { clearNearbyPosition(); if (editorContext?.type === 'visit') void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); document.body.classList.add('privacy-veil'); if (payload || busy) lockNow(false); }
+  if (document.hidden) { clearNearbyPosition(); if (editorContext?.type === 'visit' || singleStoreContext) void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); document.body.classList.add('privacy-veil'); if (payload || busy) lockNow(false); }
   else if (pendingLock || !payload) { pendingLock = false; document.body.classList.remove('privacy-veil'); showGate(); }
   else { document.body.classList.remove('privacy-veil'); requestNearbyPosition(); }
 });
-window.addEventListener('pagehide', () => { clearNearbyPosition(); if (editorContext?.type === 'visit') void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); if (payload || busy) lockNow(false); });
+window.addEventListener('pagehide', () => { clearNearbyPosition(); if (editorContext?.type === 'visit' || singleStoreContext) void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); if (payload || busy) lockNow(false); });
 window.addEventListener('pageshow', () => { if (!payload && !document.hidden) { document.body.classList.remove('privacy-veil'); showGate(); } });
 $('gate-form').addEventListener('submit', initializeOrUnlock); $('editor-form').addEventListener('submit', saveEditor); $('quick-text-form').addEventListener('submit', saveQuickTextEdit); $('store-reminder-form').addEventListener('submit', saveStoreReminder);
+$('review').addEventListener('submit', event => { if (event.target.id === 'single-store-capture-form') saveSingleStoreVisit(event); });
 document.querySelectorAll('dialog').forEach(dialog => dialog.addEventListener('close', () => queueMicrotask(releaseDialogBackground)));
 $('editor').addEventListener('close', () => editorContext = null);
 $('review').addEventListener('close', () => setReviewMode(''));
@@ -1543,6 +1658,8 @@ $('editor-fields').addEventListener('input', event => {
   if (editorContext?.type === 'visit' && event.target.id !== 'f-files') scheduleVisitDraftSave();
 });
 $('editor-fields').addEventListener('change', event => { if (event.target.id === 'f-store') toggleQuickStoreFields(); if (editorContext?.type === 'visit' && !['f-files', 'f-store-search'].includes(event.target.id)) scheduleVisitDraftSave(); });
+$('review').addEventListener('input', event => { if (singleStoreContext && event.target.closest('#single-store-capture-form') && event.target.id !== 'single-store-files') scheduleVisitDraftSave(); });
+$('review').addEventListener('change', event => { if (singleStoreContext && event.target.closest('#single-store-capture-form') && event.target.id !== 'single-store-files') scheduleVisitDraftSave(); });
 $('quality-content').addEventListener('change', e => { if (e.target.id === 'quality-field') { qualityField = e.target.value; qualityPage = 0; renderQuality(); } });
 $('gate-restore').addEventListener('click', () => { if (!$('password').value) { $('gate-error').textContent = '請先在密碼欄填寫備份密碼。'; return; } $('backup-file').click(); });
 $('backup-file').addEventListener('change', () => { const f = $('backup-file').files[0]; if (f) run(() => importBackup(f), payload ? null : 'gate-error'); $('backup-file').value = ''; });
@@ -1563,7 +1680,10 @@ else {
 }
 
 $('review').addEventListener('change', event => { if (event.target.id === 'conflict-baseline') run(() => { versionReview.baseline = event.target.value; renderConflictReview(); }); });
-$('review').addEventListener('cancel', event => { if (busy) event.preventDefault(); });
+$('review').addEventListener('cancel', event => {
+  if (busy) { event.preventDefault(); return; }
+  if (singleStoreContext) { event.preventDefault(); void run(closeSingleStoreReview, 'single-store-error'); }
+});
 
 $('coordinate-file').addEventListener('change', () => { const file = $('coordinate-file').files[0]; $('coordinate-file').value = ''; if (file) run(() => previewCoordinateFile(file)); });
 $('store-enrichment-file').addEventListener('change', () => { const file = $('store-enrichment-file').files[0]; $('store-enrichment-file').value = ''; if (file) run(() => previewStoreEnrichmentFile(file)); });
