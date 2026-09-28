@@ -54,12 +54,17 @@ test('mobile-first runtime files are valid JavaScript and expose the daily captu
   assert.match(app, /只排列你已填寫的欄位、正式拜訪原文與可追溯候選/);
   assert.match(app, /function openQuickTextEdit\(/);
   assert.match(app, /async function saveQuickTextEdit\(/);
-  assert.match(app, /contenteditable="true"/);
+  assert.match(app, /contenteditable="\$\{inlineBlocked \? 'false' : 'true'\}"/);
+  assert.match(app, /document\.addEventListener\('beforeinput', blockInlineTextBeforeInput\)/);
   assert.match(app, /data-inline-edit-text=/);
   assert.match(app, /function updateInlineText\(/);
   assert.match(app, /修改草稿已加密保存在這台裝置/);
+  assert.match(app, /回到修改並儲存/);
   assert.match(app, /data-inline-cancel=/);
   assert.match(app, /data-inline-review=/);
+  assert.match(app, /檢查並儲存修改/);
+  assert.match(style, /inline-edit-actions:not\(\[hidden\]\)\{position:fixed/);
+  assert.match(style, /inline-edit-shell\.locked \.inline-edit-text/);
   assert.match(app, /下次記得：/);
   assert.match(app, /每次必做、必給：/);
   assert.match(app, /id="f-next-remember"/);
@@ -288,6 +293,58 @@ test('inline text draft is encrypted locally without creating a formal revision'
   assert.equal(project(restored.bundle).find(record => record.type === 'visit').text, '正式原文');
 });
 
+test('blocked inline editing cannot create unsavable visible text and can return to the active draft without rerendering it', () => {
+  const visits = new Map([
+    ['visit-a', { id: 'visit-a', store: 'store-a', text: '正式原文 A', deleted: false, conflict: false, heads: [{ id: 'head-a' }] }],
+    ['visit-b', { id: 'visit-b', store: 'store-b', text: '正式原文 B', deleted: false, conflict: false, heads: [{ id: 'head-b' }] }]
+  ]);
+  let message = '', prevented = false, blurred = false, switched = 0, scrolled = false, focused = false, resumedVisit = 0;
+  const activeElement = {
+    dataset: { inlineEditText: 'visit-a' }, innerText: '畫面上不該殘留的文字', textContent: '',
+    closest(selector) { return selector === '[data-inline-edit-text]' ? this : null; },
+    blur() { blurred = true; }, scrollIntoView() { scrolled = true; }, focus() { focused = true; }
+  };
+  const context = vm.createContext({
+    inlineTextContext: null, inlineDraftTimer: null, inlineDraftSaveChain: Promise.resolve(), activeView: 'visits',
+    payload: { draft: { format: 'visit-draft-1' }, inlineTextDraft: null },
+    by: (type, id) => type === 'visit' ? visits.get(id) : null,
+    toast: value => { message = value; },
+    document: { querySelector: () => activeElement }, CSS: { escape: value => value },
+    switchView: () => { switched++; }, renderVisits() {}, name: () => '虛構門市',
+    $: () => ({ value: '' }), queueMicrotask: fn => fn(), resumeVisitDraft: () => { resumedVisit++; },
+    clearTimeout, setTimeout
+  });
+  const source = app.slice(app.indexOf('function quickTextParents('), app.indexOf('async function cancelInlineTextEdit('));
+  vm.runInContext(source, context);
+
+  const blockedEvent = { target: activeElement, preventDefault() { prevented = true; } };
+  assert.equal(context.blockInlineTextBeforeInput(blockedEvent), true);
+  assert.equal(prevented, true); assert.equal(blurred, true); assert.match(message, /未完成的拜訪草稿/);
+  context.updateInlineText('visit-a', activeElement);
+  assert.equal(activeElement.textContent, '正式原文 A', 'input fallback restores the formal text instead of leaving an unsavable visual edit');
+
+  context.payload = { draft: null, inlineTextDraft: { format: 'inline-text-draft-1', id: 'visit-b', before: '正式原文 B', after: '草稿 B', parents: ['head-b'] } };
+  prevented = false; blurred = false;
+  assert.equal(context.blockInlineTextBeforeInput(blockedEvent), true);
+  assert.equal(prevented, true); assert.match(message, /另一筆拜訪/);
+  const sameDraftElement = { ...activeElement, dataset: { inlineEditText: 'visit-b' }, closest() { return this; } };
+  assert.equal(context.blockInlineTextBeforeInput({ target: sameDraftElement, preventDefault() { throw new Error('same draft must remain editable'); } }), false);
+
+  context.payload = { draft: null, inlineTextDraft: null };
+  context.inlineTextContext = { id: 'visit-a', before: '正式原文 A', after: '尚未完成 A' };
+  context.resumeInlineTextDraft();
+  assert.equal(switched, 0, 'active in-memory text must not be destroyed by a rerender');
+  assert.equal(scrolled, true); assert.equal(focused, true);
+
+  context.activeView = 'stores'; switched = 0;
+  context.resumeInlineTextDraft();
+  assert.equal(switched, 1, 'returning from another page must show the visits page before focusing the draft');
+
+  context.payload.draft = { format: 'visit-draft-1' };
+  context.resumeInlineTextDraft();
+  assert.equal(resumedVisit, 1, 'when two legacy drafts coexist, the visit draft is resumed first without discarding either draft');
+});
+
 test('quick text edit creates one new visit revision and preserves every non-text field and the original version', () => {
   const bundle = emptyBundle('quick-edit-test');
   bundle.ops.push(revision('store', 'store-1', {
@@ -325,7 +382,7 @@ test('quick text edit creates one new visit revision and preserves every non-tex
 
 test('SOP1 explicitly separates App daily notes from Google CSV imports and keeps retention undecided', () => {
   assert.equal(SOP1_VERSION, '1.2.16');
-  assert.match(sop, /流程版本：1\.2\.22/);
+  assert.match(sop, /流程版本：1\.2\.23/);
   assert.match(sop, /### A\. App 日常記錄/);
   assert.match(sop, /### B\. Google CSV 外部資料匯入/);
   assert.match(sop, /### C\. 同步與備份/);
@@ -370,6 +427,9 @@ test('SOP1 explicitly separates App daily notes from Google CSV imports and keep
   assert.match(sop, /此分組僅是顯示層去重/);
   assert.match(sop, /行內修改不得把整段文字存成空白/);
   assert.match(sop, /門市、日期、來源、主題、人物、附件、Google 原始文字與 Source Snapshot 都不得因行內修改而改變/);
+  assert.match(sop, /原文區必須實際設為不可編輯/);
+  assert.match(sop, /不得容許文字只在畫面改變卻沒有草稿或儲存路徑/);
+  assert.match(sop, /「檢查並儲存修改」必須固定在可視安全區/);
   assert.match(sop, /目前程式保留最近 30 份 Mac 自動快照/);
   assert.match(sop, /未經使用者裁定不得自行更改/);
   assert.match(sop, /每次開啟單店「拜訪前重點」都從內容頂端開始/);
