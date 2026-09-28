@@ -223,7 +223,9 @@ export function createService({ dataDir = defaultDataDir(), host = '0.0.0.0', po
   server.on('clientError', (_e, socket) => socket.destroy());
   return { server, config, prepare, cancel: () => { generation = null; }, promote: () => { trial = false; }, setUpdateStatus: value => { updateStatus = value; }, listen: () => new Promise((resolve, reject) => { server.once('error', reject); server.listen(port ?? config.port, host, () => resolve(server.address())); }) };
 }
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+const invokedDirectly = process.argv[1]
+  && fs.realpathSync(path.resolve(process.argv[1])) === fs.realpathSync(fileURLToPath(import.meta.url));
+if (invokedDirectly) {
   try {
     if (process.platform === 'darwin') {
       const dir = defaultDataDir(), config = JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8'));

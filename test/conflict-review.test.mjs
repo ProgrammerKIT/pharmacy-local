@@ -20,7 +20,7 @@ function harness(f = fixture()) {
   const c = vm.createContext({ $, esc, structuredClone, project, revision, validateBundle, diffTextSegments, clearTimeout,
     payload:{bundle:f.b,device:'phone',dirty:false,draft:null}, records:project(f.b), versionReview:null,resolutionPreview:null,editorContext:null,draftTimer:null,
     dateText:x=>x, name:()=> '虛構名稱', toast:()=>{}, persistCalls:0,
-    document:{querySelectorAll:()=>[]}, flushVisitDraft:async()=>{}, uuid:()=> 'new-store' });
+    document:{querySelectorAll:()=>[]}, openDialog:dialog=>dialog.showModal(), flushVisitDraft:async()=>{}, uuid:()=> 'new-store' });
   c.by=(type,id)=>c.records.find(r=>r.type===type&&r.id===id); c.all=type=>c.records.filter(r=>r.type===type);
   c.persist=async next=>{c.payload=next;c.persistCalls++;};c.render=()=>{c.records=project(c.payload.bundle);};c.run=async fn=>fn();
   c.openEditor=(type,id)=>{const r=c.by(type,id);c.editorContext={type,id,parents:r.heads.map(h=>h.id),oldData:structuredClone(r.heads[0].data)};$('editor').showModal();};

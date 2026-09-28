@@ -152,7 +152,7 @@ test('quality UI renders escaped evidence, persists and withdraws decisions, and
   const nodes = new Map(), $ = id => { if (!nodes.has(id)) nodes.set(id, { innerHTML: '', value: '', textContent: '', open: false, showModal() { this.open = true; }, close() { this.open = false; } }); return nodes.get(id); };
   const c = vm.createContext({ $, structuredClone, PROFILE_FIELDS, FILL_FIELDS, scanQuality, setDistinctReview, sourceSuggestions, fillProfile, esc,
     payload: { bundle: b, device: 'phone' }, records: project(b), qualityTab: 'duplicates', qualityField: '', qualityPage: 0, qualityCache: null, qualityReview: null, editorContext: null,
-    sourceButton: () => '', input: (id, label) => { $(id); return '<label>' + esc(label) + '</label>'; }, toast: () => {}, confirm: () => true });
+    sourceButton: () => '', input: (id, label) => { $(id); return '<label>' + esc(label) + '</label>'; }, openDialog: dialog => dialog.showModal(), toast: () => {}, confirm: () => true });
   c.by = (type, id) => c.records.find(r => r.type === type && r.id === id);
   c.persist = async next => { c.payload = next; };
   c.render = () => { c.records = project(c.payload.bundle); c.renderQuality(); };
