@@ -85,6 +85,24 @@ function summarizeCandidate(meta, evidence) {
   const latestDate = evidence.map(item => dateKey(item.date)).filter(Boolean).sort().at(-1) || '';
   return { ...meta, evidence, visitCount: visits.size, lineCount: evidence.length, latestDate, statusLabel, statusKind: mixed ? 'mixed' : evidence[0]?.kind || 'mention' };
 }
+// Display-only grouping. It treats only Unicode width/case and whitespace differences as equivalent.
+// Every original value remains in occurrences; punctuation and wording differences stay separate.
+const briefComparisonKey = value => String(value || '').normalize('NFKC').replace(/\r\n?/gu, '\n')
+  .split('\n').map(line => line.trim().replace(/[ \t]+/gu, ' ')).join('\n').trim().toLocaleLowerCase('zh-Hant');
+export function groupVisitBriefText(entries) {
+  const groups = new Map();
+  for (const entry of entries) {
+    const exact = String(entry.text || ''), key = briefComparisonKey(exact) || `__empty__:${entry.visitId}`;
+    if (!groups.has(key)) groups.set(key, { ...entry, text: exact.trim(), occurrences: [] });
+    groups.get(key).occurrences.push({ ...entry, text: exact });
+  }
+  return [...groups.values()].map(group => ({
+    ...group,
+    count: group.occurrences.length,
+    topics: [...new Set(group.occurrences.flatMap(item => item.topics || []))],
+    people: [...new Set(group.occurrences.flatMap(item => item.people || []))],
+  }));
+}
 // Read-only candidate relations. They are display-time evidence indexes, never stored as confirmed entities.
 export function candidateRelationsForStore(storeId, visits, stores, people = []) {
   const store = stores.find(item => item.id === storeId);
@@ -95,21 +113,21 @@ export function candidateRelationsForStore(storeId, visits, stores, people = [])
     const rule = baseRule.candidateTerms ? { ...baseRule, terms: baseRule.candidateTerms } : baseRule;
     const evidence = [];
     for (const visit of eligible) {
-      const found = evidenceKind(visit.text || '', rule);
-      for (const item of found.items || []) evidence.push({ visitId: visit.id, date: visit.date || '', source: visit.source || '', field: 'text', line: item.line, label: item.label, kind: item.kind });
+      const visitText = String(visit.text || ''), found = evidenceKind(visitText, rule);
+      for (const item of found.items || []) evidence.push({ visitId: visit.id, date: visit.date || '', source: visit.source || '', field: 'text', line: item.line, visitText, label: item.label, kind: item.kind });
     }
     if (evidence.length) output.push(summarizeCandidate({ key: 'topic:' + rule.key, name: rule.name, category: rule.category, ruleKey: TOPIC_RULES.some(item => item.key === rule.key) ? rule.key : undefined, sourceMode: 'candidate' }, evidence));
   }
   const followups = eligible.filter(visit => String(visit.next || '').trim()).map(visit => ({
-    visitId: visit.id, date: visit.date || '', source: visit.source || '', field: 'next', line: visit.next.trim(), label: '已明確填寫', kind: 'explicit'
+    visitId: visit.id, date: visit.date || '', source: visit.source || '', field: 'next', line: visit.next.trim(), visitText: String(visit.text || ''), label: '已明確填寫', kind: 'explicit'
   }));
   if (followups.length) output.push(summarizeCandidate({ key: 'followup', name: '待跟進事項', category: '待跟進事項', sourceMode: 'explicit' }, followups));
   for (const person of people.filter(item => item.mentionTerm && !item.deleted)) {
     const evidence = [];
     for (const visit of eligible) {
       if ((visit.people || []).includes(person.id)) continue;
-      const found = evidenceKind(visit.text || '', { key: 'person-mention', terms: [person.mentionTerm] });
-      for (const item of found.items || []) evidence.push({ visitId: visit.id, date: visit.date || '', source: visit.source || '', field: 'text', line: item.line, label: item.label, kind: item.kind });
+      const visitText = String(visit.text || ''), found = evidenceKind(visitText, { key: 'person-mention', terms: [person.mentionTerm] });
+      for (const item of found.items || []) evidence.push({ visitId: visit.id, date: visit.date || '', source: visit.source || '', field: 'text', line: item.line, visitText, label: item.label, kind: item.kind });
     }
     if (evidence.length) output.push(summarizeCandidate({ key: 'person:' + person.id, name: person.name, category: '人物提及', personId: person.id, sourceMode: 'candidate' }, evidence));
   }
@@ -123,16 +141,23 @@ export function visitBriefForStore(storeId, visits, stores, people = [], limits 
   const eligible = visits.filter(visit => visit.store === storeId && !visit.deleted && !visit.conflict && relationVisitAllowed(visit, stores))
     .slice().sort((a, b) => (dateKey(b.date) || '').localeCompare(dateKey(a.date) || '') || String(b.id).localeCompare(String(a.id)));
   const followupLimit = Math.max(1, limits.followups || 5), recentLimit = Math.max(1, limits.recent || 3), candidateLimit = Math.max(1, limits.candidates || 8);
-  const followups = eligible.filter(visit => String(visit.next || '').trim()).slice(0, followupLimit).map(visit => ({
-    visitId: visit.id, date: dateKey(visit.date), source: visit.source || '', text: visit.next.trim()
-  }));
-  const recent = eligible.slice(0, recentLimit).map(visit => ({
+  const followups = groupVisitBriefText(eligible.filter(visit => String(visit.next || '').trim()).map(visit => ({
+    visitId: visit.id, date: dateKey(visit.date), source: visit.source || '', text: String(visit.next || ''), visitText: String(visit.text || '')
+  }))).slice(0, followupLimit);
+  const recent = groupVisitBriefText(eligible.slice(0, recentLimit).map(visit => ({
     visitId: visit.id, date: dateKey(visit.date), source: visit.source || '', text: String(visit.text || ''),
     people: [...(visit.people || [])], topics: [...(visit.topics || [])]
-  }));
+  })));
+  const explicitMap = new Map();
+  for (const visit of eligible) for (const [type, ids] of [['person', visit.people || []], ['topic', visit.topics || []]]) for (const id of new Set(ids)) {
+    const key = `${type}:${id}`;
+    if (!explicitMap.has(key)) explicitMap.set(key, { type, id, occurrences: [] });
+    explicitMap.get(key).occurrences.push({ visitId: visit.id, date: dateKey(visit.date), source: visit.source || '', text: String(visit.text || '') });
+  }
+  const explicitLinks = [...explicitMap.values()].map(item => ({ ...item, visitCount: item.occurrences.length }));
   const candidates = candidateRelationsForStore(storeId, visits, stores, people)
     .filter(item => item.key !== 'followup').slice(0, candidateLimit);
-  return { store, visitCount: eligible.length, latestDate: eligible.map(visit => dateKey(visit.date)).find(Boolean) || '', followups, candidates, recent };
+  return { store, visitCount: eligible.length, latestDate: eligible.map(visit => dateKey(visit.date)).find(Boolean) || '', followups, candidates, recent, explicitLinks };
 }
 export function candidateOverview(visits, stores, people = []) {
   const aggregated = new Map();
