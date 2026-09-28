@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { TOPIC_RULES, termFound, evidenceKind, sourceTags, candidateRelationsForStore, candidateOverview, candidateTrend, visitBriefForStore, regionalOptions, regionalInsights } from '../public/relations.js';
+import { TOPIC_RULES, termFound, evidenceKind, sourceTags, candidateRelationsForStore, candidateOverview, candidateTrend, groupVisitBriefText, visitBriefForStore, regionalOptions, regionalInsights } from '../public/relations.js';
 import { prepareCSV, planCSV, buildCSVImport } from '../public/csv.js';
 import { newMeta, derive, seal, unseal, emptyBundle, project } from '../public/core.js';
 import { rekeyInitial, installInitialCustomer } from '../scripts/initial-customer.mjs';
@@ -50,10 +50,12 @@ test('candidate relations are read-only evidence indexes with explicit status an
   const one=candidateRelationsForStore('s1',visits,stores,people);
   const dryeye=one.find(item=>item.key==='topic:dryeye'), followup=one.find(item=>item.key==='followup'), person=one.find(item=>item.key==='person:p1');
   assert.equal(dryeye.visitCount,2);
+  assert.equal(dryeye.evidence[0].visitText,'乾眼客人詢問單支包裝怎麼用？');
   assert.equal(dryeye.statusKind,'mixed');
   assert.equal(dryeye.category,'主題／需求');
   assert.equal(followup.sourceMode,'explicit');
   assert.equal(followup.evidence[0].field,'next');
+  assert.equal(followup.evidence[0].visitText,'乾眼客人詢問單支包裝怎麼用？');
   assert.equal(person.category,'人物提及');
   assert.deepEqual(candidateRelationsForStore('pending',visits,stores,people),[]);
   const overview=candidateOverview(visits,stores,people);
@@ -75,6 +77,31 @@ test('visit brief is a bounded read-only view and excludes unsafe records withou
   assert.equal(brief.visitCount,2);assert.equal(brief.latestDate,'2026-09-20');assert.deepEqual(brief.followups.map(x=>x.text),['帶資料']);
   assert.deepEqual(brief.recent.map(x=>x.visitId),['v1','v2']);assert.ok(brief.candidates.some(x=>x.key==='topic:dryeye'));
   assert.equal(visitBriefForStore('s2',visits,stores),null);assert.equal(visitBriefForStore('s3',visits,stores),null);
+  assert.deepEqual({stores,visits},before);
+});
+test('visit brief conservatively groups repeated display text and keeps every exact source record',()=>{
+  const grouped=groupVisitBriefText([
+    {visitId:'v1',date:'2026-09-22',source:'現場',text:'ＣＭＥ   課程',topics:['t1'],people:['p1']},
+    {visitId:'v2',date:'2026-09-21',source:'電話',text:'cme 課程',topics:['t2'],people:[]},
+    {visitId:'v3',date:'2026-09-20',source:'現場',text:'CME 課程！',topics:[],people:[]},
+  ]);
+  assert.equal(grouped.length,2);assert.equal(grouped[0].count,2);
+  assert.deepEqual(grouped[0].occurrences.map(item=>item.text),['ＣＭＥ   課程','cme 課程']);
+  assert.deepEqual(grouped[0].topics,['t1','t2']);assert.deepEqual(grouped[0].people,['p1']);
+  assert.equal(grouped[1].text,'CME 課程！');
+
+  const stores=[{id:'s1',name:'虛構甲藥局'}];
+  const visits=[
+    {id:'v1',store:'s1',date:'2026-09-22',source:'現場',text:'ＣＭＥ   課程',next:'帶資料',topics:['t1'],people:['p1'],deleted:false,conflict:false},
+    {id:'v2',store:'s1',date:'2026-09-21',source:'電話',text:'cme 課程',next:'帶資料  ',topics:['t1'],people:['p1'],deleted:false,conflict:false},
+    {id:'v3',store:'s1',date:'2026-09-20',source:'現場',text:'CME 課程！',next:'帶另一份資料',topics:[],people:[],deleted:false,conflict:false},
+  ];
+  const before=structuredClone({stores,visits}),brief=visitBriefForStore('s1',visits,stores,[],{recent:3});
+  assert.equal(brief.followups.length,2);assert.equal(brief.followups[0].count,2);
+  assert.deepEqual(brief.followups[0].occurrences.map(item=>item.text),['帶資料','帶資料  ']);
+  assert.deepEqual(brief.followups[0].occurrences.map(item=>item.visitText),['ＣＭＥ   課程','cme 課程']);
+  assert.equal(brief.recent.length,2);assert.equal(brief.recent[0].count,2);
+  assert.deepEqual(brief.explicitLinks.map(item=>[item.type,item.id,item.visitCount]),[['person','p1',2],['topic','t1',2]]);
   assert.deepEqual({stores,visits},before);
 });
 test('regional insights compare cross-store evidence without upgrading mentions into market facts',()=>{
