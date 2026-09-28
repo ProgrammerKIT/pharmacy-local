@@ -40,6 +40,40 @@ const by = (type, id) => records.find(r => r.type === type && r.id === id);
 const name = (type, id) => by(type, id)?.name || (type === 'store' ? '已刪除／未命名門市' : '已刪除節點');
 const dateText = at => at ? new Date(at).toLocaleString('zh-TW', { hour12: false }) : '尚未同步';
 function toast(message) { $('toast').textContent = message; $('toast').classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').classList.remove('show'), 6500); }
+let dialogScrollLock = null;
+function lockDialogBackground() {
+  if (dialogScrollLock) return;
+  const scrollTop = document.scrollingElement?.scrollTop || window.scrollY || 0;
+  dialogScrollLock = { scrollTop, bodyTop: document.body.style.top };
+  document.documentElement.classList.add('dialog-scroll-locked');
+  document.body.classList.add('dialog-scroll-locked');
+  document.body.style.top = '-' + scrollTop + 'px';
+}
+function releaseDialogBackground() {
+  if (!dialogScrollLock || document.querySelector('dialog[open]')) return;
+  const state = dialogScrollLock; dialogScrollLock = null;
+  document.documentElement.classList.remove('dialog-scroll-locked');
+  document.body.classList.remove('dialog-scroll-locked');
+  document.body.style.top = state.bodyTop;
+  window.scrollTo(0, state.scrollTop);
+}
+function resetDialogScroll(dialog) {
+  dialog.scrollTop = 0;
+  if (dialog.id === 'review') $('review-body').scrollTop = 0;
+}
+function setReviewMode(mode) {
+  const review = $('review'), actions = $('review-persistent-actions');
+  review.classList.toggle('visit-brief-dialog', mode === 'visit-brief');
+  if (mode !== 'visit-brief') { actions.hidden = true; actions.replaceChildren(); }
+}
+function openDialog(dialog, { reviewMode = '' } = {}) {
+  if (dialog.id === 'review') setReviewMode(reviewMode);
+  lockDialogBackground(); resetDialogScroll(dialog);
+  if (!dialog.open) dialog.showModal();
+  resetDialogScroll(dialog);
+  try { dialog.focus({ preventScroll: true }); } catch { dialog.focus(); }
+  requestAnimationFrame(() => { if (dialog.open) resetDialogScroll(dialog); });
+}
 function buttons(disabled) {
   document.querySelectorAll('button, #csv-view input, #csv-view select, #regional-view select, #editor input, #editor select, #editor textarea, #store-reminder-dialog textarea').forEach(el => {
     if (el.dataset.close) return;
@@ -180,7 +214,7 @@ async function previewCoordinateFile(file) {
   $('review-body').innerHTML = `<p>對照目前資料：可更新 ${plan.changes.length} 間，略過 ${plan.skipped.length} 間。檔案中的歷史清單不代表目前全部門市。</p><p>確認後只新增門市地圖網址版本，讓附近排序讀取座標；舊網址保留在版本歷史。名稱、地址、拜訪文字、原 CSV 與 Source Snapshot 均保留。變更會隨加密同步傳到其他裝置。</p><p>取消或關閉不寫入任何資料。</p>` +
     plan.changes.map(c => `<article><h3>${esc(c.name)}</h3><p>座標：${esc(c.point.latitude)}, ${esc(c.point.longitude)}；補查時間：${esc(dateText(c.checkedAt))}</p><details><summary>原網址與新網址</summary><p class="coordinate-url">原：${esc(c.before || '未提供')}</p><p class="coordinate-url">新：${esc(c.after)}</p></details></article>`).join('') +
     `<details><summary>略過 ${plan.skipped.length} 間及原因</summary>` + plan.skipped.map(c => `<p>${esc(c.name)}：${esc(c.reason)}</p>`).join('') + '</details><div class="dialog-footer"><button data-close="review">取消，不修改</button>' + (plan.changes.length ? `<button id="apply-coordinates" class="primary">確認更新這 ${plan.changes.length} 間的地圖網址</button>` : '') + '</div>';
-  $('review').showModal();
+  openDialog($('review'));
 }
 async function commitCoordinates() {
   const preview = coordinatePreview;
@@ -208,7 +242,7 @@ async function previewStoreEnrichmentFile(file) {
   $('review-body').innerHTML = `<div class="enrichment-summary"><strong>可安全補全 ${plan.changes.length} 間</strong><span>例外／不修改 ${plan.exceptions.length} 間</span></div><p>確認後只補上目前空白的地址、縣市與行政區，建立一般門市新版本並保存 Google 地點識別、公開地址、補查時間與來源網址。既有非空白欄位、拜訪原文、CSV 與 Source Snapshot 不會被覆蓋。</p><p>任何名稱、地點識別或既有資料不一致都保留在例外清單，這次不修改。取消或關閉不寫入資料。</p>` +
     plan.changes.map(change => `<article class="enrichment-change"><h3>${esc(change.name)}</h3>${Object.entries(change.additions).map(([field, value]) => `<p><strong>${esc(labels[field])}</strong><span>${esc(change.before[field] || '未提供')} → ${esc(value)}</span></p>`).join('')}<small>Google Maps 公開資料 · ${esc(dateText(change.source.checkedAt))}</small></article>`).join('') +
     `<details class="enrichment-exceptions" ${plan.exceptions.length ? '' : 'hidden'}><summary>查看 ${plan.exceptions.length} 間例外與原因</summary>${plan.exceptions.map(item => `<article><strong>${esc(item.name || item.featureId)}</strong><p>${esc(item.reason)}</p></article>`).join('')}</details><div class="dialog-footer"><button data-close="review">取消，不修改</button>${plan.changes.length ? `<button id="apply-store-enrichment" class="primary">確認補全這 ${plan.changes.length} 間門市</button>` : ''}</div>`;
-  $('review').showModal();
+  openDialog($('review'));
 }
 async function commitStoreEnrichment() {
   const preview = enrichmentPreview;
@@ -600,7 +634,7 @@ function openCandidateDetail(key, storeId = '') {
     : '近 60 天沒有足夠的「有拜訪日期」紀錄可比較；未提供日期的原文仍保留在證據列表。';
   $('review-title').textContent = overview.name + ' · ' + (overview.sourceMode === 'explicit' ? '明確記錄' : '系統候選');
   $('review-body').innerHTML = `<div class="candidate-disclaimer"><strong>${esc(overview.category)}</strong><p>${esc(provenance)}</p></div><div class="candidate-metrics"><span>${overview.storeCount} 間門市</span><span>${overview.visitCount} 筆相關紀錄</span><span>最近：${esc(relationDate(overview.latestDate))}</span></div>${current}<h3>時間比較</h3><p>${esc(dated)}</p>${cross}`;
-  if (!$('review').open) $('review').showModal();
+  openDialog($('review'));
 }
 function openCandidateOverview() {
   const overview = relationOverview();
@@ -611,7 +645,7 @@ function openCandidateOverview() {
     const categories = [...new Set(overview.map(item => item.category))];
     $('review-body').innerHTML = '<p class="candidate-disclaimer">以下是從原始拜訪文字或明確「下次跟進」欄位建立的唯讀索引。系統候選不是已確認事實；點開後可一路查看原文。</p>' + categories.map(category => `<section class="candidate-overview-group"><h3>${esc(category)}</h3><div class="candidate-overview-list">${overview.filter(item => item.category === category).map(item => `<button type="button" class="candidate-summary" data-candidate-key="${esc(item.key)}"><strong>${esc(item.name)}</strong><span>${item.storeCount} 間門市 · ${item.visitCount} 筆 · 最近：${esc(relationDate(item.latestDate))}</span></button>`).join('')}</div></section>`).join('');
   }
-  $('review').showModal();
+  openDialog($('review'));
 }
 function openVisitBrief(storeId) {
   const brief = visitBriefForStore(storeId, all('visit'), all('store'), all('person'));
@@ -626,8 +660,10 @@ function openVisitBrief(storeId) {
   const topicIds = [...new Set(history.flatMap(item => item.topics || []))], personIds = [...new Set(history.flatMap(item => item.people || []))];
   const explicit = topicIds.length || personIds.length ? `<section class="visit-brief-section"><h3>已明確連結的人物與主題</h3><div class="chips">${personIds.map(id => chip('person', id)).join('')}${topicIds.map(id => chip('topic', id)).join('')}</div></section>` : '';
   $('review-title').textContent = '拜訪前｜' + brief.store.name;
-  $('review-body').innerHTML = `<div class="visit-brief-head"><span class="pill">拜訪前重點</span><h3>${esc(brief.store.name)}</h3><p>${esc(location)} · ${brief.visitCount} 筆可用紀錄 · 最近：${esc(relationDate(brief.latestDate))}</p></div>${reminders}<div class="brief-primary-actions"><button type="button" class="primary" data-new-visit-store="${esc(storeId)}">＋ 開始記錄這次拜訪</button></div><div class="candidate-disclaimer"><strong>內容來源與限制</strong><p>只排列你已填寫的欄位、正式拜訪原文與可追溯候選；不生成或改寫正式拜訪內容。系統候選不代表已確認需求、人物身分或商業判斷。</p></div><section class="visit-brief-section"><h3>明確填寫的下次跟進</h3>${followups}</section>${explicit}<section class="visit-brief-section"><h3>原文候選提示</h3><div class="candidate-chip-list">${candidates}</div></section><section class="visit-brief-section"><h3>最近 ${brief.recent.length} 筆拜訪原文</h3>${recent}</section><details class="brief-history"><summary>展開全部 ${history.length} 筆歷史紀錄</summary>${historyHTML}</details>`;
-  if (!$('review').open) $('review').showModal();
+  $('review-body').innerHTML = `<div class="visit-brief-head"><p>${esc(location)} · ${brief.visitCount} 筆可用紀錄 · 最近：${esc(relationDate(brief.latestDate))}</p></div>${reminders}<section class="visit-brief-section brief-followups"><h3>明確填寫的下次跟進</h3>${followups}</section><details class="brief-secondary"><summary>查看人物、主題、原文候選與最近拜訪原文</summary><div class="candidate-disclaimer"><strong>內容來源與限制</strong><p>只排列你已填寫的欄位、正式拜訪原文與可追溯候選；不生成或改寫正式拜訪內容。系統候選不代表已確認需求、人物身分或商業判斷。</p></div>${explicit}<section class="visit-brief-section"><h3>原文候選提示</h3><div class="candidate-chip-list">${candidates}</div></section><section class="visit-brief-section"><h3>最近 ${brief.recent.length} 筆拜訪原文</h3>${recent}</section></details><details class="brief-history"><summary>展開全部 ${history.length} 筆歷史紀錄</summary>${historyHTML}</details>`;
+  $('review-persistent-actions').innerHTML = `<button type="button" class="primary" data-new-visit-store="${esc(storeId)}">＋ 開始記錄這次拜訪</button>`;
+  $('review-persistent-actions').hidden = false;
+  openDialog($('review'), { reviewMode: 'visit-brief' });
 }
 function canonicalPerson(id) { const seen = new Set(); let r = by('person', id); while (r?.sameAs && !r.conflict && !seen.has(r.id)) { seen.add(r.id); r = by('person', r.sameAs); } return r?.id || id; }
 function related(f = focus) {
@@ -706,7 +742,7 @@ function openQualityPair(key) {
   qualityReview = { a: pair.a.id, b: pair.b.id, forget: tab === 'reviewed' };
   $('review-title').textContent = tab === 'reviewed' ? '已確認為不同門市' : '核對疑似重複門市';
   $('review-body').innerHTML = '<div class="quality-pair">' + qualityStore(pair.a) + qualityStore(pair.b) + '</div><p class="quality-reasons">' + pair.reasons.map(esc).join('；') + '</p><div class="quality-table-wrap"><table class="quality-table"><thead><tr><th>欄位</th><th>門市一</th><th>門市二</th></tr></thead><tbody>' + Object.entries(PROFILE_FIELDS).map(([field, label]) => '<tr><th>' + label + '</th><td>' + esc(pair.a[field] || '未提供') + '</td><td>' + esc(pair.b[field] || '未提供') + '</td></tr>').join('') + '</tbody></table></div><p class="muted">確認不同門市後會保存核對紀錄並同步。名稱、地址或地圖等辨識資料改變時，會重新列入核對。</p><p class="muted">若確實為同一間，這一版先保留兩筆及其拜訪紀錄；完整合併另行處理。</p><div class="note-actions">' + sourceButton(pair.a) + sourceButton(pair.b) + '</div><div class="dialog-footer"><button data-close="review">稍後核對</button><button class="primary" data-quality-mark="1">' + (qualityReview.forget ? '撤回確認，重新核對' : '確認為不同門市') + '</button></div>';
-  $('review').showModal();
+  openDialog($('review'));
 }
 async function saveQualityReview() {
   if (!qualityReview) return;
@@ -727,7 +763,7 @@ function openFillStore(id) {
     const choices = suggestions[field] || [];
     return input('fill-' + field, PROFILE_FIELDS[field] + '（選填）', '', ['address', 'mapUrl'].includes(field) ? 2000 : 500) + (choices.length ? '<details class="quality-suggestions"><summary>查看原始 CSV 的 ' + choices.length + ' 個補值建議' + (choices.length > 1 ? '（來源有不同值）' : '') + '</summary>' + choices.slice(0, 20).map((s, i) => '<div><p>' + esc(s.value) + '</p><small>' + esc(s.file) + ' · 第 ' + s.line + ' 行</small><button type="button" class="text-button" data-fill-suggestion="' + field + '" data-suggestion-index="' + i + '">採用此值</button></div>').join('') + (choices.length > 20 ? '<p class="muted">此處先顯示 20 個值，完整內容可在門市原始來源查閱。</p>' : '') + '</details>' : '');
   }).join('');
-  $('editor').showModal();
+  openDialog($('editor'));
 }
 function resetStoreFilters() {
   storeFilters = { query: '', district: '', kind: '', groups: [] };
@@ -774,7 +810,7 @@ function openRegionalSignal(key) {
   }).join('');
   $('review-title').textContent = report.label + '｜' + signal.name;
   $('review-body').innerHTML = `<div class="candidate-disclaimer"><strong>${esc(signal.concentrationLabel)} · ${esc(signal.category)}</strong><p>${esc(sourceText)}</p><p>${esc(comparison)}</p><p>集中度只代表目前紀錄中有多少門市出現相同線索，不代表實際需求量、產品接受度、因果關係或完整市場母體。</p></div>${evidence || '<p class="empty">目前沒有可顯示的原文證據。</p>'}`;
-  $('review').showModal();
+  openDialog($('review'));
 }
 function renderRegional() {
   if (!payload) return;
@@ -950,7 +986,7 @@ function openSources(type, id) {
   const seen = new Set(), sources = r.versions.flatMap(v => v.data.csvSources || []).filter(s => { const k = `${s.blob}:${s.fingerprint}:${s.list}`; if (seen.has(k)) return false; seen.add(k); return true; });
   $('review-title').textContent = 'CSV 原始來源';
   $('review-body').innerHTML = `<p class="muted">以下是匯入時的原始欄位；包含歷史版本的來源。匯入時間不是拜訪日期。地圖網址只顯示，不會自動連線。</p>${sources.map(s => `<article class="version"><strong>${esc(s.file)} · 第 ${s.line} 行</strong><p class="muted">清單：${esc(s.list)} · 匯入：${dateText(s.at)}</p><details><summary>展開原始欄位</summary><div class="csv-raw">${s.headers.map((h, i) => `<p><strong>第 ${i + 1} 欄 · ${esc(h)}</strong><span>${esc(s.cells[i])}</span></p>`).join('')}</div></details><button class="text-button" data-csv-download="${esc(s.blob)}" data-csv-filename="${esc(s.file)}">下載原始 CSV（明文）</button></article>`).join('')}`;
-  $('review').showModal();
+  openDialog($('review'));
 }
 const input = (id, label, value = '', max = 500, required = false) => `<label>${label}<input id="${id}" maxlength="${max}" value="${esc(value)}" ${required ? 'required' : ''} autocomplete="off"></label>`;
 const textarea = (id, label, value = '') => `<label>${label}<textarea id="${id}" maxlength="20000">${esc(value)}</textarea></label>`;
@@ -990,7 +1026,7 @@ function openEditor(type, id = null, restoreDraft = null) {
     if (type === 'topic') fields += textarea('f-desc', '主題定義與備註', d.desc);
     $('editor-fields').innerHTML = fields;
   }
-  $('editor').showModal();
+  openDialog($('editor'));
 }
 function quickTextParents(record) {
   return (record?.heads || []).map(head => head.id).sort();
@@ -1006,7 +1042,7 @@ function openStoreReminder(storeId) {
   $('store-reminder-next').value = store.nextRemember || '';
   $('store-reminder-every').value = store.everyTimeMust || '';
   $('store-reminder-error').textContent = '';
-  $('store-reminder-dialog').showModal();
+  openDialog($('store-reminder-dialog'));
   $('store-reminder-next').focus();
 }
 async function saveStoreReminder(event) {
@@ -1087,7 +1123,7 @@ function renderQuickTextDialog() {
     $('quick-text-actions').innerHTML = '<button type="button" data-close="quick-text-dialog">取消</button><button type="submit" class="primary">確認修改內容</button>';
     queueMicrotask(() => $('quick-text-value')?.focus());
   }
-  if (!dialog.open) dialog.showModal();
+  openDialog(dialog);
 }
 function openQuickTextEdit(id) {
   const visit = by('visit', id);
@@ -1286,7 +1322,7 @@ function openReview(type, id, conflict) {
     $('review-title').textContent = '歷史版本';
     $('review-body').innerHTML = `<p>還原會先預覽，再建立新版本；不會抹除後續歷史。</p>${[...r.versions].sort((a, b) => b.at.localeCompare(a.at)).map(o => `<article class="version"><p>${esc(dateText(o.at))}${o.deleted ? ' · 已刪除' : ''}</p><pre>${esc(describeData(type, o.data))}</pre><button data-use-version="${esc(o.id)}">預覽還原這個內容</button></article>`).join('')}`;
   }
-  $('review').showModal();
+  openDialog($('review'));
 }
 function renderConflictReview() {
   const r = checkedReview(versionReview), versions = r.heads;
@@ -1305,7 +1341,7 @@ function previewResolution(ctx, data, deleted = false, blobs = {}, fromEditor = 
   resolutionPreview = { ...ctx, parents: [...ctx.parents], data: structuredClone(data), deleted, blobs, fromEditor };
   $('review-title').textContent = '確認衝突處理／還原結果';
   $('review-body').innerHTML = `<p><strong>尚未寫入。${deleted ? '確認後，此紀錄將移到回收桶。' : '確認後，同一筆紀錄會建立一個新的有效版本。'}</strong></p><p>以下逐一比較目前版本與預計結果。${r.conflict ? '目前全部衝突將由這個結果解決。' : ''}未採用的內容仍保留在歷史中，原始 Source Snapshot 不變。</p><h3>預計保存的完整內容</h3><pre class="resolution-result">${esc(describeData(ctx.type, data))}</pre><details><summary>查看全部結果欄位</summary><pre>${esc(reviewValue(data))}</pre></details>${r.heads.map((o, i) => `<article class="version"><h3>相對於 ${esc(reviewVersionLabel(o, i))}</h3><p>${o.deleted !== deleted ? '<strong>刪除狀態將改變。</strong>' : '刪除狀態不變。'}</p>${reviewFields(o.data, data)}</article>`).join('')}<p id="resolution-error" class="error" role="alert"></p><div class="dialog-footer"><button data-resolution-back>返回${fromEditor ? '修改' : '核對'}</button><button class="primary" data-resolution-confirm>${deleted ? '確定移到回收桶並建立版本' : '確定建立處理結果版本'}</button></div>`;
-  if (!$('review').open) $('review').showModal();
+  openDialog($('review'));
 }
 async function useVersion(id) {
   if (!versionReview) throw new Error('請重新開啟版本核對。');
@@ -1384,7 +1420,7 @@ async function adoptRebuilt(event) {
 async function openArchives() {
   const archives = await listLocalArchives(); $('review-title').textContent = '本機隔離備份';
   $('review-body').innerHTML = '<p>以下舊資料只保留為備份，不參與目前資料庫、同步、CSV 比對或關聯圖。匯出檔案仍使用該舊庫的原密碼。</p>' + (archives.map(a => '<article class="version"><p>' + esc(dateText(a.at)) + '</p><button data-export-archive="' + esc(a.id) + '">匯出舊庫加密備份</button></article>').join('') || '<p>這台裝置尚無隔離備份。</p>');
-  $('review').showModal();
+  openDialog($('review'));
 }
 async function exportArchive(id) {
   const archived = await readLocalArchive(id); if (!archived?.unlockKey) throw new Error('找不到可匯出的隔離備份。');
@@ -1412,7 +1448,7 @@ document.addEventListener('click', event => {
     $(b.dataset.close).close(); if (b.dataset.close === 'rebuild-dialog') $('rebuild-connect-form').reset(); if (b.dataset.close === 'editor') editorContext = null; if (b.dataset.close === 'store-reminder-dialog') reminderContext = null; return;
   }
   if (updateHolding || busy || !payload) return;
-  if (b.id === 'connect-rebuilt') { if (editorContext || csvImport.hasPending()) return toast('請先儲存編輯或取消匯入預覽。'); $('rebuild-connect-form').reset(); $('rebuild-connect-error').textContent = ''; $('rebuild-dialog').showModal(); return; }
+  if (b.id === 'connect-rebuilt') { if (editorContext || csvImport.hasPending()) return toast('請先儲存編輯或取消匯入預覽。'); $('rebuild-connect-form').reset(); $('rebuild-connect-error').textContent = ''; openDialog($('rebuild-dialog')); return; }
   if (b.id === 'view-archives') return run(openArchives);
   if (b.dataset.exportArchive) return run(() => exportArchive(b.dataset.exportArchive));
   if (b.dataset.view) return switchView(b.dataset.view);
@@ -1486,7 +1522,9 @@ document.addEventListener('visibilitychange', () => {
 window.addEventListener('pagehide', () => { clearNearbyPosition(); if (editorContext?.type === 'visit') void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); if (payload || busy) lockNow(false); });
 window.addEventListener('pageshow', () => { if (!payload && !document.hidden) { document.body.classList.remove('privacy-veil'); showGate(); } });
 $('gate-form').addEventListener('submit', initializeOrUnlock); $('editor-form').addEventListener('submit', saveEditor); $('quick-text-form').addEventListener('submit', saveQuickTextEdit); $('store-reminder-form').addEventListener('submit', saveStoreReminder);
+document.querySelectorAll('dialog').forEach(dialog => dialog.addEventListener('close', () => queueMicrotask(releaseDialogBackground)));
 $('editor').addEventListener('close', () => editorContext = null);
+$('review').addEventListener('close', () => setReviewMode(''));
 $('quick-text-dialog').addEventListener('close', () => { quickTextContext = null; $('quick-text-error').textContent = ''; });
 $('quick-text-dialog').addEventListener('cancel', event => { if (busy) event.preventDefault(); });
 $('store-reminder-dialog').addEventListener('close', () => { reminderContext = null; $('store-reminder-error').textContent = ''; });

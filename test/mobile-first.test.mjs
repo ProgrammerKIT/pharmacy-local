@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import vm from 'node:vm';
 import { spawnSync } from 'node:child_process';
 import { emptyBundle, revision, project, validateBundle, newMeta, derive, seal, unseal, diffTextSegments } from '../public/core.js';
 import { storeIdentityPending, relationVisitAllowed } from '../public/relations.js';
@@ -8,6 +9,7 @@ import { SOP1_VERSION } from '../public/csv.js';
 
 const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+const style = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
 const sop = fs.readFileSync(new URL('../SOP1.md', import.meta.url), 'utf8');
 
 test('mobile-first runtime files are valid JavaScript and expose the daily capture contract', () => {
@@ -79,6 +81,24 @@ test('mobile-first runtime files are valid JavaScript and expose the daily captu
   assert.match(app, /開始記錄這次拜訪/);
   assert.match(app, /展開全部.*筆歷史紀錄/);
   assert.match(app, /不生成或改寫正式拜訪內容/);
+  assert.match(html, /id="review-persistent-actions"/);
+  assert.match(html, /id="review" tabindex="-1" aria-labelledby="review-title"/);
+  assert.match(app, /function lockDialogBackground\(/);
+  assert.match(app, /function releaseDialogBackground\(/);
+  assert.match(app, /function resetDialogScroll\(/);
+  assert.match(app, /document\.querySelectorAll\('dialog'\).*queueMicrotask\(releaseDialogBackground\)/);
+  assert.match(style, /body\.dialog-scroll-locked\{position:fixed/);
+  assert.match(style, /#review-body\{[^}]*overflow-y:auto[^}]*overscroll-behavior-y:contain/);
+  assert.match(style, /#review\.visit-brief-dialog\{[^}]*height:100dvh/);
+  const visitBriefSource = app.slice(app.indexOf('function openVisitBrief('), app.indexOf('function canonicalPerson('));
+  assert.doesNotMatch(visitBriefSource, /<h3>\$\{esc\(brief\.store\.name\)\}<\/h3>/);
+  assert.ok(visitBriefSource.indexOf('${reminders}') < visitBriefSource.indexOf('brief-followups'));
+  assert.ok(visitBriefSource.indexOf('brief-followups') < visitBriefSource.indexOf('brief-secondary'));
+  assert.ok(visitBriefSource.indexOf('brief-secondary') < visitBriefSource.indexOf('brief-history'));
+  assert.match(visitBriefSource, /review-persistent-actions/);
+  assert.match(visitBriefSource, /reviewMode: 'visit-brief'/);
+  assert.doesNotMatch(visitBriefSource, /persist\(|commitRevision\(|\brevision\(/);
+  assert.doesNotMatch(visitBriefSource, /fetch\(|api\(/);
   assert.match(app, /class="advanced-fields"/);
   assert.match(app, /地址與系統資料/);
   const storeNotesSource = app.slice(app.indexOf('const storeNotes ='), app.indexOf('const inlineDraft'));
@@ -114,6 +134,26 @@ test('mobile-first runtime files are valid JavaScript and expose the daily captu
   assert.match(app, /visitSearch: \$\('visit-search'\)\?\.value/);
   assert.match(app, /scrollTop: document\.scrollingElement\?\.scrollTop/);
   assert.match(app, /\$\('review'\)\.open \|\| \$\('quick-text-dialog'\)\?\.open/);
+});
+
+test('reused dialogs reset their own scroll and restore the unchanged page position after close', () => {
+  const classes = () => { const values = new Set(); return { add: value => values.add(value), remove: value => values.delete(value), toggle: (value, on) => on ? values.add(value) : values.delete(value), contains: value => values.has(value) }; };
+  const reviewBody = { scrollTop: 75 };
+  const actions = { hidden: false, replaceChildren() {} };
+  const review = { id: 'review', open: false, scrollTop: 125, classList: classes(), showModal() { this.open = true; }, focus() {} };
+  const nodes = new Map([['review', review], ['review-body', reviewBody], ['review-persistent-actions', actions]]);
+  let restored = null;
+  const body = { classList: classes(), style: { top: '3px' } };
+  const document = { body, documentElement: { classList: classes() }, scrollingElement: { scrollTop: 438 }, querySelector: () => review.open ? review : null };
+  const window = { scrollY: 438, scrollTo: (x, y) => { restored = [x, y]; } };
+  const context = vm.createContext({ document, window, requestAnimationFrame: fn => fn(), $: id => nodes.get(id) });
+  vm.runInContext(app.slice(app.indexOf('let dialogScrollLock = null;'), app.indexOf('function buttons(')), context);
+  context.openDialog(review, { reviewMode: 'visit-brief' });
+  assert.equal(review.scrollTop, 0); assert.equal(reviewBody.scrollTop, 0);
+  assert.equal(document.body.style.top, '-438px'); assert.equal(document.body.classList.contains('dialog-scroll-locked'), true);
+  review.open = false; context.releaseDialogBackground();
+  assert.equal(document.body.style.top, '3px'); assert.deepEqual(restored, [0, 438]);
+  assert.equal(document.body.classList.contains('dialog-scroll-locked'), false);
 });
 
 test('a local draft survives encryption without creating a formal visit revision', async () => {
@@ -217,6 +257,7 @@ test('quick text edit creates one new visit revision and preserves every non-tex
 
 test('SOP1 explicitly separates App daily notes from Google CSV imports and keeps retention undecided', () => {
   assert.equal(SOP1_VERSION, '1.2.16');
+  assert.match(sop, /流程版本：1\.2\.19/);
   assert.match(sop, /### A\. App 日常記錄/);
   assert.match(sop, /### B\. Google CSV 外部資料匯入/);
   assert.match(sop, /### C\. 同步與備份/);
@@ -256,4 +297,9 @@ test('SOP1 explicitly separates App daily notes from Google CSV imports and keep
   assert.match(sop, /門市、日期、來源、主題、人物、附件、Google 原始文字與 Source Snapshot 都不得因行內修改而改變/);
   assert.match(sop, /目前程式保留最近 30 份 Mac 自動快照/);
   assert.match(sop, /未經使用者裁定不得自行更改/);
+  assert.match(sop, /每次開啟單店「拜訪前重點」都從內容頂端開始/);
+  assert.match(sop, /固定背景頁面並由視窗內容區自行捲動/);
+  assert.match(sop, /底部安全區固定「開始記錄這次拜訪」/);
+  assert.match(sop, /不得建立摘要、主題、提醒、門市、拜訪或其他 revision/);
+  assert.match(sop, /不得呼叫外部 AI、分析服務或遙測/);
 });

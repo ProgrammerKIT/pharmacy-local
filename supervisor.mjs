@@ -93,6 +93,8 @@ export async function runSupervisor({ root = ROOT, dataDir = defaultDataDir(), f
     return { engine, shutdown };
   } catch (e) { await shutdown(1); throw e; }
 }
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+const invokedDirectly = process.argv[1]
+  && fs.realpathSync(path.resolve(process.argv[1])) === fs.realpathSync(fileURLToPath(import.meta.url));
+if (invokedDirectly) {
   runSupervisor().catch(e => { console.error(`未啟動：${e.message}`); process.exitCode = 1; });
 }
