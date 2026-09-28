@@ -633,7 +633,7 @@ function openCandidateDetail(key, storeId = '') {
     ? `最近 30 天：${trend.currentVisits} 筆／${trend.currentStores} 間；前 30 天：${trend.previousVisits} 筆／${trend.previousStores} 間。`
     : '近 60 天沒有足夠的「有拜訪日期」紀錄可比較；未提供日期的原文仍保留在證據列表。';
   $('review-title').textContent = overview.name + ' · ' + (overview.sourceMode === 'explicit' ? '明確記錄' : '系統候選');
-  $('review-body').innerHTML = `<div class="candidate-disclaimer"><strong>${esc(overview.category)}</strong><p>${esc(provenance)}</p></div><div class="candidate-metrics"><span>${overview.storeCount} 間門市</span><span>${overview.visitCount} 筆相關紀錄</span><span>最近：${esc(relationDate(overview.latestDate))}</span></div>${current}<h3>時間比較</h3><p>${esc(dated)}</p>${cross}`;
+  $('review-body').innerHTML = `<div class="candidate-disclaimer"><strong>${esc(overview.category)}</strong>${overview.definition ? `<p><strong>詞彙定義：</strong>${esc(overview.definition)}</p>` : ''}<p>${esc(provenance)}</p></div><div class="candidate-metrics"><span>${overview.storeCount} 間門市</span><span>${overview.visitCount} 筆相關紀錄</span><span>最近：${esc(relationDate(overview.latestDate))}</span></div>${current}<h3>時間比較</h3><p>${esc(dated)}</p>${cross}`;
   openDialog($('review'));
 }
 function openCandidateOverview() {
@@ -818,7 +818,7 @@ function openRegionalSignal(key) {
     return `<article class="regional-evidence-store"><div class="section-row"><div><strong>${esc(store.storeName)}</strong><p class="muted">${items.length} 條證據 · 最近：${esc(relationDate(store.latestDate || items.map(item => item.date).sort().at(-1)))}</p></div><button type="button" class="text-button" data-regional-store="${esc(store.storeId)}">查看門市</button></div>${items.slice(0, 12).map(item => `<div class="regional-evidence"><span class="pill candidate-status ${esc(item.kind)}">${esc(item.label)}</span><span class="muted">${esc(relationDate(item.date))} · ${esc(item.source || '來源未提供')}</span><blockquote>${esc(item.line || '原文未提供')}</blockquote></div>`).join('')}${items.length > 12 ? `<p class="muted">另有 ${items.length - 12} 條證據，可進入門市查看完整原文。</p>` : ''}</article>`;
   }).join('');
   $('review-title').textContent = report.label + '｜' + signal.name;
-  $('review-body').innerHTML = `<div class="candidate-disclaimer"><strong>${esc(signal.concentrationLabel)} · ${esc(signal.category)}</strong><p>${esc(sourceText)}</p><p>${esc(comparison)}</p><p>集中度只代表目前紀錄中有多少門市出現相同線索，不代表實際需求量、產品接受度、因果關係或完整市場母體。</p></div>${evidence || '<p class="empty">目前沒有可顯示的原文證據。</p>'}`;
+  $('review-body').innerHTML = `<div class="candidate-disclaimer"><strong>${esc(signal.concentrationLabel)} · ${esc(signal.category)}</strong>${signal.definition ? `<p><strong>詞彙定義：</strong>${esc(signal.definition)}</p>` : ''}<p>${esc(sourceText)}</p><p>${esc(comparison)}</p><p>集中度只代表目前紀錄中有多少門市出現相同線索，不代表實際需求量、產品接受度、因果關係或完整市場母體。</p></div>${evidence || '<p class="empty">目前沒有可顯示的原文證據。</p>'}`;
   openDialog($('review'));
 }
 function renderRegional() {
