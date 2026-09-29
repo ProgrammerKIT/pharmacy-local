@@ -1353,8 +1353,8 @@ async function saveQuickTextEdit(event) {
     const data = structuredClone(visit.heads[0].data);
     data.text = ctx.after;
     const bundle = structuredClone(payload.bundle); bundle.schema = 2; bundle.ops.push(revision('visit', ctx.id, data, visit.heads.map(head => head.id), payload.device)); validateBundle(bundle);
-    await persist({ ...payload, bundle, dirty: true, inlineTextDraft: null }); render();
-    $('quick-text-dialog').close(); quickTextContext = null; inlineTextContext = null;
+    await persist({ ...payload, bundle, dirty: true, inlineTextDraft: null });
+    quickTextContext = null; inlineTextContext = null; $('quick-text-dialog').close(); render();
     toast('文字修改已建立為同一筆拜訪的新版本；舊文字與 CSV 原始來源都保留。');
   }, 'quick-text-error');
 }

@@ -380,9 +380,43 @@ test('quick text edit creates one new visit revision and preserves every non-tex
   assert.equal(bundle.ops.find(op => op.id === beforeHead.id).data.text, '修改前原文');
 });
 
+test('successful inline text save clears edit state before rerender and cannot leave a second save prompt', async () => {
+  const bundle = emptyBundle('inline-save-state-test');
+  bundle.ops.push(revision('store', 'store-1', { name: '虛構測試門市', city: '', district: '', channel: '', attr: '', contact: '' }, [], 'phone'));
+  const original = revision('visit', 'visit-1', { store: 'store-1', date: '2026-09-30', source: '現場觀察', text: '修改前原文', next: '', topics: [], people: [], attachments: [] }, [], 'phone');
+  bundle.ops.push(original);
+  let closed = false, rendered = false, message = '';
+  const context = vm.createContext({
+    payload: { schema: 1, device: 'phone', bundle, dirty: false, inlineTextDraft: { format: 'inline-text-draft-1', id: 'visit-1', before: '修改前原文', after: '修改後原文', parents: [original.id] } },
+    quickTextContext: { id: 'visit-1', before: '修改前原文', after: '修改後原文', parents: [original.id], step: 'confirm' },
+    inlineTextContext: { id: 'visit-1', before: '修改前原文', after: '修改後原文', parents: [original.id] },
+    structuredClone, revision, validateBundle,
+    quickTextParents: record => record.heads.map(head => head.id).sort(),
+    by: (type, id) => project(context.payload.bundle).find(record => record.type === type && record.id === id),
+    persist: async next => { context.payload = next; },
+    render: () => {
+      rendered = true;
+      assert.equal(context.quickTextContext, null, 'confirmation state must be cleared before cards rerender');
+      assert.equal(context.inlineTextContext, null, 'inline draft state must be cleared before cards rerender');
+      assert.equal(context.payload.inlineTextDraft, null, 'encrypted draft must be cleared after the formal revision is saved');
+    },
+    $: id => id === 'quick-text-dialog' ? { close() { closed = true; } } : null,
+    toast: value => { message = value; },
+    run: async fn => fn()
+  });
+  vm.runInContext(app.slice(app.indexOf('async function saveQuickTextEdit('), app.indexOf('async function commitRevision(')), context);
+  let prevented = false;
+  await context.saveQuickTextEdit({ preventDefault() { prevented = true; } });
+  const saved = project(context.payload.bundle).find(record => record.type === 'visit');
+  assert.equal(prevented, true); assert.equal(rendered, true); assert.equal(closed, true);
+  assert.equal(saved.text, '修改後原文'); assert.equal(saved.versions.length, 2);
+  assert.match(message, /已建立為同一筆拜訪的新版本/);
+});
+
 test('SOP1 explicitly separates App daily notes from Google CSV imports and keeps retention undecided', () => {
   assert.equal(SOP1_VERSION, '1.2.16');
-  assert.match(sop, /流程版本：1\.2\.24/);
+  assert.match(sop, /流程版本：1\.2\.25/);
+  assert.match(sop, /先清除該筆草稿與編輯狀態再重繪/);
   assert.match(sop, /定位成功時.*最多 4 間門市/);
   assert.match(sop, /桌機與定位失敗時的最近使用備用清單維持最多 3 間/);
   assert.match(sop, /### A\. App 日常記錄/);
