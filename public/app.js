@@ -284,6 +284,10 @@ function openVisitForStore(storeId) {
     toast('目前有未完成草稿，先恢復該草稿；完成後再新增另一筆拜訪。');
     return resumeVisitDraft();
   }
+  if (pendingInlineTextId()) {
+    toast('目前有一筆尚未完成的文字修改，先回到該筆檢查並儲存；完成後再新增拜訪。');
+    return resumeInlineTextDraft();
+  }
   focus = { type: 'store', id: storeId };
   if (storeIdentityPending(store)) return openEditor('visit');
   openVisitBrief(storeId, { capture: true });
@@ -607,14 +611,15 @@ function status() {
   const conflicts = records.filter(r => r.conflict).length;
   const pending = pendingSyncSummary();
   const lastSuccess = payload.lastSync ? dateText(payload.lastSync) : '尚未成功同步';
-  $('save-state').textContent = '手機已保存：本機加密資料可用' + (payload.draft ? ' · 有未完成草稿' : '');
+  const unfinished = (payload.draft?.format === 'visit-draft-1' ? 1 : 0) + (payload.inlineTextDraft?.format === 'inline-text-draft-1' ? 1 : 0);
+  $('save-state').textContent = '手機已保存：本機加密資料可用' + (unfinished ? ` · 有 ${unfinished} 份未完成內容` : '');
   const macAck = !payload.lastSync ? 'Mac 尚未確認收到' : payload.dirty ? `Mac 尚未確認收到這次已完成的變更 · 最近成功同步：${lastSuccess}` : `Mac 已確認收到已完成紀錄 · 資料版本 ${payload.serverVersion || 0} · 最近成功同步：${lastSuccess}`;
-  $('sync-state').textContent = lastError ? `Mac 同步未完成：${lastError} · 最近成功同步：${lastSuccess}` : macAck + (payload.draft ? '；未完成草稿僅存手機' : '');
+  $('sync-state').textContent = lastError ? `Mac 同步未完成：${lastError} · 最近成功同步：${lastSuccess}` : macAck + (unfinished ? '；未完成內容僅存本機裝置' : '');
   $('conflict-link').hidden = !conflicts; $('conflict-link').textContent = `${conflicts} 筆衝突待確認`;
   $('device-label').textContent = payload.deviceName;
   $('connection-detail').textContent = payload.deviceName + ' · ' + location.hostname + ' · 本機已確認的資料版本 ' + (payload.serverVersion || 0);
   $('program-detail').textContent = programDetail();
-  $('local-save-detail').textContent = '手機已保存：' + (payload.draft ? '有 1 份未完成草稿；' : '') + (payload.dirty ? '有已完成紀錄等待 Mac 確認。' : '沒有已完成紀錄等待傳送。');
+  $('local-save-detail').textContent = '手機已保存：' + (unfinished ? `有 ${unfinished} 份未完成內容；` : '') + (payload.dirty ? '有已完成紀錄等待 Mac 確認。' : '沒有已完成紀錄等待傳送。');
   $('mac-ack-detail').textContent = !payload.lastSync ? 'Mac 尚未確認收到此裝置的資料。' : payload.dirty ? `Mac 已確認收到至資料版本 ${payload.serverVersion || 0}；本機仍有變更尚未確認。` : `Mac 已確認收到目前資料版本 ${payload.serverVersion || 0}。`;
   $('sync-success-detail').textContent = (payload.lastSync ? '最近成功同步：' + lastSuccess : '尚未成功同步') + (payload.dirty ? '；另有本機變更等待同步。' : '') + (syncWarning ? '；同步提醒：' + syncWarning : '');
   $('sync-failure-detail').textContent = lastSyncFailure ? dateText(lastSyncFailure.at) + ' · ' + lastSyncFailure.message + (!lastError ? '（之後已成功同步）' : '') : '本次開啟尚無同步失敗紀錄。';
@@ -798,11 +803,19 @@ function noteHTML(v, query = '') {
   const sourceState = v.sourceMissing ? '<div class="conflict-card">Google 最新匯出已沒有這段備註；程式保留最後內容，未刪除。</div>' : v.googleUpdatePending ? `<div class="conflict-card">Google 備註已有新版；你曾在 App 修改原文，因此先保留 App 文字。<details><summary>查看 Google 最新文字</summary><p>${esc(v.googleText)}</p></details></div>` : '';
   const store = by('store', v.store), hasStoreNotes = !!store && !!(store.nextRemember || store.everyTimeMust);
   const storeNotes = store && !store.conflict ? `<div class="store-memory ${hasStoreNotes ? '' : 'empty'}">${store.nextRemember ? `<p><strong>下次記得：</strong>${esc(store.nextRemember)}</p>` : ''}${store.everyTimeMust ? `<p><strong>每次必做、必給：</strong>${esc(store.everyTimeMust)}</p>` : ''}<button type="button" class="text-button store-reminder-edit" data-store-reminder="${esc(store.id)}">${hasStoreNotes ? '修改門市提醒' : '＋ 填寫門市提醒'}</button></div>` : '';
-  const inlineDraft = payload?.inlineTextDraft?.format === 'inline-text-draft-1' && payload.inlineTextDraft.id === v.id ? payload.inlineTextDraft : null;
+  const savedInlineDraft = payload?.inlineTextDraft?.format === 'inline-text-draft-1' && payload.inlineTextDraft.id === v.id ? payload.inlineTextDraft : null;
+  const liveInlineDraft = inlineTextContext?.id === v.id && inlineTextContext.after !== inlineTextContext.before ? inlineTextContext : null;
+  const inlineDraft = liveInlineDraft || savedInlineDraft;
+  const inlineBlocked = inlineTextBlockReason(v.id);
+  const inlineBlockAction = payload?.draft?.format === 'visit-draft-1'
+    ? '<button type="button" class="text-button" data-resume-visit-draft>回到未完成拜訪</button>'
+    : pendingInlineTextId() && pendingInlineTextId() !== v.id
+      ? '<button type="button" class="text-button" data-resume-inline-draft>回到未完成修改</button>'
+      : '';
   const shownText = inlineDraft?.after ?? v.text;
   const textBlock = v.conflict
     ? `<p>${highlightLiteral(v.text, query)}</p>`
-    : `<div class="inline-edit-shell ${inlineDraft ? 'editing' : ''}" data-inline-shell="${esc(v.id)}"><div class="inline-edit-text" contenteditable="true" role="textbox" aria-multiline="true" aria-label="直接修改這筆拜訪文字" spellcheck="false" data-inline-edit-text="${esc(v.id)}">${highlightLiteral(shownText, query)}</div><div class="inline-edit-actions" ${inlineDraft ? '' : 'hidden'}><span class="muted" data-inline-state="${esc(v.id)}">${inlineDraft ? '修改草稿已加密保存在這台裝置，尚未寫入正式紀錄。' : ''}</span><button type="button" data-inline-cancel="${esc(v.id)}">取消修改</button><button type="button" class="primary" data-inline-review="${esc(v.id)}">檢查後儲存</button></div></div>`;
+    : `<div class="inline-edit-shell ${inlineDraft ? 'editing' : ''} ${inlineBlocked ? 'locked' : ''}" data-inline-shell="${esc(v.id)}"><div class="inline-edit-text" contenteditable="${inlineBlocked ? 'false' : 'true'}" ${inlineBlocked ? 'aria-disabled="true"' : ''} role="textbox" aria-multiline="true" aria-label="直接修改這筆拜訪文字" spellcheck="false" data-inline-edit-text="${esc(v.id)}">${highlightLiteral(shownText, query)}</div>${inlineBlocked ? `<div class="inline-edit-blocked" role="status"><span>${esc(inlineBlocked)}</span>${inlineBlockAction}</div>` : ''}<div class="inline-edit-actions" ${inlineDraft ? '' : 'hidden'}><span class="muted" data-inline-state="${esc(v.id)}" role="status">${savedInlineDraft ? '修改草稿已加密保存在這台裝置，尚未寫入正式紀錄。' : inlineDraft ? '修改正在加密保存；正式紀錄尚未改變。' : ''}</span><button type="button" data-inline-cancel="${esc(v.id)}">取消修改</button><button type="button" class="primary" data-inline-review="${esc(v.id)}">檢查並儲存修改</button></div></div>`;
   const storeButton = store && !store.conflict && !storeIdentityPending(store) ? `data-visit-brief="${esc(v.store)}"` : `data-node-type="store" data-node-id="${esc(v.store)}"`;
   const advanced = `${sourceButton(v)}<button class="text-button" data-edit="visit:${esc(v.id)}">完整編輯</button><button class="text-button" data-history="visit:${esc(v.id)}">歷史 ${v.versions.length}</button><button class="text-button danger" data-delete="visit:${esc(v.id)}">移到回收桶</button>`;
   return `<article class="note"><div class="note-head"><time>${esc(v.date || '原始日期未提供')}</time><span class="pill">${esc(v.source)}</span></div><button class="text-button store-link" ${storeButton}>${highlightLiteral(name('store', v.store), query)}</button>${storeNotes}${v.conflict ? `<div class="conflict-card">這筆有 ${v.heads.length} 個版本。以下僅顯示其中一個，請先核對。 <button class="text-button" data-review="visit:${esc(v.id)}">處理衝突</button></div>` : ''}${sourceState}${hint}${textBlock}<div class="chips">${v.topics.map(id => chip('topic', id, query)).join('')}${v.people.map(id => chip('person', id, query)).join('')}</div>${v.next ? `<p class="next"><strong>下次跟進</strong>${highlightLiteral(v.next, query)}</p>` : ''}<div class="attachments">${(v.attachments || []).map((a, i) => `<button data-attachment="${esc(v.id)}" data-index="${i}">↧ ${esc(a.name)}</button>`).join('')}</div><div class="note-actions">${!v.conflict && store && !storeIdentityPending(store) ? `<button class="primary" data-new-visit-store="${esc(v.store)}">＋ 記錄這次拜訪</button>` : ''}<details class="more-actions"><summary>更多操作</summary><div>${advanced}</div></details></div></article>`;
@@ -1066,8 +1079,16 @@ function renderVisitSearchGroup(group, query) {
 }
 function renderVisits() {
   renderQuickVisit();
-  $('draft-banner').hidden = !payload?.draft;
-  if (payload?.draft) $('draft-banner-text').textContent = '有一份已成功保存於本機的未完成草稿' + (payload.draft.savedAt ? ' · ' + dateText(payload.draft.savedAt) : '') + '。';
+  const visitDraft = payload?.draft?.format === 'visit-draft-1' ? payload.draft : null;
+  const savedInlineDraft = payload?.inlineTextDraft?.format === 'inline-text-draft-1' ? payload.inlineTextDraft : null;
+  const liveInlineDraft = inlineTextContext && inlineTextContext.after !== inlineTextContext.before ? inlineTextContext : null;
+  const inlineDraft = savedInlineDraft || liveInlineDraft;
+  $('draft-banner').hidden = !visitDraft && !inlineDraft;
+  $('discard-draft-banner').hidden = !visitDraft;
+  $('resume-draft').textContent = visitDraft ? '繼續草稿' : '回到修改並儲存';
+  if (visitDraft) $('draft-banner-text').textContent = '有一份已成功保存於本機的未完成拜訪草稿' + (visitDraft.savedAt ? ' · ' + dateText(visitDraft.savedAt) : '') + (inlineDraft ? '；另有一筆拜訪文字修改會在這份草稿完成後繼續保留。' : '。');
+  else if (savedInlineDraft) $('draft-banner-text').textContent = '有一筆拜訪文字修改已加密保存，但尚未建立正式版本' + (savedInlineDraft.updatedAt ? ' · ' + dateText(savedInlineDraft.updatedAt) : '') + '。';
+  else if (liveInlineDraft) $('draft-banner-text').textContent = '有一筆拜訪文字正在加密保存，尚未建立正式版本。';
   const query = $('visit-search').value.trim(), visits = all('visit').slice().sort((a, b) => b.date.localeCompare(a.date));
   if (!query) {
     $('visit-list').innerHTML = visits.map(v => noteHTML(v)).join('') || '<p class="empty">沒有符合的拜訪紀錄。</p>';
@@ -1114,6 +1135,10 @@ function openEditor(type, id = null, restoreDraft = null) {
     if (id && draft.baseData && id !== draft.id) toast('先開啟尚未完成的草稿，避免覆蓋；完成後再編輯另一筆拜訪。');
     return openEditor('visit', draft.baseData ? draft.id : null, draft);
   }
+  if (type === 'visit' && !restoreDraft && pendingInlineTextId()) {
+    toast('目前有一筆尚未完成的文字修改，先回到該筆檢查並儲存；完成後再編輯其他拜訪。');
+    return resumeInlineTextDraft();
+  }
   const old = id ? by(type, id) : null; if (old?.conflict) { openReview(type, id, true); return; }
   editorContext = { type, id: id || uuid(), parents: old?.heads.map(h => h.id) || [], oldData: old ? structuredClone(old.heads[0].data) : null, draftTouched: false };
   const d = editorContext.oldData || {};
@@ -1150,6 +1175,54 @@ function quickTextParents(record) {
   return (record?.heads || []).map(head => head.id).sort();
 }
 function inlineTextValue(element) { return (element.innerText || '').replace(/\r/g, ''); }
+function pendingInlineTextId() {
+  if (inlineTextContext && inlineTextContext.after !== inlineTextContext.before) return inlineTextContext.id;
+  return payload?.inlineTextDraft?.format === 'inline-text-draft-1' ? payload.inlineTextDraft.id : '';
+}
+function inlineTextBlockReason(id) {
+  const visit = by('visit', id);
+  if (!visit || visit.deleted) return '這筆拜訪目前已不存在，不能直接修改。';
+  if (visit.conflict) return '這筆拜訪有同步衝突，請先完成核對。';
+  if (payload?.draft?.format === 'visit-draft-1') return '目前另有未完成的拜訪草稿；先完成或捨棄該草稿，才能修改這筆文字。';
+  const pendingId = pendingInlineTextId();
+  if (pendingId && pendingId !== id) return '另一筆拜訪已有未完成的文字修改；先回到該筆檢查並儲存或取消。';
+  return '';
+}
+function resumeInlineTextDraft() {
+  const id = pendingInlineTextId();
+  if (!id) return toast('目前沒有未完成的文字修改。');
+  if (payload?.draft?.format === 'visit-draft-1') {
+    toast('先完成或捨棄未完成的拜訪草稿；這筆文字修改仍會保留。');
+    return resumeVisitDraft();
+  }
+  const visit = by('visit', id);
+  if (!visit || visit.deleted) return toast('原本修改的拜訪已不存在；正式資料沒有被改寫。');
+  let element = document.querySelector(`[data-inline-edit-text="${CSS.escape(id)}"]`);
+  if (activeView === 'visits' && element && inlineTextContext?.id === id && inlineTextContext.after !== inlineTextContext.before) {
+    const collapsed = element.closest('details:not([open])'); if (collapsed) collapsed.open = true;
+    element.scrollIntoView({ block: 'center' });
+    queueMicrotask(() => element.focus({ preventScroll: true }));
+    return;
+  }
+  switchView('visits');
+  element = document.querySelector(`[data-inline-edit-text="${CSS.escape(id)}"]`);
+  if (!element) {
+    $('visit-search').value = name('store', visit.store);
+    renderVisits();
+    element = document.querySelector(`[data-inline-edit-text="${CSS.escape(id)}"]`);
+  }
+  if (!element) return toast('找不到未完成修改的原始卡片；正式資料仍未被改寫。');
+  const collapsed = element.closest('details:not([open])'); if (collapsed) collapsed.open = true;
+  element.scrollIntoView({ block: 'center' });
+  queueMicrotask(() => element.focus({ preventScroll: true }));
+}
+function blockInlineTextBeforeInput(event) {
+  const element = event.target.closest?.('[data-inline-edit-text]');
+  if (!element) return false;
+  const reason = inlineTextBlockReason(element.dataset.inlineEditText);
+  if (!reason) return false;
+  event.preventDefault(); element.blur(); toast(reason); return true;
+}
 function openStoreReminder(storeId) {
   const store = by('store', storeId);
   if (!store || store.deleted || store.conflict) return toast('這間門市目前有衝突或已移到回收桶，請先完成核對。');
@@ -1177,11 +1250,9 @@ async function saveStoreReminder(event) {
   }, 'store-reminder-error');
 }
 function beginInlineTextEdit(id, element) {
-  const visit = by('visit', id);
-  if (!visit || visit.deleted || visit.conflict) return false;
-  if (payload?.draft?.format === 'visit-draft-1') { toast('目前有未完成的完整拜訪草稿，請先完成或捨棄後再直接修改文字。'); element.blur(); return false; }
+  const visit = by('visit', id), blocked = inlineTextBlockReason(id);
+  if (blocked) { toast(blocked); element.blur(); return false; }
   const saved = payload?.inlineTextDraft?.format === 'inline-text-draft-1' ? payload.inlineTextDraft : null;
-  if (saved && saved.id !== id) { toast('另一筆拜訪已有未儲存的文字修改，請先完成或取消。'); document.querySelector(`[data-inline-edit-text="${CSS.escape(saved.id)}"]`)?.focus(); return false; }
   if (!inlineTextContext || inlineTextContext.id !== id) inlineTextContext = { id, before: saved?.id === id ? saved.before : visit.text || '', after: saved?.id === id ? saved.after : visit.text || '', parents: saved?.id === id ? [...saved.parents] : quickTextParents(visit), storeName: name('store', visit.store), date: visit.date || '', source: visit.source || '' };
   return true;
 }
@@ -1199,7 +1270,7 @@ function scheduleInlineTextDraft() {
 }
 async function flushInlineTextDraft() { clearTimeout(inlineDraftTimer); inlineDraftTimer = null; inlineDraftSaveChain = inlineDraftSaveChain.then(persistInlineTextDraft); await inlineDraftSaveChain; }
 function updateInlineText(id, element) {
-  if (!beginInlineTextEdit(id, element)) return;
+  if (!beginInlineTextEdit(id, element)) { const visit = by('visit', id); if (visit) element.textContent = visit.text || ''; return; }
   const next = inlineTextValue(element), shell = element.closest('[data-inline-shell]'), state = shell?.querySelector('[data-inline-state]');
   if (next.length > 20000) { element.textContent = inlineTextContext.after; if (state) state.textContent = '文字超過長度上限，超出的輸入未保留。'; return; }
   inlineTextContext.after = next; shell?.classList.toggle('editing', next !== inlineTextContext.before);
@@ -1581,11 +1652,13 @@ document.addEventListener('click', event => {
   if (b.dataset.quickTextBack !== undefined) { const id = quickTextContext?.id; $('quick-text-dialog').close(); quickTextContext = null; return document.querySelector(`[data-inline-edit-text="${CSS.escape(id || '')}"]`)?.focus(); }
   if (b.dataset.inlineCancel) return run(() => cancelInlineTextEdit(b.dataset.inlineCancel));
   if (b.dataset.inlineReview) return run(() => reviewInlineTextEdit(b.dataset.inlineReview), null);
+  if (b.dataset.resumeVisitDraft !== undefined) return resumeVisitDraft();
+  if (b.dataset.resumeInlineDraft !== undefined) return resumeInlineTextDraft();
   if (b.dataset.storeReminder) { if (singleStoreContext) return toast('請先完成或收起這次拜訪紀錄，再修改門市提醒。'); if ($('review').open) $('review').close(); return openStoreReminder(b.dataset.storeReminder); }
   if (b.dataset.quickVisit) return openVisitForStore(b.dataset.quickVisit);
   if (b.dataset.newVisitStore) { if ($('review').open) $('review').close(); return openVisitForStore(b.dataset.newVisitStore); }
   if (b.dataset.visitBrief) return openVisitBrief(b.dataset.visitBrief);
-  if (b.id === 'resume-draft') return resumeVisitDraft();
+  if (b.id === 'resume-draft') return payload?.draft?.format === 'visit-draft-1' ? resumeVisitDraft() : resumeInlineTextDraft();
   if (b.id === 'discard-draft') return run(discardVisitDraft, 'editor-error');
   if (b.id === 'discard-draft-banner') return run(discardVisitDraft);
   if (b.dataset.retailGroup !== undefined) return changeStoreFilter('groups', b.dataset.retailGroup);
@@ -1636,6 +1709,7 @@ document.addEventListener('click', event => {
 });
 document.addEventListener('keydown', e => { const n = e.target.closest('.node[role="button"]'); if (n && ['Enter', ' '].includes(e.key) && !busy) { e.preventDefault(); if (n.dataset.candidateKey) openCandidateDetail(n.dataset.candidateKey, n.dataset.candidateStore || ''); else navigate(n.dataset.nodeType, n.dataset.nodeId); } });
 document.addEventListener('focusin', event => { const editor = event.target.closest?.('[data-inline-edit-text]'); if (editor) beginInlineTextEdit(editor.dataset.inlineEditText, editor); });
+document.addEventListener('beforeinput', blockInlineTextBeforeInput);
 document.addEventListener('input', event => { const editor = event.target.closest?.('[data-inline-edit-text]'); if (editor) updateInlineText(editor.dataset.inlineEditText, editor); });
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { clearNearbyPosition(); if (editorContext?.type === 'visit' || singleStoreContext) void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); document.body.classList.add('privacy-veil'); if (payload || busy) lockNow(false); }
