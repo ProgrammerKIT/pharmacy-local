@@ -23,6 +23,7 @@ function highlightLiteral(value, query) {
 }
 const titles = { explore: '關聯探索', visits: '拜訪', stores: '門市', regional: '區域觀察', entities: '人物與主題', csv: '匯入 CSV', quality: '資料整理', sync: '資料與安全', trash: '回收桶' };
 const kinds = { store: '門市', visit: '拜訪', person: '人物', topic: '主題' };
+const NEARBY_STORE_LIMIT = 4;
 let key = null, meta = null, payload = null, slot = null, localRevision = 0, busy = false, pendingLock = false, activeView = 'visits';
 let focus = { type: 'topic', id: '' }, graphPage = 0, trail = [], records = [], editorContext = null, toastTimer, autoTimer, objectURLs = [];
 let lastError = '', offlineReady = false, storagePersistent = false, autoFetching = false, gateOpening = false;
@@ -161,10 +162,10 @@ function renderQuickVisit() {
   if (!payload) return;
   const mobile = mobileLocationDevice(navigator), ready = mobile && nearbyState.status === 'ready';
   const available = all('store').filter(s => !s.conflict && !s.deleted);
-  const located = ready ? nearestStores(available, nearbyState.position) : [];
+  const located = ready ? nearestStores(available, nearbyState.position, NEARBY_STORE_LIMIT) : [];
   const coverage = available.filter(s => storeCoordinates(s)).length;
   const title = $('quick-visit-title'), status = $('nearby-status'), retry = $('nearby-retry');
-  title.textContent = mobile ? '附近最近 3 間門市' : '最近使用的門市';
+  title.textContent = mobile ? `附近最近 ${NEARBY_STORE_LIMIT} 間門市` : '最近使用的門市';
   retry.hidden = !mobile; retry.disabled = nearbyState.status === 'locating';
   retry.textContent = nearbyState.status === 'locating' ? '定位中…' : '重新定位';
   let message = mobile ? nearbyState.message : '快速選擇門市開始拜訪；電腦不啟動定位。';

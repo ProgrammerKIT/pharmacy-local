@@ -30,26 +30,27 @@ test('nearest three use straight-line distance, exclude deleted/conflicted store
 const app=fs.readFileSync(new URL('../public/app.js',import.meta.url),'utf8');
 function harness(mobile=true){
  const nodes=new Map(),$=id=>{if(!nodes.has(id))nodes.set(id,{textContent:'',innerHTML:'',hidden:false,disabled:false});return nodes.get(id);};
- let calls=0,success,failure,options;
- const c=vm.createContext({$,mobileLocationDevice,validCoordinates,nearestStores,storeCoordinates,Date,isSecureContext:true,
+ let calls=0,success,failure,options,recentLimit=0;
+ const c=vm.createContext({$,mobileLocationDevice,validCoordinates,nearestStores,storeCoordinates,Date,isSecureContext:true,NEARBY_STORE_LIMIT:4,
   navigator:{userAgent:mobile?'iPhone':'Macintosh',geolocation:{getCurrentPosition(s,f,o){calls++;success=s;failure=f;options=o;}}},
   document:{hidden:false},payload:{bundle:{ops:[],blobs:{}}},key:{},nearbyRequest:0,nearbyDenied:false,nearbyState:{status:'idle',position:null,message:''},
-  all:()=>[store('a',25,121),store('b',25.001,121),store('c',25.002,121),store('d',25.003,121)],
-  recentStores:()=>[store('recent',26,121)],storeIdentityPending:()=>false,esc:x=>String(x)
+  all:()=>[store('a',25,121),store('b',25.001,121),store('c',25.002,121),store('d',25.003,121),store('e',25.004,121)],
+  recentStores:limit=>{recentLimit=limit;return[store('recent',26,121)];},storeIdentityPending:()=>false,esc:x=>String(x)
  });
  vm.runInContext(app.slice(app.indexOf('function clearNearbyPosition('),app.indexOf('function visitStoreSearchText(')),c);
- return {c,$,calls:()=>calls,success:()=>success,failure:()=>failure,options:()=>options};
+ return {c,$,calls:()=>calls,success:()=>success,failure:()=>failure,options:()=>options,recentLimit:()=>recentLimit};
 }
-test('mobile auto location requests once, uses bounded fresh fixes, and only renders the nearest three',()=>{
+test('mobile auto location requests once, uses bounded fresh fixes, and renders the nearest four',()=>{
  const h=harness();const before=JSON.stringify(h.c.payload);h.c.requestNearbyPosition();h.c.requestNearbyPosition();assert.equal(h.calls(),1);
  assert.deepEqual({...h.options()},{enableHighAccuracy:true,timeout:15000,maximumAge:0});
  h.success()({coords:{latitude:25,longitude:121,accuracy:20},timestamp:Date.now()});
- assert.equal((h.$('recent-store-list').innerHTML.match(/data-(?:quick-visit|visit-brief)/g)||[]).length,3);
+ assert.equal((h.$('recent-store-list').innerHTML.match(/data-(?:quick-visit|visit-brief)/g)||[]).length,4);
+ assert.match(h.$('quick-visit-title').textContent,/最近 4 間/);
  assert.match(h.$('nearby-status').textContent,/直線距離/);assert.equal(JSON.stringify(h.c.payload),before);
 });
 test('desktop never requests geolocation, including retry, and renders recent-store cards',()=>{
  const h=harness(false);h.c.requestNearbyPosition();h.c.requestNearbyPosition(true);h.c.renderQuickVisit();
- assert.equal(h.calls(),0);assert.equal(h.$('nearby-retry').hidden,true);assert.match(h.$('quick-visit-title').textContent,/最近使用/);
+ assert.equal(h.calls(),0);assert.equal(h.$('nearby-retry').hidden,true);assert.match(h.$('quick-visit-title').textContent,/最近使用/);assert.equal(h.recentLimit(),3);
 });
 test('denial does not repeatedly prompt; retry is explicit; timeout has a labelled non-distance fallback',()=>{
  const h=harness();h.c.requestNearbyPosition();h.failure()({code:1});h.c.requestNearbyPosition();assert.equal(h.calls(),1);
