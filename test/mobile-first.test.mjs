@@ -99,7 +99,7 @@ test('mobile-first runtime files are valid JavaScript and expose the daily captu
   assert.match(app, /請先完成或收起這次拜訪紀錄/);
   assert.match(style, /#single-store-text\{[^}]*min-height/);
   assert.match(style, /review-persistent-actions\.capture-active/);
-  assert.match(app, /展開全部.*筆歷史紀錄/);
+  assert.match(app, /既有拜訪原文.*全部.*筆.*可直接修改/);
   assert.match(app, /不生成或改寫正式拜訪內容/);
   assert.match(html, /id="review-persistent-actions"/);
   assert.match(html, /id="review" tabindex="-1" aria-labelledby="review-title"/);
@@ -111,11 +111,15 @@ test('mobile-first runtime files are valid JavaScript and expose the daily captu
   assert.match(style, /#review-body\{[^}]*overflow-y:auto[^}]*overscroll-behavior-y:contain/);
   assert.match(style, /#review\.visit-brief-dialog\{[^}]*height:100dvh/);
   const visitBriefSource = app.slice(app.indexOf('function openVisitBrief('), app.indexOf('function canonicalPerson('));
+  const visitBriefLayout = visitBriefSource.slice(visitBriefSource.indexOf('reviewBody.innerHTML'));
   assert.doesNotMatch(visitBriefSource, /<h3>\$\{esc\(brief\.store\.name\)\}<\/h3>/);
-  assert.ok(visitBriefSource.indexOf('${reminders}') < visitBriefSource.indexOf('brief-followups'));
-  assert.ok(visitBriefSource.indexOf('singleStoreCaptureHTML()') < visitBriefSource.indexOf('brief-followups'));
-  assert.ok(visitBriefSource.indexOf('brief-followups') < visitBriefSource.indexOf('brief-secondary'));
-  assert.ok(visitBriefSource.indexOf('brief-secondary') < visitBriefSource.indexOf('brief-history'));
+  assert.ok(visitBriefLayout.indexOf('${reminders}') < visitBriefLayout.indexOf('brief-followups'));
+  assert.ok(visitBriefLayout.indexOf('singleStoreCaptureHTML()') < visitBriefLayout.indexOf('brief-followups'));
+  assert.ok(visitBriefLayout.indexOf('brief-followups') < visitBriefLayout.indexOf('brief-secondary'));
+  assert.ok(visitBriefLayout.indexOf('brief-secondary') < visitBriefLayout.indexOf('brief-history'));
+  assert.match(visitBriefSource, /inlineVisitTextHTML\(item\)/);
+  assert.match(visitBriefSource, /點一下既有拜訪原文即可直接輸入/);
+  assert.match(visitBriefSource, /brief-history.*preserved.*historyOpen.*'open'/s);
   assert.match(visitBriefSource, /review-persistent-actions/);
   assert.match(visitBriefSource, /reviewMode: 'visit-brief'/);
   assert.match(app, /function briefTraceHTML\(/);
@@ -123,12 +127,12 @@ test('mobile-first runtime files are valid JavaScript and expose the daily captu
   assert.match(visitBriefSource, /相同內容/);
   assert.match(visitBriefSource, /點選每個候選可核對命中的原句、日期、來源與原文狀態/);
   assert.match(visitBriefSource, /完整歷史永遠保留每一筆/);
-  assert.match(visitBriefSource, /這裡不去重，逐筆保留正式拜訪原文與下次跟進/);
+  assert.match(visitBriefSource, /這裡不去重，每筆原文、下次跟進與歷史都保留/);
   assert.doesNotMatch(visitBriefSource, /persist\(|commitRevision\(|\brevision\(/);
   assert.doesNotMatch(visitBriefSource, /fetch\(|api\(/);
   assert.match(app, /class="advanced-fields"/);
   assert.match(app, /地址與系統資料/);
-  const storeNotesSource = app.slice(app.indexOf('const storeNotes ='), app.indexOf('const inlineDraft'));
+  const storeNotesStart = app.indexOf('const storeNotes ='), storeNotesSource = app.slice(storeNotesStart, app.indexOf('const textBlock', storeNotesStart));
   assert.ok(storeNotesSource.indexOf("store.nextRemember ?") < storeNotesSource.indexOf("store.everyTimeMust ?"), 'store reminders render in the requested order');
   assert.match(app, /快速修改不能把整段文字存成空白/);
   assert.match(app, /這次只會修改這一筆拜訪的文字欄/);
@@ -279,6 +283,35 @@ test('quick text confirmation highlights only changed portions without changing 
   assert.ok(diff.before.some(x => x.kind === 'same' && x.text.includes('第一行維持不變')));
 });
 
+test('single-store history renders each formal visit as the same safe inline editor', () => {
+  const visit = { id: 'visit-brief', text: '既有正式原文', conflict: false };
+  const original = structuredClone(visit);
+  const context = vm.createContext({
+    payload: { draft: null, inlineTextDraft: null }, inlineTextContext: null,
+    inlineTextBlockReason: () => '', pendingInlineTextId: () => '',
+    esc: value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;'),
+    highlightLiteral: value => String(value)
+  });
+  vm.runInContext(app.slice(app.indexOf('function inlineVisitTextHTML('), app.indexOf('function noteHTML(')), context);
+  let rendered = context.inlineVisitTextHTML(visit);
+  assert.match(rendered, /contenteditable="true"/);
+  assert.match(rendered, /data-inline-edit-text="visit-brief"/);
+  assert.match(rendered, /data-inline-review="visit-brief"/);
+  assert.match(rendered, /inline-edit-actions" hidden/);
+
+  context.payload.inlineTextDraft = { format: 'inline-text-draft-1', id: 'visit-brief', before: '既有正式原文', after: '尚未確認的修改', parents: ['head-1'] };
+  rendered = context.inlineVisitTextHTML(visit);
+  assert.match(rendered, /尚未確認的修改/);
+  assert.doesNotMatch(rendered, /inline-edit-actions" hidden/);
+  assert.match(rendered, /檢查並儲存修改/);
+
+  context.payload.inlineTextDraft = null; context.inlineTextBlockReason = () => '目前有未完成內容';
+  rendered = context.inlineVisitTextHTML(visit);
+  assert.match(rendered, /contenteditable="false"/);
+  assert.match(rendered, /目前有未完成內容/);
+  assert.deepEqual(visit, original, 'rendering must not mutate the formal visit');
+});
+
 test('inline text draft is encrypted locally without creating a formal revision', async () => {
   const bundle = emptyBundle('inline-text-draft-test');
   const store = revision('store', 'store-inline', { name: '虛構行內測試門市', city: '', district: '', channel: '', attr: '', contact: '' }, [], 'phone');
@@ -305,13 +338,13 @@ test('blocked inline editing cannot create unsavable visible text and can return
     blur() { blurred = true; }, scrollIntoView() { scrolled = true; }, focus() { focused = true; }
   };
   const context = vm.createContext({
-    inlineTextContext: null, inlineDraftTimer: null, inlineDraftSaveChain: Promise.resolve(), activeView: 'visits',
+    inlineTextContext: null, inlineDraftTimer: null, inlineDraftSaveChain: Promise.resolve(), activeView: 'visits', singleStoreContext: null,
     payload: { draft: { format: 'visit-draft-1' }, inlineTextDraft: null },
     by: (type, id) => type === 'visit' ? visits.get(id) : null,
     toast: value => { message = value; },
     document: { querySelector: () => activeElement }, CSS: { escape: value => value },
     switchView: () => { switched++; }, renderVisits() {}, name: () => '虛構門市',
-    $: () => ({ value: '' }), queueMicrotask: fn => fn(), resumeVisitDraft: () => { resumedVisit++; },
+    $: id => id === 'visit-list' ? { querySelector: () => activeElement } : { value: '' }, queueMicrotask: fn => fn(), resumeVisitDraft: () => { resumedVisit++; },
     clearTimeout, setTimeout
   });
   const source = app.slice(app.indexOf('function quickTextParents('), app.indexOf('async function cancelInlineTextEdit('));
@@ -380,16 +413,16 @@ test('quick text edit creates one new visit revision and preserves every non-tex
   assert.equal(bundle.ops.find(op => op.id === beforeHead.id).data.text, '修改前原文');
 });
 
-test('successful inline text save clears edit state before rerender and cannot leave a second save prompt', async () => {
+test('successful single-store inline save clears edit state and refreshes the same page without a second prompt', async () => {
   const bundle = emptyBundle('inline-save-state-test');
   bundle.ops.push(revision('store', 'store-1', { name: '虛構測試門市', city: '', district: '', channel: '', attr: '', contact: '' }, [], 'phone'));
   const original = revision('visit', 'visit-1', { store: 'store-1', date: '2026-09-30', source: '現場觀察', text: '修改前原文', next: '', topics: [], people: [], attachments: [] }, [], 'phone');
   bundle.ops.push(original);
-  let closed = false, rendered = false, message = '';
+  let closed = false, rendered = false, message = '', refreshed = null;
   const context = vm.createContext({
     payload: { schema: 1, device: 'phone', bundle, dirty: false, inlineTextDraft: { format: 'inline-text-draft-1', id: 'visit-1', before: '修改前原文', after: '修改後原文', parents: [original.id] } },
-    quickTextContext: { id: 'visit-1', before: '修改前原文', after: '修改後原文', parents: [original.id], step: 'confirm' },
-    inlineTextContext: { id: 'visit-1', before: '修改前原文', after: '修改後原文', parents: [original.id] },
+    quickTextContext: { id: 'visit-1', before: '修改前原文', after: '修改後原文', parents: [original.id], step: 'confirm', briefStoreId: 'store-1' },
+    inlineTextContext: { id: 'visit-1', before: '修改前原文', after: '修改後原文', parents: [original.id], briefStoreId: 'store-1' },
     structuredClone, revision, validateBundle,
     quickTextParents: record => record.heads.map(head => head.id).sort(),
     by: (type, id) => project(context.payload.bundle).find(record => record.type === type && record.id === id),
@@ -400,7 +433,8 @@ test('successful inline text save clears edit state before rerender and cannot l
       assert.equal(context.inlineTextContext, null, 'inline draft state must be cleared before cards rerender');
       assert.equal(context.payload.inlineTextDraft, null, 'encrypted draft must be cleared after the formal revision is saved');
     },
-    $: id => id === 'quick-text-dialog' ? { close() { closed = true; } } : null,
+    $: id => id === 'quick-text-dialog' ? { close() { closed = true; } } : id === 'review' ? { open: true, dataset: { singleStoreId: 'store-1' } } : null,
+    openVisitBrief: (storeId, options) => { refreshed = [storeId, options]; },
     toast: value => { message = value; },
     run: async fn => fn()
   });
@@ -410,12 +444,15 @@ test('successful inline text save clears edit state before rerender and cannot l
   const saved = project(context.payload.bundle).find(record => record.type === 'visit');
   assert.equal(prevented, true); assert.equal(rendered, true); assert.equal(closed, true);
   assert.equal(saved.text, '修改後原文'); assert.equal(saved.versions.length, 2);
+  assert.equal(refreshed[0], 'store-1'); assert.equal(refreshed[1].preservePosition, true);
   assert.match(message, /已建立為同一筆拜訪的新版本/);
 });
 
 test('SOP1 explicitly separates App daily notes from Google CSV imports and keeps retention undecided', () => {
   assert.equal(SOP1_VERSION, '1.2.16');
-  assert.match(sop, /流程版本：1\.2\.25/);
+  assert.match(sop, /流程版本：1\.2\.26/);
+  assert.match(sop, /既有拜訪原文區預設展開/);
+  assert.match(sop, /完成或取消後須留在同一個單店頁面/);
   assert.match(sop, /先清除該筆草稿與編輯狀態再重繪/);
   assert.match(sop, /定位成功時.*最多 4 間門市/);
   assert.match(sop, /桌機與定位失敗時的最近使用備用清單維持最多 3 間/);
