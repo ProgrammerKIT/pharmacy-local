@@ -5,6 +5,7 @@ import { PROFILE_FIELDS, FILL_FIELDS, scanQuality, setDistinctReview, sourceSugg
 import { entityRule, evidenceKind, sourceTags, groupCSVNotes, storeIdentityPending, relationVisitAllowed, retailChannel, filterStoreDirectory, candidateRelationsForStore, candidateOverview, candidateTrend, visitBriefForStore, regionalOptions, regionalInsights } from './relations.js';
 import { APP_VERSION } from './version.js';
 import { startUpdates, requestLocal, diagnoseConnection } from './update-client.js';
+import { NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption } from './reminders.js';
 
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -24,6 +25,58 @@ function highlightLiteral(value, query) {
 const titles = { explore: '關聯探索', visits: '拜訪', stores: '門市', regional: '區域觀察', entities: '人物與主題', csv: '匯入 CSV', quality: '資料整理', sync: '資料與安全', trash: '回收桶' };
 const kinds = { store: '門市', visit: '拜訪', person: '人物', topic: '主題' };
 const NEARBY_STORE_LIMIT = 4;
+function reminderOptionsHTML(targetId) {
+  return `<fieldset class="reminder-options" data-reminder-options-for="${esc(targetId)}"><legend>快速勾選（可複選）</legend><p class="muted">勾選會加入下方「下次記得」；取消只移除完全相同的獨立項目，既有自由文字不會自動改寫。</p><div class="reminder-option-grid">${NEXT_REMINDER_OPTIONS.map(option => `<label class="check"><input type="checkbox" data-reminder-option value="${esc(option)}">${esc(option)}</label>`).join('')}</div><div class="reminder-custom-option"><label class="check"><input type="checkbox" data-reminder-custom-toggle>自訂</label><input type="text" data-reminder-custom-input maxlength="120" placeholder="空白，自行填寫" aria-label="自訂下次記得項目" autocomplete="off"></div></fieldset>`;
+}
+function reminderOptionTarget(group) { return $(group?.dataset.reminderOptionsFor || ''); }
+function reminderOptionError(group, message = '') {
+  const target = group?.closest('#store-reminder-dialog') ? $('store-reminder-error') : $('editor-error');
+  if (target) target.textContent = message;
+}
+function syncReminderOptionGroup(group) {
+  const target = reminderOptionTarget(group); if (!target) return;
+  group.querySelectorAll('[data-reminder-option]').forEach(input => { input.checked = reminderHasOption(target.value, input.value); });
+  const applied = group.dataset.customApplied || '';
+  if (applied && !reminderHasOption(target.value, applied)) {
+    group.dataset.customApplied = '';
+    group.querySelector('[data-reminder-custom-toggle]').checked = false;
+  }
+}
+function resetReminderOptionGroup(targetId) {
+  const group = document.querySelector(`[data-reminder-options-for="${CSS.escape(targetId)}"]`); if (!group) return;
+  group.dataset.customApplied = '';
+  group.querySelector('[data-reminder-custom-toggle]').checked = false;
+  group.querySelector('[data-reminder-custom-input]').value = '';
+  syncReminderOptionGroup(group);
+}
+function setReminderDraftValue(group, value) {
+  const target = reminderOptionTarget(group), limit = Number(target?.maxLength || 2000);
+  if (!target) return false;
+  if (value.length > limit) { reminderOptionError(group, `下次記得最多 ${limit} 個字；這個選項尚未加入。`); return false; }
+  reminderOptionError(group);
+  target.value = value;
+  target.dispatchEvent(new Event('input', { bubbles: true }));
+  return true;
+}
+function changeReminderOption(input) {
+  const group = input.closest('[data-reminder-options-for]'), target = reminderOptionTarget(group); if (!target) return;
+  const before = target.value, after = setReminderOption(before, input.value, input.checked);
+  if (!setReminderDraftValue(group, after)) input.checked = !input.checked;
+}
+function changeCustomReminderOption(group, selected = true) {
+  const target = reminderOptionTarget(group), toggle = group.querySelector('[data-reminder-custom-toggle]'), input = group.querySelector('[data-reminder-custom-input]');
+  if (!target) return;
+  const before = target.value, previous = group.dataset.customApplied || '', current = input.value.replace(/[\r\n]+/g, ' ').trim();
+  if (!selected) {
+    if (!setReminderDraftValue(group, previous ? setReminderOption(before, previous, false) : before)) { toggle.checked = true; return; }
+    group.dataset.customApplied = ''; return;
+  }
+  if (!current) { toggle.checked = true; input.focus(); return; }
+  let after = previous && previous !== current ? setReminderOption(before, previous, false) : before;
+  after = setReminderOption(after, current, true);
+  if (!setReminderDraftValue(group, after)) { input.value = previous; toggle.checked = !!previous; return; }
+  group.dataset.customApplied = current; toggle.checked = true;
+}
 function lockPhoneViewportScale() {
   if (!window.matchMedia?.('(max-width: 760px)').matches) return;
   const horizontalScrollSelector = '.rail nav,#store-list,.csv-table-wrap,.quality-table-wrap';
@@ -108,7 +161,7 @@ function openDialog(dialog, { reviewMode = '' } = {}) {
   requestAnimationFrame(() => { if (dialog.open) resetDialogScroll(dialog); });
 }
 function buttons(disabled) {
-  document.querySelectorAll('button, #csv-view input, #csv-view select, #regional-view select, #editor input, #editor select, #editor textarea, #review input, #review select, #review textarea, #store-reminder-dialog textarea').forEach(el => {
+  document.querySelectorAll('button, #csv-view input, #csv-view select, #regional-view select, #editor input, #editor select, #editor textarea, #review input, #review select, #review textarea, #store-reminder-dialog input, #store-reminder-dialog textarea').forEach(el => {
     if (el.dataset.close) return;
     if (disabled) { el.dataset.busyDisabled = el.disabled ? '1' : '0'; el.disabled = true; }
     else if (el.dataset.busyDisabled !== undefined) { el.disabled = el.dataset.busyDisabled === '1'; delete el.dataset.busyDisabled; }
@@ -1210,11 +1263,12 @@ function openEditor(type, id = null, restoreDraft = null) {
     $('editor-save').textContent = '儲存';
     $('discard-draft').hidden = true;
     let fields = input('f-name', `${kinds[type]}名稱`, d.name, 200, true);
-    if (type === 'store') fields += `<label>下次記得<textarea id="f-next-remember" maxlength="2000">${esc(d.nextRemember || '')}</textarea></label><label>每次必做、必給<textarea id="f-every-time-must" maxlength="2000">${esc(d.everyTimeMust || '')}</textarea></label>${input('f-contact', '主要窗口', d.contact)}${input('f-attr', '門市特性／客群', d.attr)}<details class="advanced-fields"><summary>地址與系統資料</summary><p class="muted">這些欄位供地理整理與來源核對；不知道時可以留空，不影響拜訪紀錄。</p><div class="field-grid">${input('f-city', '縣市', d.city)}${input('f-district', '地區', d.district)}</div><label>通路<select id="f-channel">${[...new Set(['', '連鎖', '獨立', '加盟', '診所', '其他', ...(d.channel ? [d.channel] : [])])].map(c => `<option value="${esc(c)}" ${c === d.channel ? 'selected' : ''}>${esc(c || '未分類')}</option>`).join('')}</select></label>${input('f-address', '地址', d.address, 2000)}${input('f-map-url', 'Google Maps 網址（只保存，不自動開啟）', d.mapUrl, 2000)}</details>`;
+    if (type === 'store') fields += `${reminderOptionsHTML('f-next-remember')}<label>下次記得<textarea id="f-next-remember" maxlength="2000">${esc(d.nextRemember || '')}</textarea></label><label>每次必做、必給<textarea id="f-every-time-must" maxlength="2000">${esc(d.everyTimeMust || '')}</textarea></label>${input('f-contact', '主要窗口', d.contact)}${input('f-attr', '門市特性／客群', d.attr)}<details class="advanced-fields"><summary>地址與系統資料</summary><p class="muted">這些欄位供地理整理與來源核對；不知道時可以留空，不影響拜訪紀錄。</p><div class="field-grid">${input('f-city', '縣市', d.city)}${input('f-district', '地區', d.district)}</div><label>通路<select id="f-channel">${[...new Set(['', '連鎖', '獨立', '加盟', '診所', '其他', ...(d.channel ? [d.channel] : [])])].map(c => `<option value="${esc(c)}" ${c === d.channel ? 'selected' : ''}>${esc(c || '未分類')}</option>`).join('')}</select></label>${input('f-address', '地址', d.address, 2000)}${input('f-map-url', 'Google Maps 網址（只保存，不自動開啟）', d.mapUrl, 2000)}</details>`;
     if (type === 'store' && d.csvIdentityPending) fields += '<label class="check"><input type="checkbox" id="f-identity-reviewed">我已核實此門市身分與來源，解除待確認標記並允許關聯分析</label>';
     if (type === 'person') fields += `${input('f-role', '職務／與門市的關係', d.role)}${textarea('f-desc', '身分證據與備註', d.desc)}<label class="check"><input type="checkbox" id="f-confirmed" ${d.confirmed ? 'checked' : ''}> 我已核對此人物的身分</label><label>已確認是同一人時，連到<select id="f-same"><option value="">保持獨立人物</option>${all('person').filter(p => p.id !== id && !p.sameAs).map(p => `<option value="${esc(p.id)}" ${d.sameAs === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label><p class="muted">須先勾選已核對身分。此設定只合併探索路徑，不改寫原始拜訪文字。</p>`;
     if (type === 'topic') fields += textarea('f-desc', '主題定義與備註', d.desc);
     $('editor-fields').innerHTML = fields;
+    if (type === 'store') resetReminderOptionGroup('f-next-remember');
   }
   openDialog($('editor'));
 }
@@ -1288,6 +1342,7 @@ function openStoreReminder(storeId) {
   $('store-reminder-next').value = store.nextRemember || '';
   $('store-reminder-every').value = store.everyTimeMust || '';
   $('store-reminder-error').textContent = '';
+  resetReminderOptionGroup('store-reminder-next');
   openDialog($('store-reminder-dialog'));
   $('store-reminder-next').focus();
 }
@@ -1773,7 +1828,15 @@ document.addEventListener('click', event => {
 document.addEventListener('keydown', e => { const n = e.target.closest('.node[role="button"]'); if (n && ['Enter', ' '].includes(e.key) && !busy) { e.preventDefault(); if (n.dataset.candidateKey) openCandidateDetail(n.dataset.candidateKey, n.dataset.candidateStore || ''); else navigate(n.dataset.nodeType, n.dataset.nodeId); } });
 document.addEventListener('focusin', event => { const editor = event.target.closest?.('[data-inline-edit-text]'); if (editor) beginInlineTextEdit(editor.dataset.inlineEditText, editor); });
 document.addEventListener('beforeinput', blockInlineTextBeforeInput);
-document.addEventListener('input', event => { const editor = event.target.closest?.('[data-inline-edit-text]'); if (editor) updateInlineText(editor.dataset.inlineEditText, editor); });
+document.addEventListener('input', event => {
+  const editor = event.target.closest?.('[data-inline-edit-text]'); if (editor) updateInlineText(editor.dataset.inlineEditText, editor);
+  const custom = event.target.closest?.('[data-reminder-custom-input]'); if (custom) changeCustomReminderOption(custom.closest('[data-reminder-options-for]'));
+  if (event.target.id) document.querySelectorAll(`[data-reminder-options-for="${CSS.escape(event.target.id)}"]`).forEach(syncReminderOptionGroup);
+});
+document.addEventListener('change', event => {
+  const option = event.target.closest?.('[data-reminder-option]'); if (option) return changeReminderOption(option);
+  const toggle = event.target.closest?.('[data-reminder-custom-toggle]'); if (toggle) changeCustomReminderOption(toggle.closest('[data-reminder-options-for]'), toggle.checked);
+});
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { clearNearbyPosition(); if (editorContext?.type === 'visit' || singleStoreContext) void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); document.body.classList.add('privacy-veil'); if (payload || busy) lockNow(false); }
   else if (pendingLock || !payload) { pendingLock = false; document.body.classList.remove('privacy-veil'); showGate(); }
