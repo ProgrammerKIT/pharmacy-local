@@ -12,24 +12,46 @@ const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), '
 const style = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
 const sop = fs.readFileSync(new URL('../SOP1.md', import.meta.url), 'utf8');
 
-test('phone UI uses one fixed iPhone Pro canvas and prevents page scaling', () => {
+test('phone UI uses one fixed iPhone Pro canvas and prevents page scaling or horizontal drift', () => {
   assert.match(html, /name="viewport" content="width=393, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content"/);
   assert.match(style, /--iphone-pro-canvas-width:393px;--iphone-pro-canvas-height:852px/);
-  assert.match(style, /html\{[^}]*width:var\(--iphone-pro-canvas-width\)[^}]*touch-action:pan-x pan-y/);
+  assert.match(style, /html\{[^}]*width:var\(--iphone-pro-canvas-width\)[^}]*overflow-x:clip[^}]*overscroll-behavior-x:none/);
+  assert.match(style, /body\{[^}]*inset-inline-start:0[^}]*overflow-x:clip[^}]*overscroll-behavior-x:none/);
   assert.match(style, /#gate,#workspace,#workspace>main\{[^}]*min-height:var\(--iphone-pro-canvas-height\)/);
 
   const source = app.slice(app.indexOf('function lockPhoneViewportScale('), app.indexOf('let key ='));
   const listeners = new Map();
-  const document = { addEventListener: (type, handler, options) => listeners.set(type, { handler, options }) };
-  vm.runInNewContext(source, { window: { matchMedia: () => ({ matches: true }) }, document });
+  const viewportListeners = new Map(), windowListeners = new Map();
+  const scrollingElement = { scrollLeft: 0 }, documentElement = { scrollLeft: 0 }, body = { scrollLeft: 0 };
+  const document = { scrollingElement, documentElement, body, addEventListener: (type, handler, options) => listeners.set(type, { handler, options }) };
+  let windowScroll = null;
+  const window = {
+    matchMedia: () => ({ matches: true }), scrollX: 0, scrollY: 222,
+    scrollTo: (x, y) => { windowScroll = [x, y]; },
+    addEventListener: (type, handler, options) => windowListeners.set(type, { handler, options }),
+    visualViewport: { addEventListener: (type, handler, options) => viewportListeners.set(type, { handler, options }) }
+  };
+  vm.runInNewContext(source, { window, document, requestAnimationFrame: fn => fn() });
   for (const type of ['gesturestart', 'gesturechange', 'gestureend', 'touchmove']) {
     assert.equal(listeners.get(type)?.options?.passive, false, `${type} must be cancellable`);
   }
+  assert.equal(listeners.get('touchstart')?.options?.passive, true);
+  assert.equal(listeners.get('scroll')?.options?.passive, true);
+  assert.equal(viewportListeners.get('scroll')?.options?.passive, true);
   let prevented = 0;
   listeners.get('gesturestart').handler({ preventDefault: () => prevented++ });
   listeners.get('touchmove').handler({ touches: [{}, {}], preventDefault: () => prevented++ });
-  listeners.get('touchmove').handler({ touches: [{}], preventDefault: () => prevented++ });
-  assert.equal(prevented, 2, 'gesture and multi-touch scaling are blocked; one-finger scrolling remains available');
+  listeners.get('touchstart').handler({ touches: [{ clientX: 100, clientY: 100 }], target: { closest: () => null } });
+  listeners.get('touchmove').handler({ touches: [{ clientX: 135, clientY: 102 }], preventDefault: () => prevented++ });
+  listeners.get('touchmove').handler({ touches: [{ clientX: 102, clientY: 135 }], preventDefault: () => prevented++ });
+  listeners.get('touchstart').handler({ touches: [{ clientX: 100, clientY: 100 }], target: { closest: () => ({}) } });
+  listeners.get('touchmove').handler({ touches: [{ clientX: 135, clientY: 102 }], preventDefault: () => prevented++ });
+  assert.equal(prevented, 3, 'scale and whole-page horizontal drag are blocked; vertical and explicit horizontal scrollers remain available');
+
+  scrollingElement.scrollLeft = 30; documentElement.scrollLeft = 20; body.scrollLeft = 10; window.scrollX = 30;
+  listeners.get('scroll').handler();
+  assert.equal(scrollingElement.scrollLeft, 0); assert.equal(documentElement.scrollLeft, 0); assert.equal(body.scrollLeft, 0);
+  assert.deepEqual(windowScroll, [0, 222]);
 });
 
 test('mobile-first runtime files are valid JavaScript and expose the daily capture contract', () => {
@@ -470,8 +492,9 @@ test('successful single-store inline save clears edit state and refreshes the sa
 
 test('SOP1 explicitly separates App daily notes from Google CSV imports and keeps retention undecided', () => {
   assert.equal(SOP1_VERSION, '1.2.16');
-  assert.match(sop, /流程版本：1\.2\.27/);
+  assert.match(sop, /流程版本：1\.2\.28/);
   assert.match(sop, /393 × 852 CSS 像素/);
+  assert.match(sop, /水平位移必須固定為 0/);
   assert.match(sop, /不得修改任何客戶資料、正式版本、同步內容或備份/);
   assert.match(sop, /既有拜訪原文區預設展開/);
   assert.match(sop, /完成或取消後須留在同一個單店頁面/);
