@@ -26,11 +26,34 @@ const kinds = { store: '門市', visit: '拜訪', person: '人物', topic: '主�
 const NEARBY_STORE_LIMIT = 4;
 function lockPhoneViewportScale() {
   if (!window.matchMedia?.('(max-width: 760px)').matches) return;
+  const horizontalScrollSelector = '.rail nav,#store-list,.csv-table-wrap,.quality-table-wrap';
   const preventScale = event => event.preventDefault();
   for (const type of ['gesturestart', 'gesturechange', 'gestureend']) document.addEventListener(type, preventScale, { passive: false });
+  let touchOrigin = null;
+  document.addEventListener('touchstart', event => {
+    const touch = event.touches?.length === 1 ? event.touches[0] : null;
+    touchOrigin = touch ? { x: touch.clientX, y: touch.clientY, horizontalScroller: !!event.target?.closest?.(horizontalScrollSelector) } : null;
+  }, { passive: true });
   document.addEventListener('touchmove', event => {
-    if (event.touches?.length > 1) event.preventDefault();
+    if (event.touches?.length > 1) return event.preventDefault();
+    const touch = event.touches?.[0];
+    if (!touch || !touchOrigin || touchOrigin.horizontalScroller) return;
+    const dx = Math.abs(touch.clientX - touchOrigin.x), dy = Math.abs(touch.clientY - touchOrigin.y);
+    if (dx > dy + 4) event.preventDefault();
   }, { passive: false });
+  for (const type of ['touchend', 'touchcancel']) document.addEventListener(type, () => { touchOrigin = null; }, { passive: true });
+  const resetHorizontalOffset = () => {
+    const root = document.scrollingElement;
+    if (root?.scrollLeft) root.scrollLeft = 0;
+    if (document.documentElement?.scrollLeft) document.documentElement.scrollLeft = 0;
+    if (document.body?.scrollLeft) document.body.scrollLeft = 0;
+    if (window.scrollX) window.scrollTo(0, window.scrollY);
+  };
+  document.addEventListener('scroll', resetHorizontalOffset, { passive: true });
+  window.visualViewport?.addEventListener('scroll', resetHorizontalOffset, { passive: true });
+  window.visualViewport?.addEventListener('resize', resetHorizontalOffset, { passive: true });
+  window.addEventListener('pageshow', resetHorizontalOffset, { passive: true });
+  requestAnimationFrame(resetHorizontalOffset);
 }
 lockPhoneViewportScale();
 let key = null, meta = null, payload = null, slot = null, localRevision = 0, busy = false, pendingLock = false, activeView = 'visits';

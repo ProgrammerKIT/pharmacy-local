@@ -171,8 +171,9 @@ dialog:focus{outline:none}
 /* iPhone Pro portrait is the one fixed phone canvas. Desktop keeps its existing layout. */
 :root{--iphone-pro-canvas-width:393px;--iphone-pro-canvas-height:852px}
 @media(max-width:760px){
-  html{width:var(--iphone-pro-canvas-width);min-width:var(--iphone-pro-canvas-width);max-width:var(--iphone-pro-canvas-width);min-height:var(--iphone-pro-canvas-height);overflow-x:hidden;-webkit-text-size-adjust:100%;text-size-adjust:100%;touch-action:pan-x pan-y}
-  body{width:var(--iphone-pro-canvas-width);min-width:var(--iphone-pro-canvas-width);max-width:var(--iphone-pro-canvas-width);min-height:var(--iphone-pro-canvas-height);overflow-x:hidden;overscroll-behavior-x:none}
-  #gate,#workspace,#workspace>main{width:var(--iphone-pro-canvas-width);min-width:var(--iphone-pro-canvas-width);max-width:var(--iphone-pro-canvas-width)}
+  html{width:var(--iphone-pro-canvas-width);min-width:var(--iphone-pro-canvas-width);max-width:var(--iphone-pro-canvas-width);min-height:var(--iphone-pro-canvas-height);overflow-x:clip;-webkit-text-size-adjust:100%;text-size-adjust:100%;overscroll-behavior-x:none}
+  body{position:relative;inset-inline-start:0;width:var(--iphone-pro-canvas-width);min-width:var(--iphone-pro-canvas-width);max-width:var(--iphone-pro-canvas-width);min-height:var(--iphone-pro-canvas-height);overflow-x:clip;overscroll-behavior-x:none}
+  #gate,#workspace,#workspace>main{position:relative;inset-inline-start:0;width:var(--iphone-pro-canvas-width);min-width:var(--iphone-pro-canvas-width);max-width:var(--iphone-pro-canvas-width);overflow-x:clip}
   #gate,#workspace,#workspace>main{min-height:var(--iphone-pro-canvas-height)}
+  .rail nav,#store-list,.csv-table-wrap,.quality-table-wrap{overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch}
 }
