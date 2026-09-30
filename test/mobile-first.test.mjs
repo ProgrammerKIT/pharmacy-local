@@ -118,6 +118,13 @@ test('mobile-first runtime files are valid JavaScript and expose the daily captu
   assert.match(app, /async function saveStoreReminder\(/);
   assert.match(html, /id="store-reminder-dialog"/);
   assert.match(html, /這次不會修改拜訪文字或其他門市資料/);
+  assert.match(html, /快速勾選（可複選）/);
+  assert.match(html, /data-reminder-option value="HAUD"/);
+  assert.match(html, /data-reminder-option value="Complete"/);
+  assert.match(html, /data-reminder-option value="陳列盒（中）"/);
+  assert.match(html, /data-reminder-option value="陳列盒（小）"/);
+  assert.match(html, /data-reminder-custom-input/);
+  assert.match(app, /setReminderOption\(before, input\.value, input\.checked\)/);
   assert.match(html, /▤ 拜訪/);
   assert.match(html, /▦ 門市/);
   assert.match(html, /⚙ 資料與安全/);
@@ -492,7 +499,7 @@ test('successful single-store inline save clears edit state and refreshes the sa
 
 test('SOP1 explicitly separates App daily notes from Google CSV imports and keeps retention undecided', () => {
   assert.equal(SOP1_VERSION, '1.2.16');
-  assert.match(sop, /流程版本：1\.2\.28/);
+  assert.match(sop, /流程版本：1\.2\.29/);
   assert.match(sop, /393 × 852 CSS 像素/);
   assert.match(sop, /水平位移必須固定為 0/);
   assert.match(sop, /不得修改任何客戶資料、正式版本、同步內容或備份/);
@@ -518,6 +525,9 @@ test('SOP1 explicitly separates App daily notes from Google CSV imports and keep
   assert.match(sop, /每張拜訪紀錄卡的門市名稱正下方/);
   assert.match(sop, /沒有內容時仍顯示填寫入口/);
   assert.match(sop, /快捷視窗只修改這兩欄/);
+  assert.match(sop, /HAUD.*Complete.*陳列盒（中）.*陳列盒（小）/);
+  assert.match(sop, /取消只移除完全相同的獨立項目/);
+  assert.match(sop, /不得由 CSV、關聯候選、AI 或系統規則推論或自動填寫/);
   assert.match(sop, /拜訪、門市、資料與安全/);
   assert.match(sop, /不得建立摘要 revision 或回寫任何 entity/);
   assert.match(sop, /不得以介面重整、自動化、匯入或同步繞過/);
