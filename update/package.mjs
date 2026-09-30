@@ -8,7 +8,7 @@ export const MAX_PACKAGE = 16 * 1024 * 1024;
 export const RUNTIME_FILES = Object.freeze([
   'package.json', 'server.mjs', 'scripts/setup.mjs', 'scripts/initial-customer.mjs',
   'public/index.html', 'public/app.js', 'public/core.js', 'public/db.js',
-  'public/relations.js', 'public/reminders.js', 'public/csv.js', 'public/csv-ui.js', 'public/style.css',
+  'public/relations.js', 'public/csv.js', 'public/csv-ui.js', 'public/style.css',
   'public/sw.js', 'public/update-client.js', 'public/version.js',
   'public/admin.html', 'public/admin.js', 'public/manifest.webmanifest',
   'public/icon.svg', 'public/icon-192.png', 'public/icon-512.png',

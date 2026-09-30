@@ -499,7 +499,7 @@ test('successful single-store inline save clears edit state and refreshes the sa
 
 test('SOP1 explicitly separates App daily notes from Google CSV imports and keeps retention undecided', () => {
   assert.equal(SOP1_VERSION, '1.2.16');
-  assert.match(sop, /流程版本：1\.2\.29/);
+  assert.match(sop, /流程版本：1\.2\.30/);
   assert.match(sop, /393 × 852 CSS 像素/);
   assert.match(sop, /水平位移必須固定為 0/);
   assert.match(sop, /不得修改任何客戶資料、正式版本、同步內容或備份/);
@@ -528,6 +528,9 @@ test('SOP1 explicitly separates App daily notes from Google CSV imports and keep
   assert.match(sop, /HAUD.*Complete.*陳列盒（中）.*陳列盒（小）/);
   assert.match(sop, /取消只移除完全相同的獨立項目/);
   assert.match(sop, /不得由 CSV、關聯候選、AI 或系統規則推論或自動填寫/);
+  assert.match(sop, /v1\.5\.40 更新器的固定白名單驗證/);
+  assert.match(sop, /不能任意新增、刪除或改名/);
+  assert.match(sop, /保留原程式與全部資料/);
   assert.match(sop, /拜訪、門市、資料與安全/);
   assert.match(sop, /不得建立摘要 revision 或回寫任何 entity/);
   assert.match(sop, /不得以介面重整、自動化、匯入或同步繞過/);
