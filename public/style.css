@@ -167,3 +167,12 @@ dialog:focus{outline:none}
   .single-store-capture{padding:14px;margin:14px 0}
   #single-store-text{min-height:34dvh}
 }
+
+/* iPhone Pro portrait is the one fixed phone canvas. Desktop keeps its existing layout. */
+:root{--iphone-pro-canvas-width:393px;--iphone-pro-canvas-height:852px}
+@media(max-width:760px){
+  html{width:var(--iphone-pro-canvas-width);min-width:var(--iphone-pro-canvas-width);max-width:var(--iphone-pro-canvas-width);min-height:var(--iphone-pro-canvas-height);overflow-x:hidden;-webkit-text-size-adjust:100%;text-size-adjust:100%;touch-action:pan-x pan-y}
+  body{width:var(--iphone-pro-canvas-width);min-width:var(--iphone-pro-canvas-width);max-width:var(--iphone-pro-canvas-width);min-height:var(--iphone-pro-canvas-height);overflow-x:hidden;overscroll-behavior-x:none}
+  #gate,#workspace,#workspace>main{width:var(--iphone-pro-canvas-width);min-width:var(--iphone-pro-canvas-width);max-width:var(--iphone-pro-canvas-width)}
+  #gate,#workspace,#workspace>main{min-height:var(--iphone-pro-canvas-height)}
+}

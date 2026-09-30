@@ -24,6 +24,15 @@ function highlightLiteral(value, query) {
 const titles = { explore: '關聯探索', visits: '拜訪', stores: '門市', regional: '區域觀察', entities: '人物與主題', csv: '匯入 CSV', quality: '資料整理', sync: '資料與安全', trash: '回收桶' };
 const kinds = { store: '門市', visit: '拜訪', person: '人物', topic: '主題' };
 const NEARBY_STORE_LIMIT = 4;
+function lockPhoneViewportScale() {
+  if (!window.matchMedia?.('(max-width: 760px)').matches) return;
+  const preventScale = event => event.preventDefault();
+  for (const type of ['gesturestart', 'gesturechange', 'gestureend']) document.addEventListener(type, preventScale, { passive: false });
+  document.addEventListener('touchmove', event => {
+    if (event.touches?.length > 1) event.preventDefault();
+  }, { passive: false });
+}
+lockPhoneViewportScale();
 let key = null, meta = null, payload = null, slot = null, localRevision = 0, busy = false, pendingLock = false, activeView = 'visits';
 let focus = { type: 'topic', id: '' }, graphPage = 0, trail = [], records = [], editorContext = null, toastTimer, autoTimer, objectURLs = [];
 let lastError = '', offlineReady = false, storagePersistent = false, autoFetching = false, gateOpening = false;

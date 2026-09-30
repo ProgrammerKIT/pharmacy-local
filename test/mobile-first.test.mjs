@@ -12,6 +12,26 @@ const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), '
 const style = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
 const sop = fs.readFileSync(new URL('../SOP1.md', import.meta.url), 'utf8');
 
+test('phone UI uses one fixed iPhone Pro canvas and prevents page scaling', () => {
+  assert.match(html, /name="viewport" content="width=393, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content"/);
+  assert.match(style, /--iphone-pro-canvas-width:393px;--iphone-pro-canvas-height:852px/);
+  assert.match(style, /html\{[^}]*width:var\(--iphone-pro-canvas-width\)[^}]*touch-action:pan-x pan-y/);
+  assert.match(style, /#gate,#workspace,#workspace>main\{[^}]*min-height:var\(--iphone-pro-canvas-height\)/);
+
+  const source = app.slice(app.indexOf('function lockPhoneViewportScale('), app.indexOf('let key ='));
+  const listeners = new Map();
+  const document = { addEventListener: (type, handler, options) => listeners.set(type, { handler, options }) };
+  vm.runInNewContext(source, { window: { matchMedia: () => ({ matches: true }) }, document });
+  for (const type of ['gesturestart', 'gesturechange', 'gestureend', 'touchmove']) {
+    assert.equal(listeners.get(type)?.options?.passive, false, `${type} must be cancellable`);
+  }
+  let prevented = 0;
+  listeners.get('gesturestart').handler({ preventDefault: () => prevented++ });
+  listeners.get('touchmove').handler({ touches: [{}, {}], preventDefault: () => prevented++ });
+  listeners.get('touchmove').handler({ touches: [{}], preventDefault: () => prevented++ });
+  assert.equal(prevented, 2, 'gesture and multi-touch scaling are blocked; one-finger scrolling remains available');
+});
+
 test('mobile-first runtime files are valid JavaScript and expose the daily capture contract', () => {
   for (const file of ['public/app.js', 'public/core.js', 'public/csv.js']) {
     const checked = spawnSync(process.execPath, ['--check', file], { encoding: 'utf8' });
@@ -450,7 +470,9 @@ test('successful single-store inline save clears edit state and refreshes the sa
 
 test('SOP1 explicitly separates App daily notes from Google CSV imports and keeps retention undecided', () => {
   assert.equal(SOP1_VERSION, '1.2.16');
-  assert.match(sop, /流程版本：1\.2\.26/);
+  assert.match(sop, /流程版本：1\.2\.27/);
+  assert.match(sop, /393 × 852 CSS 像素/);
+  assert.match(sop, /不得修改任何客戶資料、正式版本、同步內容或備份/);
   assert.match(sop, /既有拜訪原文區預設展開/);
   assert.match(sop, /完成或取消後須留在同一個單店頁面/);
   assert.match(sop, /先清除該筆草稿與編輯狀態再重繪/);
