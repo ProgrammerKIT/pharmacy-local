@@ -314,11 +314,12 @@ test('reused dialogs reset their own scroll and restore the unchanged page posit
   const classes = () => { const values = new Set(); return { add: value => values.add(value), remove: value => values.delete(value), toggle: (value, on) => on ? values.add(value) : values.delete(value), contains: value => values.has(value) }; };
   const reviewBody = { scrollTop: 75 };
   const actions = { hidden: false, replaceChildren() {} };
-  const review = { id: 'review', open: false, scrollTop: 125, classList: classes(), showModal() { this.open = true; }, focus() {} };
-  const nodes = new Map([['review', review], ['review-body', reviewBody], ['review-persistent-actions', actions]]);
+  const heading = { focus() {} };
+  const review = { id: 'review', open: false, scrollTop: 125, classList: classes(), showModal() { this.open = true; }, closest() { return this.open ? this : null; }, querySelector: () => heading };
+  const nodes = new Map([['review', review], ['review-body', reviewBody], ['review-persistent-actions', actions], ['workspace', { hidden: false }], ['page-title', heading]]);
   let restored = null;
   const body = { classList: classes(), style: { top: '3px' } };
-  const document = { body, documentElement: { classList: classes() }, scrollingElement: { scrollTop: 438 }, querySelector: () => review.open ? review : null };
+  const document = { body, documentElement: { classList: classes() }, scrollingElement: { scrollTop: 438 }, querySelector: () => review.open ? review : null, querySelectorAll: () => review.open ? [review] : [] };
   const window = { scrollY: 438, scrollTo: (x, y) => { restored = [x, y]; } };
   const context = vm.createContext({ document, window, requestAnimationFrame: fn => fn(), $: id => nodes.get(id) });
   vm.runInContext(app.slice(app.indexOf('let dialogScrollLock = null;'), app.indexOf('function buttons(')), context);
@@ -334,7 +335,7 @@ test('a queued close from the previous review cannot clear an immediately reopen
   let closedHandler, cleared = 0, replaced = 0;
   const review = { open: false, dataset: { singleStoreId: 'previous-store' }, classList: { toggle() {} }, addEventListener(event, handler) { assert.equal(event, 'close'); closedHandler = handler; } };
   const actions = { hidden: false, replaceChildren() { replaced++; } };
-  const context = vm.createContext({ $: id => id === 'review' ? review : actions, singleStoreContext: null, clearBriefSearch() { cleared++; } });
+  const context = vm.createContext({ $: id => id === 'review' ? review : id === 'review-persistent-actions' ? actions : null, singleStoreContext: null, clearBriefSearch() { cleared++; } });
   const listener = app.split('\n').find(line => line.startsWith("$('review').addEventListener('close',") && line.includes('setReviewMode'));
   assert.ok(listener, 'Exercise the actual registered review lifecycle listener');
   vm.runInContext(app.slice(app.indexOf('function setReviewMode('), app.indexOf('function openDialog(')) + listener, context);
@@ -493,7 +494,7 @@ test('blocked inline editing cannot create unsavable visible text and can return
     ['visit-a', { id: 'visit-a', store: 'store-a', text: '正式原文 A', deleted: false, conflict: false, heads: [{ id: 'head-a' }] }],
     ['visit-b', { id: 'visit-b', store: 'store-b', text: '正式原文 B', deleted: false, conflict: false, heads: [{ id: 'head-b' }] }]
   ]);
-  let message = '', prevented = false, blurred = false, switched = 0, scrolled = false, focused = false, resumedVisit = 0;
+  let message = '', prevented = false, blurred = false, switched = 0, scrolled = false, focused = false, resumedVisit = 0, readingTarget = null;
   const activeElement = {
     dataset: { inlineEditText: 'visit-a' }, innerText: '畫面上不該殘留的文字', textContent: '',
     closest(selector) { return selector === '[data-inline-edit-text]' ? this : null; },
@@ -505,7 +506,7 @@ test('blocked inline editing cannot create unsavable visible text and can return
     by: (type, id) => type === 'visit' ? visits.get(id) : null,
     toast: value => { message = value; },
     document: { querySelector: () => activeElement }, CSS: { escape: value => value },
-    switchView: () => { switched++; }, renderVisits() {}, name: () => '虛構門市',
+    switchView: () => { switched++; }, renderVisits() {}, name: () => '虛構門市', focusReadingSurface: target => { readingTarget = target; },
     $: id => id === 'visit-list' ? { querySelector: () => activeElement } : { value: '' }, queueMicrotask: fn => fn(), resumeVisitDraft: () => { resumedVisit++; },
     clearTimeout, setTimeout
   });
@@ -529,11 +530,14 @@ test('blocked inline editing cannot create unsavable visible text and can return
   context.inlineTextContext = { id: 'visit-a', before: '正式原文 A', after: '尚未完成 A' };
   context.resumeInlineTextDraft();
   assert.equal(switched, 0, 'active in-memory text must not be destroyed by a rerender');
-  assert.equal(scrolled, true); assert.equal(focused, true);
+  assert.equal(scrolled, true); assert.equal(focused, false, 'resume must leave the software keyboard closed');
+  assert.equal(readingTarget, activeElement, 'resume hands off the unchanged draft element to reading-focus navigation');
+  assert.equal(context.inlineTextContext.after, '尚未完成 A');
 
   context.activeView = 'stores'; switched = 0;
   context.resumeInlineTextDraft();
-  assert.equal(switched, 1, 'returning from another page must show the visits page before focusing the draft');
+  assert.equal(switched, 1, 'returning from another page must show the visits page before locating the draft');
+  assert.equal(readingTarget, activeElement); assert.equal(focused, false);
 
   context.payload.draft = { format: 'visit-draft-1' };
   context.resumeInlineTextDraft();
@@ -612,7 +616,7 @@ test('successful single-store inline save clears edit state and refreshes the sa
 
 test('SOP1 explicitly separates App daily notes from Google CSV imports and keeps retention undecided', () => {
   assert.equal(SOP1_VERSION, '1.2.16');
-  assert.match(sop, /流程版本：1\.2\.34/);
+  assert.match(sop, /流程版本：1\.2\.35/);
   assert.match(sop, /393 × 852 CSS 像素/);
   assert.match(sop, /固定手機畫布不等於鍵盤開啟時的可見高度/);
   assert.match(sop, /長原文末行游標也須可見/);

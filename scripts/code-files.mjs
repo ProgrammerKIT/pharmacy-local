@@ -18,6 +18,7 @@ export const CODE_FILES = [...RUNTIME_FILES,
   'test/store-enrichment.test.mjs',
   'test/reminders.test.mjs', 'test/backup-plan.test.mjs', 'test/backup-import.test.mjs',
   'test/single-store-search.test.mjs', 'test/qa/single-store-search-browser.mjs',
+  'test/keyboard-intent.test.mjs', 'test/qa/keyboard-intent-browser.mjs',
   'test/qa/backup-restore-browser.mjs', 'DEVICE-ACCEPTANCE.md',
   '.gitignore', '.github/workflows/release.yml',
 ];

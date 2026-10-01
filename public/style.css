@@ -124,6 +124,7 @@ html.dialog-scroll-locked,body.dialog-scroll-locked{overflow:hidden;overscroll-b
 body.dialog-scroll-locked{position:fixed;inset-inline:0;width:100%}
 dialog{overscroll-behavior:contain}
 dialog:focus{outline:none}
+[data-dialog-focus]:focus,#page-title:focus,#gate-title:focus{outline:none}
 #review[open]{display:flex;flex-direction:column;overflow:hidden}
 #review>.section-row{position:relative;top:auto;flex:0 0 auto;margin:0;padding:0 0 12px;border-bottom:1px solid var(--line)}
 #review>.section-row h2{min-width:0;overflow-wrap:anywhere;margin:0}

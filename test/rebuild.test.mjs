@@ -170,7 +170,7 @@ test('actual Mac rebuild form requires the scope phrase and sends only a newly e
   const source=fs.readFileSync(new URL('../public/admin.js',import.meta.url),'utf8').replace(/^import .*\n/,'');
   const nodes=new Map(),requests=[];const node=id=>{if(!nodes.has(id))nodes.set(id,{value:'',hidden:false,dataset:{},handlers:{},textContent:'',disabled:false,addEventListener(event,fn){this.handlers[event]=fn;},replaceChildren(){},append(){},reset(){},className:''});return nodes.get(id);};
   let status={hostname:'fixture.local',version:3,backups:1,devices:[],rebuild:null,appVersion:'1.5.2',update:{phase:'idle',configured:false,history:[]}};
-  const ctx=vm.createContext({newMeta,derive,seal,emptyBundle,uuid,AbortController,setTimeout,clearTimeout,setInterval:()=>0,location:{hash:'#fictional-admin',port:'8443'},history:{replaceState(){}},document:{hidden:false,getElementById:node,querySelectorAll:()=>[],createElement:()=>({})},fetch:async(route,options)=>{
+  const ctx=vm.createContext({newMeta,derive,seal,emptyBundle,uuid,AbortController,setTimeout,clearTimeout,setInterval:()=>0,location:{hash:'#fictional-admin',port:'8443'},history:{replaceState(){}},window:{addEventListener(){}},document:{hidden:false,getElementById:node,querySelectorAll:()=>[],createElement:()=>({}),addEventListener(){}},fetch:async(route,options)=>{
     const body=options.body?JSON.parse(options.body):undefined;requests.push({route,body});
     if(route.endsWith('/rebuild'))status={...status,version:4,rebuild:{id:body.operationId,at:new Date().toISOString(),hasBackup:true}};
     return {ok:true,json:async()=>status};
