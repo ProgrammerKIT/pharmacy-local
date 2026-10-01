@@ -43,6 +43,7 @@ async function harness({restore = false} = {}) {
     document:{hidden:false,querySelectorAll:()=>[...nodes.values()]},csvImport:{hasPending:()=>state.pendingCSV},
     esc,dateText:x=>x,reviewValue:value=>JSON.stringify(value,null,2),reviewFields:(before,after)=>`<pre>${esc(JSON.stringify(before))}</pre><pre>${esc(JSON.stringify(after))}</pre>`,
     openDialog:node=>node.open=true,openWorkspace:async()=>state.opens++,render:()=>state.renders++,switchView:view=>state.view=view,toast:message=>state.notices.push(message),lockNow:()=>{},
+    refreshBriefSearch:()=>{}, // This harness exercises backup writes, not the independent search UI.
     unseal:async(...args)=>{state.decrypts++;return unseal(...args);},
     seal:async(...args)=>{if(state.sealHook)await state.sealHook(...args);return seal(...args);},
     readLocal:async()=>{state.reads++;if(state.readHook)await state.readHook();return structuredClone(state.disk);},
@@ -191,7 +192,7 @@ test('real run guard ignores repeated apply clicks and restores controls after a
 
 function installRealLock(h) {
   const {c,state}=h;
-  Object.assign(c,{clearTimeout(){},clearInterval(){},inlineDraftTimer:null,autoTimer:null,objectURLs:[],captureTransientResumeState(){state.resumeCaptured=true;},clearNearbyPosition(){state.locationCleared=true;},resetStoreFilters(){},showGate(){state.gateShown=true;}});
+  Object.assign(c,{clearTimeout(){},clearInterval(){},inlineDraftTimer:null,autoTimer:null,objectURLs:[],captureTransientResumeState(){state.resumeCaptured=true;},clearNearbyPosition(){state.locationCleared=true;},forgetBriefSearchQuery(){state.searchForgotten=true;},resetStoreFilters(){},showGate(){state.gateShown=true;}});
   c.document.body={classList:{add(){state.veiled=true;},remove(){state.veiled=false;}}};c.csvImport.reset=()=>{};
   vm.runInContext(app.slice(app.indexOf('function lockNow('),app.indexOf('async function showGate(')),c);
 }
@@ -203,7 +204,7 @@ test('actual lock cancels and clears decrypted backup preview in both merge and 
     c.document.hidden=true;c.lockNow(false);
     assert.equal(c.backupPreview,null);assert.equal($('backup-review').open,false);assert.equal($('backup-review-body').innerHTML,'');assert.equal($('backup-ack').checked,false);
     assert.equal(c.payload,null);assert.equal(c.key,null);assert.equal(c.meta,null);assert.equal($('password').value,'');assert.equal(c.pendingLock,false);
-    assert.equal(JSON.stringify(original),before);assert.equal(JSON.stringify(state.disk),disk);assert.equal(state.writes.length,0);assert.equal(state.locationCleared,true);
+    assert.equal(JSON.stringify(original),before);assert.equal(JSON.stringify(state.disk),disk);assert.equal(state.writes.length,0);assert.equal(state.locationCleared,true);assert.equal(state.searchForgotten,true);
     assert.equal(inspected.plan.summary.mode,restore?'restore':'merge');await assert.rejects(c.applyBackupPreview(),/勾選確認/);
   }
 });
