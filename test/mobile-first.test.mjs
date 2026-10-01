@@ -291,7 +291,7 @@ test('mobile-first runtime files are valid JavaScript and expose the daily captu
   assert.match(app, /確定建立新版本/);
   assert.match(app, /function captureTransientResumeState\(/);
   assert.match(app, /function restoreTransientResumeState\(/);
-  assert.match(app, /restoreTransientResumeState\(\); await runPeriodicHealthAudit\(\); clearInterval\(autoTimer\)/);
+  assert.match(app, /restoreTransientResumeState\(\); renderBackupResult\(\); await runPeriodicHealthAudit\(\); clearInterval\(autoTimer\)/);
   assert.match(app, /function visitSearchRank\(/);
   assert.match(app, /if \(storeName === q\) return 0;/);
   assert.match(app, /if \(storeName\.includes\(q\)\) return 1;/);
@@ -593,7 +593,7 @@ test('successful single-store inline save clears edit state and refreshes the sa
 
 test('SOP1 explicitly separates App daily notes from Google CSV imports and keeps retention undecided', () => {
   assert.equal(SOP1_VERSION, '1.2.16');
-  assert.match(sop, /流程版本：1\.2\.32/);
+  assert.match(sop, /流程版本：1\.2\.33/);
   assert.match(sop, /393 × 852 CSS 像素/);
   assert.match(sop, /固定手機畫布不等於鍵盤開啟時的可見高度/);
   assert.match(sop, /長原文末行游標也須可見/);

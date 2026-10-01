@@ -285,6 +285,81 @@ export function readonlyHealthAudit(input) {
 }
 export async function hashBytes(bytes) { return [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(x => x.toString(16).padStart(2, '0')).join(''); }
 
+const backupTypeCounts = () => Object.fromEntries(types.map(type => [type, 0]));
+function backupCounts(bundle, records) {
+  const entities = backupTypeCounts(), active = backupTypeCounts(), deleted = backupTypeCounts();
+  for (const record of records) { entities[record.type]++; (record.deleted ? deleted : active)[record.type]++; }
+  return { entities, active, deleted, conflicts: records.filter(record => record.conflict).length, revisions: bundle?.ops.length || 0, blobs: Object.keys(bundle?.blobs || {}).length };
+}
+function backupReferenceWarnings(bundle) {
+  const known = new Set(bundle.ops.map(op => JSON.stringify([op.type, op.entity]))), missing = new Map();
+  for (const op of bundle.ops) {
+    const references = op.type === 'visit' ? [['store', op.data.store], ...op.data.people.map(id => ['person', id]), ...op.data.topics.map(id => ['topic', id])]
+      : op.type === 'person' && op.data.sameAs ? [['person', op.data.sameAs]]
+      : op.type === 'store' && op.data.mergedInto ? [['store', op.data.mergedInto]] : [];
+    for (const [targetType, targetId] of references) {
+      if (known.has(JSON.stringify([targetType, targetId]))) continue;
+      const id = JSON.stringify([op.type, op.entity, targetType, targetId]);
+      if (!missing.has(id)) missing.set(id, { code: 'missing-reference', type: op.type, entity: op.entity, targetType, targetId, revisionIds: [] });
+      const warning = missing.get(id);
+      if (!warning.revisionIds.includes(op.id)) warning.revisionIds.push(op.id);
+    }
+  }
+  return [...missing.values()].sort((a, b) => JSON.stringify([a.type, a.entity, a.targetType, a.targetId]).localeCompare(JSON.stringify([b.type, b.entity, b.targetType, b.targetId])));
+}
+function freezeBackupPlan(value, seen = new WeakSet()) {
+  if (!value || typeof value !== 'object' || seen.has(value)) return value;
+  seen.add(value); for (const child of Object.values(value)) freezeBackupPlan(child, seen);
+  return Object.freeze(value);
+}
+// Read-only planning: no new revision IDs, writes, source repairs or automatic resolutions.
+// The caller must separately validate the encrypted envelope/session and obtain confirmation,
+// then revalidate this plan against the still-current local revision before committing it.
+export async function planBackupImport(currentBundle, incomingBundle) {
+  const incoming = structuredClone(incomingBundle), current = currentBundle == null ? null : structuredClone(currentBundle);
+  validateBundle(incoming); if (current) validateBundle(current);
+  const bundle = current ? merge(current, incoming) : incoming;
+  if (enc.encode(JSON.stringify(bundle)).length > MAX_BYTES) throw new Error('合併後資料超過 24 MB 上限；尚未寫入任何資料。');
+  for (const [id, encoded] of Object.entries(bundle.blobs)) {
+    let bytes; try { bytes = unb64(encoded); } catch { throw new Error('備份附件或原始 CSV 的編碼損毀；尚未寫入任何資料。'); }
+    if (await hashBytes(bytes) !== id) throw new Error('備份附件或原始 CSV 的內容與識別不符；尚未寫入任何資料。');
+  }
+  const beforeRecords = current ? project(current) : [], incomingRecords = project(incoming), afterRecords = project(bundle);
+  const recordKey = record => JSON.stringify([record.type, record.id]);
+  const beforeByKey = new Map(beforeRecords.map(record => [recordKey(record), record]));
+  const existingOps = new Set((current?.ops || []).map(op => op.id));
+  const addedOps = incoming.ops.filter(op => !existingOps.has(op.id));
+  const affected = new Set(addedOps.map(op => JSON.stringify([op.type, op.entity])));
+  const newEntities = backupTypeCounts(), changes = [];
+  let changedExistingEntities = 0, historyOnlyEntities = 0, newConflicts = 0, resolvedConflicts = 0, movedToTrash = 0, revived = 0;
+  for (const after of afterRecords) {
+    const key = recordKey(after), before = beforeByKey.get(key);
+    if (!before) newEntities[after.type]++;
+    if (after.conflict && !before?.conflict) newConflicts++;
+    if (before?.conflict && !after.conflict) resolvedConflicts++;
+    if (before && !before.deleted && after.deleted) movedToTrash++;
+    if (before?.deleted && !after.deleted) revived++;
+    if (!affected.has(key)) continue;
+    const beforeHeads = before?.heads || [], afterHeads = after.heads;
+    const headsChanged = JSON.stringify(beforeHeads.map(op => op.id)) !== JSON.stringify(afterHeads.map(op => op.id));
+    const kind = !before ? 'added' : headsChanged ? 'heads-changed' : 'history-only';
+    if (before && headsChanged) changedExistingEntities++;
+    if (kind === 'history-only') historyOnlyEntities++;
+    changes.push({ type: after.type, entity: after.id, kind, beforeHeads, afterHeads, beforeDeleted: before?.deleted || false, afterDeleted: after.deleted, beforeConflict: before?.conflict || false, afterConflict: after.conflict });
+  }
+  changes.sort((a, b) => JSON.stringify([a.type, a.entity]).localeCompare(JSON.stringify([b.type, b.entity])));
+  const before = backupCounts(current, beforeRecords), after = backupCounts(bundle, afterRecords);
+  const newBlobs = Object.keys(incoming.blobs).filter(id => !Object.hasOwn(current?.blobs || {}, id)).length;
+  const summary = {
+    mode: current ? 'merge' : 'restore', hasChanges: !current || addedOps.length > 0 || newBlobs > 0 || bundle.schema !== current.schema,
+    before, incoming: backupCounts(incoming, incomingRecords), after,
+    addedRevisions: addedOps.length, identicalRevisions: incoming.ops.length - addedOps.length, newBlobs, newEntities,
+    changedExistingEntities, historyOnlyEntities, conflictsBefore: before.conflicts, conflictsAfter: after.conflicts,
+    newConflicts, resolvedConflicts, movedToTrash, revived, warnings: backupReferenceWarnings(bundle)
+  };
+  return freezeBackupPlan({ bundle, summary, changes });
+}
+
 // Nearby-store calculations are read-only. Map viewports and opaque place IDs are
 // not coordinates of a store, and must never be guessed into distance rankings.
 export function mobileLocationDevice(nav = {}) {

@@ -7,7 +7,7 @@ import https from 'node:https';
 import vm from 'node:vm';
 import { createService, atomic, rebuildSnapshot } from '../server.mjs';
 import { makeCertificates } from '../scripts/setup.mjs';
-import { newMeta, derive, seal, unseal, emptyBundle, revision, merge, project, validateBundle, hashBytes, b64, uuid, openRebuiltSnapshot } from '../public/core.js';
+import { newMeta, derive, seal, unseal, checkEnvelope, emptyBundle, revision, merge, project, validateBundle, hashBytes, b64, uuid, openRebuiltSnapshot } from '../public/core.js';
 import { prepareCSV, planCSV, buildCSVImport, prepareReviewedCSV, planReviewedCSV } from '../public/csv.js';
 
 const PASSWORD = 'fictional-password-only';
@@ -142,7 +142,7 @@ test('local archive and replacement commit together; quota failure and stale tab
 
 test('actual backup import rejects a retired vault before decrypting or changing the active database',async()=>{
   const app=fs.readFileSync(new URL('../public/app.js',import.meta.url),'utf8'),old=await fixture(true),fresh=await fixture();let writes=0;
-  const ctx=vm.createContext({meta:fresh.meta,key:fresh.key,payload:{bundle:fresh.bundle},validateBundle,unseal,merge,persist:async()=>writes++});
+  const ctx=vm.createContext({meta:fresh.meta,key:fresh.key,payload:{bundle:fresh.bundle},backupPreview:null,checkEnvelope,validateBundle,unseal:async()=>{throw new Error('must reject before decryption');},merge,persist:async()=>writes++,writeLocal:async()=>writes++});
   vm.runInContext(app.slice(app.indexOf('async function importBackup('),app.indexOf('async function adoptRebuilt(')),ctx);
   const backup=JSON.stringify({format:'pharmacy-backup-1',envelope:old.envelope});
   await assert.rejects(ctx.importBackup({size:backup.length,text:async()=>backup}),/另一個資料庫/);assert.equal(writes,0);
