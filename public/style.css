@@ -178,3 +178,19 @@ dialog:focus{outline:none}
   #gate,#workspace,#workspace>main{min-height:var(--iphone-pro-canvas-height)}
   .rail nav,#store-list,.csv-table-wrap,.quality-table-wrap{overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch}
 }
+
+/* Keyboard geometry follows the visible viewport; the fixed phone width never scales. */
+@media(max-width:760px){
+  html{scroll-padding-bottom:calc(var(--phone-edit-dock-height,112px) + 24px)}
+  body:not(.dialog-scroll-locked){padding-bottom:var(--phone-keyboard-inset,0px)}
+  .inline-edit-shell.editing{padding-bottom:calc(var(--phone-edit-dock-height,112px) + 24px)}
+  .inline-edit-actions:not([hidden]){top:calc(var(--phone-visible-bottom,100dvh) - 8px - env(safe-area-inset-bottom));bottom:auto;transform:translateY(-100%)}
+  .phone-keyboard-open .inline-edit-actions:not([hidden]){top:calc(var(--phone-visible-bottom,100dvh) - 8px);gap:6px;padding:8px}
+  .phone-keyboard-open .inline-edit-actions .muted{font-size:.72rem;line-height:1.3}
+  .phone-keyboard-open .inline-edit-actions button{min-height:44px;padding:7px 8px}
+  dialog{position:fixed;top:calc(var(--phone-visible-top,0px) + 12px);bottom:auto;margin:0 auto;max-height:calc(var(--phone-visible-height,100dvh) - 24px)}
+  #review.visit-brief-dialog{position:fixed;inset:auto;top:var(--phone-visible-top,0px);left:0;height:var(--phone-visible-height,100dvh);max-height:var(--phone-visible-height,100dvh)}
+  #review-body{scroll-padding-bottom:calc(var(--phone-edit-dock-height,0px) + 24px)}
+  #review.visit-brief-dialog:has(.inline-edit-actions:not([hidden])) .review-persistent-actions{display:none}
+  .phone-keyboard-open #review.visit-brief-dialog{padding-top:10px;padding-bottom:8px}
+}
