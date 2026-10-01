@@ -1,4 +1,4 @@
-import { newMeta, derive, seal, unseal, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates, buildStoreEnrichmentRequest, planStoreEnrichment, applyStoreEnrichment, readonlyHealthAudit, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption } from './core.js';
+import { newMeta, derive, seal, unseal, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates, buildStoreEnrichmentRequest, planStoreEnrichment, applyStoreEnrichment, readonlyHealthAudit, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, addReminderTasks, convertReminderTasks, completeReminderTask, reminderTaskHistory } from './core.js';
 import { readLocal, writeLocal, archiveAndReplaceLocal, listLocalArchives, readLocalArchive } from './db.js';
 import { createCSVImport } from './csv-ui.js';
 import { PROFILE_FIELDS, FILL_FIELDS, scanQuality, setDistinctReview, sourceSuggestions, fillProfile } from './csv.js';
@@ -25,7 +25,7 @@ const titles = { explore: '關聯探索', visits: '拜訪', stores: '門市', re
 const kinds = { store: '門市', visit: '拜訪', person: '人物', topic: '主題' };
 const NEARBY_STORE_LIMIT = 4;
 function reminderOptionsHTML(targetId) {
-  return `<fieldset class="reminder-options" data-reminder-options-for="${esc(targetId)}"><legend>快速勾選（可複選）</legend><p class="muted">勾選會加入下方「下次記得」；取消只移除完全相同的獨立項目，既有自由文字不會自動改寫。</p><div class="reminder-option-grid">${NEXT_REMINDER_OPTIONS.map(option => `<label class="check"><input type="checkbox" data-reminder-option value="${esc(option)}">${esc(option)}</label>`).join('')}</div><div class="reminder-custom-option"><label class="check"><input type="checkbox" data-reminder-custom-toggle>自訂</label><input type="text" data-reminder-custom-input maxlength="120" placeholder="空白，自行填寫" aria-label="自訂下次記得項目" autocomplete="off"></div></fieldset>`;
+  return `<fieldset class="reminder-options" data-reminder-options-for="${esc(targetId)}"><legend>快速勾選（可複選）</legend><p class="muted">勾選會加入下方新增待辦；取消只移除尚未儲存的相同項目，已保存的任務與歷史不會改動。</p><div class="reminder-option-grid">${NEXT_REMINDER_OPTIONS.map(option => `<label class="check"><input type="checkbox" data-reminder-option value="${esc(option)}">${esc(option)}</label>`).join('')}</div><div class="reminder-custom-option"><label class="check"><input type="checkbox" data-reminder-custom-toggle>自訂</label><input type="text" data-reminder-custom-input maxlength="120" placeholder="空白，自行填寫" aria-label="自訂下次記得項目" autocomplete="off"></div></fieldset>`;
 }
 function reminderOptionTarget(group) { return $(group?.dataset.reminderOptionsFor || ''); }
 function reminderOptionError(group, message = '') {
@@ -75,6 +75,45 @@ function changeCustomReminderOption(group, selected = true) {
   after = setReminderOption(after, current, true);
   if (!setReminderDraftValue(group, after)) { input.value = previous; toggle.checked = !!previous; return; }
   group.dataset.customApplied = current; toggle.checked = true;
+}
+function reminderTasksHTML(store, interactive = true) {
+  const tasks = store.nextRememberTasks || [], pending = tasks.filter(t => !t.completedAt), completed = reminderTaskHistory(store);
+  if (!tasks.length && !completed.length) return '';
+  const attrs = `data-reminder-store="${esc(store.id)}" data-reminder-head="${esc(store.heads?.[0]?.id || '')}"`;
+  return `<section class="reminder-task-list"><strong>下次記得：待辦 ${pending.length} 項</strong>${pending.length ? pending.map(task => `<label class="reminder-task-row"><input type="checkbox" ${interactive ? `data-reminder-complete="${esc(task.id)}" ${attrs}` : 'disabled'} aria-label="完成：${esc(task.text)}"><span>${esc(task.text)}</span></label>`).join('') : '<p class="muted">目前沒有未完成任務。</p>'}${completed.length ? `<details class="reminder-task-history"><summary>已完成 · ${completed.length} 項</summary>${completed.map(task => `<div class="reminder-task-done"><span>✓ ${esc(task.text)}</span><small>完成：${esc(dateText(task.completedAt))}${task.historical ? ' · 歷史版本紀錄（目前狀態不同）' : ''}</small>${interactive && !task.historical ? `<button type="button" class="text-button" data-reminder-repeat="${esc(task.id)}" ${attrs}>再加入待辦</button>` : ''}</div>`).join('')}</details>` : ''}</section>`;
+}
+function legacyReminderDraftHTML(data) {
+  const text = data.nextRemember || '', lines = reminderTaskLines(text);
+  if (!lines.length) return '';
+  return `<section class="reminder-legacy"><strong>既有下次記得（尚未轉成任務）</strong><pre>${esc(text)}</pre><details><summary>轉換預覽：依換行分為 ${lines.length} 項</summary><ol>${lines.map(line => `<li>${esc(line)}</li>`).join('')}</ol><p class="muted">只依換行分項，不猜測逗號、數量或意思；原始文字會留存在轉換來源與門市歷史。</p></details><label class="check"><input type="checkbox" data-reminder-convert>儲存時將以上 ${lines.length} 項轉成待辦</label></section>`;
+}
+function reminderFormData(data, targetId) {
+  const target = $(targetId), convert = target.closest('form').querySelector('[data-reminder-convert]')?.checked;
+  return addReminderTasks(convert ? convertReminderTasks(data) : data, target.value);
+}
+function confirmReminderChange(before, after) {
+  const previous = new Set((before.nextRememberTasks || []).map(t => t.id));
+  const added = (after.nextRememberTasks || []).filter(t => !previous.has(t.id));
+  const converted = (after.nextRememberImports || []).length > (before.nextRememberImports || []).length;
+  const everyChanged = (before.everyTimeMust || '') !== (after.everyTimeMust || '');
+  const impact = [added.length ? `新增 ${added.length} 項待辦：\n${added.map(t => '□ ' + t.text).join('\n')}` : '', converted ? '既有下次記得將改用任務顯示；完整原始文字與舊版本保留。' : '', everyChanged ? `每次必做、必給\n修改前：${before.everyTimeMust || '（空白）'}\n修改後：${after.everyTimeMust || '（空白）'}` : ''].filter(Boolean);
+  return !impact.length || confirm(impact.join('\n\n') + '\n\n確認儲存這間門市的提醒？拜訪原文不會修改。');
+}
+async function changeReminderTask(storeId, taskId, expectedHead, repeat = false) {
+  if (singleStoreContext || editorContext || reminderContext || payload?.inlineTextDraft || inlineTextContext?.after !== inlineTextContext?.before) throw new Error('請先完成或取消目前的修改，再勾選任務。');
+  const store = by('store', storeId);
+  if (!store || store.deleted || store.conflict || store.heads[0].id !== expectedHead) throw new Error('門市已有新版本或衝突；本次沒有寫入，請重新開啟核對。');
+  const task = store.nextRememberTasks?.find(t => t.id === taskId);
+  if (!task) throw new Error('找不到這項任務；本次沒有寫入。');
+  if (!repeat && task.completedAt) return toast('這項任務已完成，沒有重複寫入。');
+  if (repeat && !task.completedAt) throw new Error('這項任務仍在待辦中，沒有重複加入。');
+  const data = repeat ? addReminderTasks(store.heads[0].data, task.text) : completeReminderTask(store.heads[0].data, taskId);
+  const impact = repeat ? '將新增一項同內容待辦；先前完成紀錄仍保留。' : '將記錄完成時間，並移到「已完成」歷史；不刪除任務。';
+  if (!confirm(`${store.name}\n${task.text}\n\n${impact}\n拜訪原文與每次必做、必給保持原樣。\n確認${repeat ? '再加入待辦' : '完成'}？`)) return;
+  const briefStoreId = $('review').open && $('review').classList.contains('visit-brief-dialog') ? $('review').dataset.singleStoreId : '';
+  await commitRevision('store', store.id, data, [expectedHead]);
+  if (briefStoreId) openVisitBrief(briefStoreId, { preservePosition: true });
+  toast(repeat ? '已新增待辦，先前完成歷史保留。' : '已完成並保留紀錄，可展開「已完成」查看。');
 }
 function lockPhoneViewportScale() {
   if (!window.matchMedia?.('(max-width: 760px)').matches) return;
@@ -235,7 +274,7 @@ function openDialog(dialog, { reviewMode = '' } = {}) {
   requestAnimationFrame(() => { if (dialog.open) resetDialogScroll(dialog); });
 }
 function buttons(disabled) {
-  document.querySelectorAll('button, #csv-view input, #csv-view select, #regional-view select, #editor input, #editor select, #editor textarea, #review input, #review select, #review textarea, #store-reminder-dialog input, #store-reminder-dialog textarea').forEach(el => {
+  document.querySelectorAll('button, [data-reminder-complete], #csv-view input, #csv-view select, #regional-view select, #editor input, #editor select, #editor textarea, #review input, #review select, #review textarea, #store-reminder-dialog input, #store-reminder-dialog textarea').forEach(el => {
     if (el.dataset.close) return;
     if (disabled) { el.dataset.busyDisabled = el.disabled ? '1' : '0'; el.disabled = true; }
     else if (el.dataset.busyDisabled !== undefined) { el.disabled = el.dataset.busyDisabled === '1'; delete el.dataset.busyDisabled; }
@@ -929,12 +968,13 @@ function openVisitBrief(storeId, { capture = false, restoreDraft = null, preserv
   const preserved = preserving ? {
     scrollTop: reviewBody.scrollTop,
     secondaryOpen: !!reviewBody.querySelector('.brief-secondary')?.open,
-    historyOpen: !!reviewBody.querySelector('.brief-history')?.open
+    historyOpen: !!reviewBody.querySelector('.brief-history')?.open,
+    tasksOpen: !!reviewBody.querySelector('.reminder-task-history')?.open
   } : null;
   const brief = visitBriefForStore(storeId, all('visit'), all('store'), all('person'));
   if (!brief) return toast('這間門市目前有衝突、身分待確認或已移到回收桶，無法建立重點卡。');
   const location = [brief.store.city, brief.store.district, brief.store.channel].filter(Boolean).join(' · ') || '地區／通路未提供';
-  const reminders = brief.store.nextRemember || brief.store.everyTimeMust ? `<section class="brief-reminders">${brief.store.nextRemember ? `<div><strong>下次記得</strong><p>${esc(brief.store.nextRemember)}</p></div>` : ''}${brief.store.everyTimeMust ? `<div><strong>每次必做、必給</strong><p>${esc(brief.store.everyTimeMust)}</p></div>` : ''}<button type="button" class="text-button" data-store-reminder="${esc(storeId)}">修改門市提醒</button></section>` : `<button type="button" class="brief-empty-reminder" data-store-reminder="${esc(storeId)}">＋ 填寫門市提醒</button>`;
+  const reminders = brief.store.nextRemember || brief.store.everyTimeMust || brief.store.nextRememberTasks?.length || reminderTaskHistory(brief.store).length ? `<section class="brief-reminders">${reminderTasksHTML(brief.store)}${brief.store.nextRemember ? `<div><strong>下次記得（尚未轉成任務）</strong><p>${esc(brief.store.nextRemember)}</p></div>` : ''}${brief.store.everyTimeMust ? `<div><strong>每次必做、必給</strong><p>${esc(brief.store.everyTimeMust)}</p></div>` : ''}<button type="button" class="text-button" data-store-reminder="${esc(storeId)}">修改門市提醒</button></section>` : `<button type="button" class="brief-empty-reminder" data-store-reminder="${esc(storeId)}">＋ 填寫門市提醒</button>`;
   const followups = brief.followups.length ? brief.followups.map(item => `<article class="brief-item explicit"><div><time>${esc(item.date || '原始日期未提供')}</time>${item.source ? `<span class="pill">${esc(item.source)}</span>` : ''}${item.count > 1 ? `<span class="pill brief-duplicate">相同內容 ${item.count} 筆</span>` : ''}</div><p>${esc(item.text)}</p>${briefTraceHTML(item.occurrences, 'next')}</article>`).join('') : '<p class="empty">目前沒有明確填寫的下次跟進。</p>';
   const candidates = brief.candidates.length ? brief.candidates.map(item => `<button type="button" class="candidate-chip ${esc(item.statusKind)}" data-candidate-key="${esc(item.key)}" data-candidate-store="${esc(storeId)}"><strong>${esc(item.name)}</strong><span>${esc(item.category)} · ${item.visitCount} 筆／${item.lineCount} 條原文 · ${esc(item.statusLabel)} · 點選核對</span></button>`).join('') : '<p class="empty">目前沒有符合可稽核字詞規則的候選提示。</p>';
   const recentCount = brief.recent.reduce((sum, item) => sum + item.count, 0);
@@ -954,6 +994,7 @@ function openVisitBrief(storeId, { capture = false, restoreDraft = null, preserv
   $('review-persistent-actions').hidden = false;
   if (preserving) {
     setReviewMode('visit-brief');
+    const taskHistory = reviewBody.querySelector('.reminder-task-history'); if (taskHistory) taskHistory.open = preserved.tasksOpen;
     const restorePosition = () => { reviewBody.scrollTop = preserved.scrollTop; };
     restorePosition(); requestAnimationFrame(restorePosition);
   } else openDialog(review, { reviewMode: 'visit-brief' });
@@ -987,8 +1028,8 @@ function noteHTML(v, query = '') {
   const evidence = rule ? evidenceKind(v.text, rule) : null;
   const hint = evidence?.lines.length ? `<div class="evidence-hint ${evidence.kind}"><strong>${esc(evidence.label)} · 字詞線索</strong>${evidence.lines.map(line => `<blockquote>${esc(line)}</blockquote>`).join('')}</div>` : '';
   const sourceState = v.sourceMissing ? '<div class="conflict-card">Google 最新匯出已沒有這段備註；程式保留最後內容，未刪除。</div>' : v.googleUpdatePending ? `<div class="conflict-card">Google 備註已有新版；你曾在 App 修改原文，因此先保留 App 文字。<details><summary>查看 Google 最新文字</summary><p>${esc(v.googleText)}</p></details></div>` : '';
-  const store = by('store', v.store), hasStoreNotes = !!store && !!(store.nextRemember || store.everyTimeMust);
-  const storeNotes = store && !store.conflict ? `<div class="store-memory ${hasStoreNotes ? '' : 'empty'}">${store.nextRemember ? `<p><strong>下次記得：</strong>${esc(store.nextRemember)}</p>` : ''}${store.everyTimeMust ? `<p><strong>每次必做、必給：</strong>${esc(store.everyTimeMust)}</p>` : ''}<button type="button" class="text-button store-reminder-edit" data-store-reminder="${esc(store.id)}">${hasStoreNotes ? '修改門市提醒' : '＋ 填寫門市提醒'}</button></div>` : '';
+  const store = by('store', v.store), hasStoreNotes = !!store && !!(store.nextRemember || store.everyTimeMust || store.nextRememberTasks?.length || reminderTaskHistory(store).length);
+  const storeNotes = store && !store.conflict ? `<div class="store-memory ${hasStoreNotes ? '' : 'empty'}">${reminderTasksHTML(store)}${store.nextRemember ? `<p><strong>下次記得（尚未轉成任務）：</strong>${esc(store.nextRemember)}</p>` : ''}${store.everyTimeMust ? `<p><strong>每次必做、必給：</strong>${esc(store.everyTimeMust)}</p>` : ''}<button type="button" class="text-button store-reminder-edit" data-store-reminder="${esc(store.id)}">${hasStoreNotes ? '修改門市提醒' : '＋ 填寫門市提醒'}</button></div>` : '';
   const textBlock = inlineVisitTextHTML(v, query);
   const storeButton = store && !store.conflict && !storeIdentityPending(store) ? `data-visit-brief="${esc(v.store)}"` : `data-node-type="store" data-node-id="${esc(v.store)}"`;
   const advanced = `${sourceButton(v)}<button class="text-button" data-edit="visit:${esc(v.id)}">完整編輯</button><button class="text-button" data-history="visit:${esc(v.id)}">歷史 ${v.versions.length}</button><button class="text-button danger" data-delete="visit:${esc(v.id)}">移到回收桶</button>`;
@@ -1337,7 +1378,7 @@ function openEditor(type, id = null, restoreDraft = null) {
     $('editor-save').textContent = '儲存';
     $('discard-draft').hidden = true;
     let fields = input('f-name', `${kinds[type]}名稱`, d.name, 200, true);
-    if (type === 'store') fields += `${reminderOptionsHTML('f-next-remember')}<label>下次記得<textarea id="f-next-remember" maxlength="2000">${esc(d.nextRemember || '')}</textarea></label><label>每次必做、必給<textarea id="f-every-time-must" maxlength="2000">${esc(d.everyTimeMust || '')}</textarea></label>${input('f-contact', '主要窗口', d.contact)}${input('f-attr', '門市特性／客群', d.attr)}<details class="advanced-fields"><summary>地址與系統資料</summary><p class="muted">這些欄位供地理整理與來源核對；不知道時可以留空，不影響拜訪紀錄。</p><div class="field-grid">${input('f-city', '縣市', d.city)}${input('f-district', '地區', d.district)}</div><label>通路<select id="f-channel">${[...new Set(['', '連鎖', '獨立', '加盟', '診所', '其他', ...(d.channel ? [d.channel] : [])])].map(c => `<option value="${esc(c)}" ${c === d.channel ? 'selected' : ''}>${esc(c || '未分類')}</option>`).join('')}</select></label>${input('f-address', '地址', d.address, 2000)}${input('f-map-url', 'Google Maps 網址（只保存，不自動開啟）', d.mapUrl, 2000)}</details>`;
+    if (type === 'store') fields += `${reminderTasksHTML(old || d, false)}${legacyReminderDraftHTML(d)}${reminderOptionsHTML('f-next-remember')}<label>新增待辦（每行一項）<textarea id="f-next-remember" maxlength="2000" placeholder="自由填寫，換行可新增另一項"></textarea></label><p class="muted">只新增任務，不改動已保存的待辦與完成歷史。勾選完成請回到拜訪頁。</p><label>每次必做、必給<textarea id="f-every-time-must" maxlength="2000">${esc(d.everyTimeMust || '')}</textarea></label>${input('f-contact', '主要窗口', d.contact)}${input('f-attr', '門市特性／客群', d.attr)}<details class="advanced-fields"><summary>地址與系統資料</summary><p class="muted">這些欄位供地理整理與來源核對；不知道時可以留空，不影響拜訪紀錄。</p><div class="field-grid">${input('f-city', '縣市', d.city)}${input('f-district', '地區', d.district)}</div><label>通路<select id="f-channel">${[...new Set(['', '連鎖', '獨立', '加盟', '診所', '其他', ...(d.channel ? [d.channel] : [])])].map(c => `<option value="${esc(c)}" ${c === d.channel ? 'selected' : ''}>${esc(c || '未分類')}</option>`).join('')}</select></label>${input('f-address', '地址', d.address, 2000)}${input('f-map-url', 'Google Maps 網址（只保存，不自動開啟）', d.mapUrl, 2000)}</details>`;
     if (type === 'store' && d.csvIdentityPending) fields += '<label class="check"><input type="checkbox" id="f-identity-reviewed">我已核實此門市身分與來源，解除待確認標記並允許關聯分析</label>';
     if (type === 'person') fields += `${input('f-role', '職務／與門市的關係', d.role)}${textarea('f-desc', '身分證據與備註', d.desc)}<label class="check"><input type="checkbox" id="f-confirmed" ${d.confirmed ? 'checked' : ''}> 我已核對此人物的身分</label><label>已確認是同一人時，連到<select id="f-same"><option value="">保持獨立人物</option>${all('person').filter(p => p.id !== id && !p.sameAs).map(p => `<option value="${esc(p.id)}" ${d.sameAs === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label><p class="muted">須先勾選已核對身分。此設定只合併探索路徑，不改寫原始拜訪文字。</p>`;
     if (type === 'topic') fields += textarea('f-desc', '主題定義與備註', d.desc);
@@ -1411,9 +1452,10 @@ function openStoreReminder(storeId) {
   if (!store || store.deleted || store.conflict) return toast('這間門市目前有衝突或已移到回收桶，請先完成核對。');
   if (inlineTextContext && inlineTextContext.after !== inlineTextContext.before) return toast('請先完成或取消目前的拜訪文字修改。');
   inlineTextContext = null;
-  reminderContext = { id: store.id, parents: store.heads.map(head => head.id).sort() };
+  reminderContext = { id: store.id, parents: store.heads.map(head => head.id).sort(), briefStoreId: $('review').open && $('review').classList.contains('visit-brief-dialog') ? $('review').dataset.singleStoreId : '' };
   $('store-reminder-title').textContent = store.name + ' · 門市提醒';
-  $('store-reminder-next').value = store.nextRemember || '';
+  $('store-reminder-existing').innerHTML = reminderTasksHTML(store, false) + legacyReminderDraftHTML(store);
+  $('store-reminder-next').value = '';
   $('store-reminder-every').value = store.everyTimeMust || '';
   $('store-reminder-error').textContent = '';
   resetReminderOptionGroup('store-reminder-next');
@@ -1425,11 +1467,13 @@ async function saveStoreReminder(event) {
   await run(async () => {
     const ctx = reminderContext, store = ctx && by('store', ctx.id);
     if (!ctx || !store || store.deleted || store.conflict || JSON.stringify(store.heads.map(head => head.id).sort()) !== JSON.stringify(ctx.parents)) throw new Error('這間門市已有新版本，本次沒有寫入；請關閉後重新開啟。');
-    const nextRemember = $('store-reminder-next').value.trim(), everyTimeMust = $('store-reminder-every').value.trim();
-    if (nextRemember === (store.nextRemember || '') && everyTimeMust === (store.everyTimeMust || '')) { $('store-reminder-dialog').close(); reminderContext = null; return toast('門市提醒沒有變更。'); }
-    const data = { ...structuredClone(store.heads[0].data), nextRemember, everyTimeMust };
+    const before = store.heads[0].data, data = reminderFormData(before, 'store-reminder-next');
+    data.everyTimeMust = $('store-reminder-every').value.trim();
+    if (JSON.stringify(data) === JSON.stringify({ ...before, everyTimeMust: before.everyTimeMust || '' })) { $('store-reminder-dialog').close(); reminderContext = null; return toast('門市提醒沒有變更。'); }
+    if (!confirmReminderChange(before, data)) return;
     await commitRevision('store', store.id, data, ctx.parents);
     $('store-reminder-dialog').close(); reminderContext = null;
+    if (ctx.briefStoreId) openVisitBrief(ctx.briefStoreId, { preservePosition: true });
     toast('門市提醒已儲存並套用到這間門市的全部拜訪紀錄。');
   }, 'store-reminder-error');
 }
@@ -1587,7 +1631,7 @@ async function saveEditor(event) {
         if (!['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'application/pdf'].includes(f.type) && !/\.heic$/i.test(f.name)) throw new Error('附件只支援 JPEG、PNG、WebP、HEIC 與 PDF。');
         const bytes = new Uint8Array(await f.arrayBuffer()), id = await hashBytes(bytes); blobs[id] = b64(bytes); d.attachments.push({ blob: id, name: f.name.slice(0, 200), mime: f.type || 'application/octet-stream' });
       }
-    } else if (ctx.type === 'store') d = { name: value('f-name'), city: value('f-city'), district: value('f-district'), channel: value('f-channel'), attr: value('f-attr'), contact: value('f-contact'), address: value('f-address'), mapUrl: value('f-map-url'), nextRemember: $('f-next-remember').value.trim(), everyTimeMust: $('f-every-time-must').value.trim() };
+    } else if (ctx.type === 'store') d = { name: value('f-name'), city: value('f-city'), district: value('f-district'), channel: value('f-channel'), attr: value('f-attr'), contact: value('f-contact'), address: value('f-address'), mapUrl: value('f-map-url'), everyTimeMust: $('f-every-time-must').value.trim() };
     else if (ctx.type === 'topic') d = { name: value('f-name'), desc: value('f-desc') };
     else {
       d = { name: value('f-name'), role: value('f-role'), desc: value('f-desc'), confirmed: $('f-confirmed').checked, sameAs: value('f-same') };
@@ -1596,6 +1640,12 @@ async function saveEditor(event) {
       while (target) { if (seen.has(target)) throw new Error('人物連結不能形成循環。'); seen.add(target); target = by('person', target)?.sameAs; }
     }
     d = { ...(ctx.oldData || {}), ...d };
+    if (ctx.type === 'store') {
+      const current = by('store', ctx.id);
+      if (ctx.parents.length && (!current || current.deleted || (current.conflict && ctx.parents.length === 1) || JSON.stringify(quickTextParents(current)) !== JSON.stringify([...ctx.parents].sort()))) throw new Error('門市已有新版本或衝突，本次沒有寫入；請重新開啟核對。');
+      d = reminderFormData(d, 'f-next-remember');
+      if (!confirmReminderChange(ctx.oldData || {}, d)) return;
+    }
     if (ctx.type === 'store' && ctx.oldData?.csvIdentityPending && $('f-identity-reviewed')?.checked) d.csvIdentityPending = false;
     if (ctx.parents.length > 1) {
       if (quickStore) throw new Error('衝突整合請選擇既有門市；新增門市需另外處理。');
@@ -1614,13 +1664,13 @@ async function saveEditor(event) {
 }
 function describeData(type, data) {
   if (type === 'visit') return `${name('store', data.store)} · ${data.date || '原始日期未提供'}\n${data.source}\n${data.sourceMissing ? 'Google 最新匯出：備註缺少（舊文保留）\n' : ''}${data.googleUpdatePending ? `Google 最新文字：${data.googleText}\nApp 文字待人工核對\n` : ''}\n${data.text}\n\n下次跟進：${data.next}\n主題：${data.topics.map(id => name('topic', id)).join('、')}\n人物：${data.people.map(id => name('person', id)).join('、')}\n附件：${data.attachments.map(a => a.name).join('、')}`;
-  const labels = { address: '地址', mapUrl: '地圖網址', lists: '來源清單', name: '名稱', city: '縣市', district: '地區', channel: '通路', attr: '屬性', contact: '窗口', nextRemember: '下次記得', everyTimeMust: '每次必做、必給', desc: '備註', role: '職務', confirmed: '身分已核對', sameAs: '同一人連結', mergedInto: '已整併至門市 ID', mergeDecision: '整併裁定' };
-  const details = Object.entries(data).filter(([k]) => k !== 'csvSources' && k !== 'qualityDistinct').map(([k, v]) => `${labels[k] || k}：${k === 'sameAs' && v ? name('person', v) : v}`);
+  const labels = { address: '地址', mapUrl: '地圖網址', lists: '來源清單', name: '名稱', city: '縣市', district: '地區', channel: '通路', attr: '屬性', contact: '窗口', nextRemember: '下次記得（未轉換文字）', nextRememberTasks: '下次記得任務', nextRememberImports: '提醒轉換原始文字', everyTimeMust: '每次必做、必給', desc: '備註', role: '職務', confirmed: '身分已核對', sameAs: '同一人連結', mergedInto: '已整併至門市 ID', mergeDecision: '整併裁定' };
+  const details = Object.entries(data).filter(([k]) => k !== 'csvSources' && k !== 'qualityDistinct').map(([k, v]) => `${labels[k] || k}：${k === 'sameAs' && v ? name('person', v) : ['nextRememberTasks', 'nextRememberImports'].includes(k) ? JSON.stringify(v, null, 2) : v}`);
   if (data.qualityDistinct !== undefined) details.push('此版本保存的不同門市核對：' + data.qualityDistinct.length + ' 組（辨識資料改變後需重新核對）');
   return details.join('\n');
 }
 function reviewHeads(record) { return record.heads.map(h => h.id).sort(); }
-const SAFE_CONFLICT_BLOCKED_FIELDS = new Set(['attachments', 'csvSources', 'csvIdentityRules', 'qualityDistinct', 'mergedInto', 'mergeDecision', 'sameAs', 'confirmed', 'googleText', 'googleUpdatePending', 'sourceMissing']);
+const SAFE_CONFLICT_BLOCKED_FIELDS = new Set(['nextRememberTasks', 'nextRememberImports', 'nextRemember', 'attachments', 'csvSources', 'csvIdentityRules', 'qualityDistinct', 'mergedInto', 'mergeDecision', 'sameAs', 'confirmed', 'googleText', 'googleUpdatePending', 'sourceMissing']);
 function sameReviewValue(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
 function conflictMergeBase(record) {
   const versions = new Map(record.versions.map(version => [version.id, version]));
@@ -1665,7 +1715,7 @@ function safeConflictMerge(record) {
   return { safe: true, base, data: result, changes };
 }
 function safeMergeSummary(plan, record) {
-  const labels = { text: '拜訪文字', next: '下次跟進', store: '門市', date: '拜訪日期', source: '紀錄來源', topics: '主題連結', people: '人物連結', name: '名稱', address: '地址', mapUrl: '地圖網址', city: '縣市', district: '地區', channel: '通路', attr: '屬性', contact: '窗口', nextRemember: '下次記得', everyTimeMust: '每次必做、必給', desc: '備註', role: '職務' };
+  const labels = { text: '拜訪文字', next: '下次跟進', store: '門市', date: '拜訪日期', source: '紀錄來源', topics: '主題連結', people: '人物連結', name: '名稱', address: '地址', mapUrl: '地圖網址', city: '縣市', district: '地區', channel: '通路', attr: '屬性', contact: '窗口', nextRemember: '下次記得（未轉換文字）', nextRememberTasks: '下次記得任務', nextRememberImports: '提醒轉換原始文字', everyTimeMust: '每次必做、必給', desc: '備註', role: '職務' };
   return plan.changes.map(change => {
     const versions = change.heads.map(id => record.heads.findIndex(head => head.id === id) + 1).join('、');
     return `<li>${esc(labels[change.field] || change.field)}：取自版本 ${esc(versions)}</li>`;
@@ -1682,7 +1732,7 @@ function reviewValue(value) {
   return JSON.stringify(value, null, 2);
 }
 function reviewFields(before, after) {
-  const labels = { text: '拜訪文字', next: '下次跟進', store: '門市 ID', date: '拜訪日期', source: '紀錄來源', topics: '主題連結', people: '人物連結', attachments: '附件', name: '名稱', address: '地址', mapUrl: '地圖網址', city: '縣市', district: '地區', channel: '通路', attr: '屬性', contact: '窗口', nextRemember: '下次記得', everyTimeMust: '每次必做、必給', desc: '備註', role: '職務', confirmed: '身分已核對', sameAs: '人物身分連結', csvSources: 'CSV 來源證據', csvIdentityPending: '門市身分待確認', csvIdentityRules: '門市身分裁定', googleText: 'Google 來源文字', googleUpdatePending: 'Google 文字待核對', sourceMissing: '來源缺失' };
+  const labels = { text: '拜訪文字', next: '下次跟進', store: '門市 ID', date: '拜訪日期', source: '紀錄來源', topics: '主題連結', people: '人物連結', attachments: '附件', name: '名稱', address: '地址', mapUrl: '地圖網址', city: '縣市', district: '地區', channel: '通路', attr: '屬性', contact: '窗口', nextRemember: '下次記得（未轉換文字）', nextRememberTasks: '下次記得任務', nextRememberImports: '提醒轉換原始文字', everyTimeMust: '每次必做、必給', desc: '備註', role: '職務', confirmed: '身分已核對', sameAs: '人物身分連結', csvSources: 'CSV 來源證據', csvIdentityPending: '門市身分待確認', csvIdentityRules: '門市身分裁定', googleText: 'Google 來源文字', googleUpdatePending: 'Google 文字待核對', sourceMissing: '來源缺失' };
   const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])];
   const changed = keys.filter(k => JSON.stringify(before[k]) !== JSON.stringify(after[k]));
   const rows = changed.map(k => {
@@ -1846,7 +1896,8 @@ document.addEventListener('click', event => {
   if (b.dataset.inlineReview) { const review = b.closest('#review'), briefStoreId = review?.open && review.classList.contains('visit-brief-dialog') ? review.dataset.singleStoreId || '' : ''; return run(() => reviewInlineTextEdit(b.dataset.inlineReview, briefStoreId), null); }
   if (b.dataset.resumeVisitDraft !== undefined) return resumeVisitDraft();
   if (b.dataset.resumeInlineDraft !== undefined) return resumeInlineTextDraft();
-  if (b.dataset.storeReminder) { if (singleStoreContext) return toast('請先完成或收起這次拜訪紀錄，再修改門市提醒。'); if ($('review').open) $('review').close(); return openStoreReminder(b.dataset.storeReminder); }
+  if (b.dataset.reminderRepeat) return run(() => changeReminderTask(b.dataset.reminderStore, b.dataset.reminderRepeat, b.dataset.reminderHead, true));
+  if (b.dataset.storeReminder) { if (singleStoreContext) return toast('請先完成或收起這次拜訪紀錄，再修改門市提醒。'); if ($('review').open && !$('review').classList.contains('visit-brief-dialog')) $('review').close(); return openStoreReminder(b.dataset.storeReminder); }
   if (b.dataset.quickVisit) return openVisitForStore(b.dataset.quickVisit);
   if (b.dataset.newVisitStore) { if ($('review').open) $('review').close(); return openVisitForStore(b.dataset.newVisitStore); }
   if (b.dataset.visitBrief) return openVisitBrief(b.dataset.visitBrief);
@@ -1908,6 +1959,8 @@ document.addEventListener('input', event => {
   if (event.target.id) document.querySelectorAll(`[data-reminder-options-for="${CSS.escape(event.target.id)}"]`).forEach(syncReminderOptionGroup);
 });
 document.addEventListener('change', event => {
+  const task = event.target.closest?.('[data-reminder-complete]');
+  if (task) { task.checked = false; return run(() => changeReminderTask(task.dataset.reminderStore, task.dataset.reminderComplete, task.dataset.reminderHead)); }
   const option = event.target.closest?.('[data-reminder-option]'); if (option) return changeReminderOption(option);
   const toggle = event.target.closest?.('[data-reminder-custom-toggle]'); if (toggle) changeCustomReminderOption(toggle.closest('[data-reminder-options-for]'), toggle.checked);
 });

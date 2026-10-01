@@ -145,8 +145,55 @@ const types = ['store', 'visit', 'topic', 'person', 'source'];
 const plain = x => x !== null && typeof x === 'object' && !Array.isArray(x);
 const str = (s, max = 20000) => typeof s === 'string' && s.length <= max;
 const ids = a => Array.isArray(a) && a.length <= 100 && a.every(x => str(x, 100));
+const taskTime = value => str(value, 40) && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value) && Number.isFinite(Date.parse(value));
+function validReminderTasks(d) {
+  const tasks = d.nextRememberTasks;
+  if (tasks !== undefined && (!Array.isArray(tasks) || tasks.length > 1000 || !tasks.every(t => plain(t) && str(t.id, 100) && t.id && str(t.text, 2000) && t.text.trim() && taskTime(t.createdAt) && (t.completedAt === '' || taskTime(t.completedAt))) || new Set(tasks.map(t => t.id)).size !== tasks.length)) return false;
+  const imports = d.nextRememberImports;
+  return imports === undefined || Array.isArray(imports) && imports.length <= 1000 && imports.every(item => plain(item) && str(item.text, 2000) && item.text.trim() && taskTime(item.at) && Array.isArray(item.taskIds) && item.taskIds.length > 0 && item.taskIds.length <= 1000 && new Set(item.taskIds).size === item.taskIds.length && item.taskIds.every(id => str(id, 100) && tasks?.some(t => t.id === id)));
+}
+// Split only at explicit line breaks. Keep exact source bytes in the import record.
+export function reminderTaskLines(text) {
+  if (!str(text, 2000)) throw new Error('新增待辦最多 2000 個字；尚未寫入。');
+  return text.split(/\r\n|\n|\r/).filter(line => line.trim());
+}
+export function addReminderTasks(data, text, at = new Date().toISOString(), makeId = uuid) {
+  if (!validReminderTasks(data) || !taskTime(at)) throw new Error('任務資料格式不符，尚未寫入。');
+  const lines = reminderTaskLines(text), next = structuredClone(data);
+  if (!lines.length) return next;
+  next.nextRememberTasks = [...(next.nextRememberTasks || []), ...lines.map(line => ({ id: makeId(), text: line, createdAt: at, completedAt: '' }))];
+  if (!validReminderTasks(next)) throw new Error('任務超過 1000 項或識別重複；歷史保留，本次尚未加入。');
+  return next;
+}
+export function convertReminderTasks(data, at = new Date().toISOString(), makeId = uuid) {
+  const text = data.nextRemember || '', lines = reminderTaskLines(text);
+  if (!lines.length) return structuredClone(data);
+  const next = addReminderTasks(data, text, at, makeId);
+  next.nextRememberImports = [...(next.nextRememberImports || []), { text, at, taskIds: next.nextRememberTasks.slice(-lines.length).map(t => t.id) }];
+  next.nextRemember = '';
+  if (!validReminderTasks(next)) throw new Error('轉換歷史超過上限，原提醒保留，本次尚未轉換。');
+  return next;
+}
+export function completeReminderTask(data, taskId, at = new Date().toISOString()) {
+  if (!validReminderTasks(data) || !taskTime(at)) throw new Error('任務資料格式不符，尚未寫入。');
+  const next = structuredClone(data), task = next.nextRememberTasks?.find(t => t.id === taskId);
+  if (!task) throw new Error('找不到這項任務，請重新開啟門市。');
+  if (!task.completedAt) task.completedAt = at;
+  return next;
+}
+// Completion evidence remains inspectable even after an explicit store-version restore.
+export function reminderTaskHistory(record) {
+  const history = new Map(), current = record.nextRememberTasks || [];
+  for (const data of [...(record.versions || []).map(v => v.data), record]) for (const task of data.nextRememberTasks || []) {
+    if (!task.completedAt) continue;
+    const key = JSON.stringify([task.id, task.completedAt, task.text]);
+    history.set(key, { ...task, historical: !current.some(t => t.id === task.id && t.completedAt === task.completedAt && t.text === task.text) });
+  }
+  return [...history.values()].sort((a, b) => b.completedAt.localeCompare(a.completedAt) || a.id.localeCompare(b.id));
+}
 export function validData(type, d) {
   if (!plain(d)) return false;
+  if ((d.nextRememberTasks !== undefined || d.nextRememberImports !== undefined) && (type !== 'store' || !validReminderTasks(d))) return false;
   if (d.csvIdentityPending !== undefined && (type !== 'store' || typeof d.csvIdentityPending !== 'boolean')) return false;
   if (d.mergedInto !== undefined && (type !== 'store' || !str(d.mergedInto, 100) || !d.mergedInto)) return false;
   if (d.mergeDecision !== undefined && (type !== 'store' || !str(d.mergeDecision, 200) || !d.mergeDecision)) return false;

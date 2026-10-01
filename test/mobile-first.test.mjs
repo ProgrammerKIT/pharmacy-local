@@ -593,7 +593,7 @@ test('successful single-store inline save clears edit state and refreshes the sa
 
 test('SOP1 explicitly separates App daily notes from Google CSV imports and keeps retention undecided', () => {
   assert.equal(SOP1_VERSION, '1.2.16');
-  assert.match(sop, /流程版本：1\.2\.31/);
+  assert.match(sop, /流程版本：1\.2\.32/);
   assert.match(sop, /393 × 852 CSS 像素/);
   assert.match(sop, /固定手機畫布不等於鍵盤開啟時的可見高度/);
   assert.match(sop, /長原文末行游標也須可見/);
@@ -621,7 +621,9 @@ test('SOP1 explicitly separates App daily notes from Google CSV imports and keep
   assert.match(sop, /下次記得.*每次必做、必給/);
   assert.match(sop, /每張拜訪紀錄卡的門市名稱正下方/);
   assert.match(sop, /沒有內容時仍顯示填寫入口/);
-  assert.match(sop, /快捷視窗只修改這兩欄/);
+  assert.match(sop, /快捷視窗僅修改下次記得（含任務與轉換來源）及每次必做、必給/);
+  assert.match(sop, /更新、解鎖或顯示清單不得自動轉換/);
+  assert.match(sop, /安全衝突合併預覽將.*列為保護欄位/);
   assert.match(sop, /HAUD.*Complete.*陳列盒（中）.*陳列盒（小）/);
   assert.match(sop, /取消只移除完全相同的獨立項目/);
   assert.match(sop, /不得由 CSV、關聯候選、AI 或系統規則推論或自動填寫/);
