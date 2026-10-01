@@ -108,6 +108,81 @@ function lockPhoneViewportScale() {
   requestAnimationFrame(resetHorizontalOffset);
 }
 lockPhoneViewportScale();
+function installPhoneEditingViewport() {
+  if (!window.matchMedia?.('(max-width: 760px)').matches) return;
+  const root = document.documentElement, viewport = window.visualViewport;
+  let frame = 0, revealCaret = false;
+  const observed = new Set();
+  const resizeObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(() => schedule(false)) : null;
+  function schedule(reveal = false) {
+    revealCaret ||= reveal;
+    if (!frame) frame = requestAnimationFrame(update);
+  }
+  function update() {
+    frame = 0;
+    const top = Math.max(0, viewport?.offsetTop || 0), height = viewport?.height || window.innerHeight;
+    if (!Number.isFinite(height) || height <= 0) return;
+    root.style.setProperty('--phone-visible-top', `${top}px`);
+    root.style.setProperty('--phone-visible-height', `${height}px`);
+    root.style.setProperty('--phone-visible-bottom', `${top + height}px`);
+    root.style.setProperty('--phone-keyboard-inset', `${Math.max(0, window.innerHeight - height)}px`);
+    const keyboard = (window.innerHeight - height) > 120;
+    root.classList.toggle('phone-keyboard-open', keyboard);
+    const dialog = document.activeElement?.closest?.('dialog[open]') || [...document.querySelectorAll('dialog[open]')].at(-1);
+    const scope = dialog || document;
+    const actions = [...scope.querySelectorAll('.inline-edit-actions:not([hidden])')].filter(el => el.getClientRects().length);
+    const dock = actions[0];
+    for (const action of observed) if (!actions.includes(action)) { resizeObserver?.unobserve(action); observed.delete(action); }
+    for (const action of actions) if (!observed.has(action)) { observed.add(action); resizeObserver?.observe(action); }
+    const dockHeight = dock?.getBoundingClientRect().height || 0;
+    root.style.setProperty('--phone-edit-dock-height', `${dockHeight}px`);
+    if (!revealCaret) return;
+    revealCaret = false;
+    const editor = document.activeElement?.closest?.('[data-inline-edit-text]');
+    const selection = window.getSelection();
+    if (!editor || !selection?.rangeCount || selection.isCollapsed === false || !editor.contains(selection.focusNode)) return;
+    const range = selection.getRangeAt(0).cloneRange();
+    range.collapse(false);
+    let caret = range.getBoundingClientRect();
+    // Empty/newline caret ranges may have no rect. Measure adjacent text without changing the DOM or selection.
+    if (!caret.height) {
+      let node = range.startContainer, offset = range.startOffset;
+      if (node.nodeType !== 3) {
+        const previous = offset > 0;
+        node = node.childNodes?.[previous ? offset - 1 : 0];
+        while (node?.[previous ? 'lastChild' : 'firstChild']) node = node[previous ? 'lastChild' : 'firstChild'];
+        offset = previous ? node?.textContent?.length || 0 : 0;
+      }
+      if (node?.nodeType === 3 && node.textContent?.length) {
+        range.setStart(node, Math.max(0, offset - 1));
+        range.setEnd(node, Math.max(1, offset));
+        caret = range.getBoundingClientRect();
+      }
+      else if (node?.nodeType === 1 && node.tagName === 'BR') caret = node.getBoundingClientRect();
+    }
+    if (!caret.height) return;
+    const scroller = editor.closest('#review-body'), bounds = scroller?.getBoundingClientRect();
+    const lower = Math.min(top + height - 16, dock ? dock.getBoundingClientRect().top - 12 : Infinity, bounds ? bounds.bottom - 12 : Infinity);
+    const upper = Math.max(top + 12, bounds ? bounds.top + 12 : 0);
+    if (lower <= upper) return;
+    const delta = caret.bottom > lower ? caret.bottom - lower : caret.top < upper ? caret.top - upper : 0;
+    if (delta) {
+      if (scroller) scroller.scrollTop += delta;
+      else window.scrollBy({ top: delta, left: 0, behavior: 'instant' });
+    }
+  }
+  viewport?.addEventListener('resize', () => schedule(true), { passive: true });
+  viewport?.addEventListener('scroll', () => schedule(false), { passive: true });
+  window.addEventListener('resize', () => schedule(true), { passive: true });
+  window.addEventListener('pageshow', () => schedule(false), { passive: true });
+  document.addEventListener('focusin', () => schedule(true));
+  document.addEventListener('focusout', () => schedule(false));
+  document.addEventListener('input', () => schedule(true));
+  document.addEventListener('selectionchange', () => schedule(true));
+  if (typeof MutationObserver === 'function') new MutationObserver(() => schedule(false)).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['hidden', 'open'] });
+  schedule(false);
+}
+installPhoneEditingViewport();
 let key = null, meta = null, payload = null, slot = null, localRevision = 0, busy = false, pendingLock = false, activeView = 'visits';
 let focus = { type: 'topic', id: '' }, graphPage = 0, trail = [], records = [], editorContext = null, toastTimer, autoTimer, objectURLs = [];
 let lastError = '', offlineReady = false, storagePersistent = false, autoFetching = false, gateOpening = false;

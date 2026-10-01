@@ -19,7 +19,7 @@ test('phone UI uses one fixed iPhone Pro canvas and prevents page scaling or hor
   assert.match(style, /body\{[^}]*inset-inline-start:0[^}]*overflow-x:clip[^}]*overscroll-behavior-x:none/);
   assert.match(style, /#gate,#workspace,#workspace>main\{[^}]*min-height:var\(--iphone-pro-canvas-height\)/);
 
-  const source = app.slice(app.indexOf('function lockPhoneViewportScale('), app.indexOf('let key ='));
+  const source = app.slice(app.indexOf('function lockPhoneViewportScale('), app.indexOf('function installPhoneEditingViewport('));
   const listeners = new Map();
   const viewportListeners = new Map(), windowListeners = new Map();
   const scrollingElement = { scrollLeft: 0 }, documentElement = { scrollLeft: 0 }, body = { scrollLeft: 0 };
@@ -52,6 +52,100 @@ test('phone UI uses one fixed iPhone Pro canvas and prevents page scaling or hor
   listeners.get('scroll').handler();
   assert.equal(scrollingElement.scrollLeft, 0); assert.equal(documentElement.scrollLeft, 0); assert.equal(body.scrollLeft, 0);
   assert.deepEqual(windowScroll, [0, 222]);
+});
+
+function editingViewportFixture({ mobile = true, withViewport = true, inDialog = false } = {}) {
+  const properties = new Map(), classes = new Set(), listeners = new Map(), viewportListeners = new Map(), windowListeners = new Map();
+  const frames = [], scrolls = [], watched = [];
+  const geometry = { caret: { top: 530, bottom: 554, height: 24 }, dock: { top: 460, height: 100 }, selection: true };
+  const action = { getClientRects: () => [{}], getBoundingClientRect: () => geometry.dock };
+  const scroller = { scrollTop: 180, getBoundingClientRect: () => ({ top: 210, bottom: 588 }) };
+  const editor = { closest: selector => selector === '[data-inline-edit-text]' ? editor : selector === '#review-body' && inDialog ? scroller : null, contains: node => node === text };
+  const text = { nodeType: 3 };
+  const originalRange = { startContainer: text, startOffset: 8, cloneRange: () => ({ startContainer: text, startOffset: 8, collapse() {}, setStart() {}, getBoundingClientRect: () => geometry.caret }) };
+  const selection = { rangeCount: 1, focusNode: text, isCollapsed: true, getRangeAt: () => originalRange };
+  const scope = { querySelectorAll: () => [action] };
+  const document = { activeElement: editor, body: {}, documentElement: { style: { setProperty: (key, value) => properties.set(key, value) }, classList: { toggle: (key, value) => value ? classes.add(key) : classes.delete(key) } }, querySelectorAll: selector => selector === 'dialog[open]' ? inDialog ? [scope] : [] : [action], addEventListener: (type, handler) => listeners.set(type, handler) };
+  const viewport = { offsetTop: 180, height: 400, addEventListener: (type, handler) => viewportListeners.set(type, handler) };
+  const window = { innerHeight: 852, matchMedia: () => ({ matches: mobile }), visualViewport: withViewport ? viewport : undefined, getSelection: () => geometry.selection ? selection : null, scrollBy: value => scrolls.push(value), addEventListener: (type, handler) => windowListeners.set(type, handler) };
+  const source = app.slice(app.indexOf('function installPhoneEditingViewport('), app.indexOf('let key ='));
+  vm.runInNewContext(source, { document, window, requestAnimationFrame: fn => { frames.push(fn); return frames.length; }, ResizeObserver: class { constructor(fn) { this.fn = fn; } observe(target) { watched.push(target); } }, MutationObserver: class { observe() {} } });
+  const flush = () => { for (let count = 0; frames.length && count < 10; count++) frames.shift()(); assert.equal(frames.length, 0); };
+  return { properties, classes, listeners, viewportListeners, windowListeners, viewport, window, document, geometry, selection, originalRange, scroller, scrolls, watched, flush };
+}
+
+test('keyboard viewport follows changing keyboard height and pan, then returns to the full phone canvas', () => {
+  const f = editingViewportFixture(); f.flush();
+  assert.equal(f.properties.get('--phone-visible-bottom'), '580px');
+  assert.equal(f.properties.get('--phone-visible-height'), '400px');
+  assert.equal(f.properties.get('--phone-keyboard-inset'), '452px');
+  assert.equal(f.classes.has('phone-keyboard-open'), true);
+  assert.equal(f.properties.get('--phone-edit-dock-height'), '100px');
+  f.viewport.offsetTop = 80; f.viewport.height = 320;
+  f.viewportListeners.get('resize')(); f.flush();
+  assert.equal(f.properties.get('--phone-visible-bottom'), '400px');
+  f.viewport.offsetTop = 0; f.viewport.height = 852;
+  f.viewportListeners.get('resize')(); f.flush();
+  assert.equal(f.properties.get('--phone-visible-bottom'), '852px');
+  assert.equal(f.classes.has('phone-keyboard-open'), false);
+  assert.equal(f.properties.get('--phone-keyboard-inset'), '0px');
+  assert.equal(f.watched.length, 1, 'do not register duplicate observers on repeated input');
+  assert.match(style, /top:calc\(var\(--phone-visible-bottom,100dvh\) - 8px\);gap:6px/);
+  assert.match(style, /height:var\(--phone-visible-height,100dvh\)/);
+  assert.match(style, /body:not\(\.dialog-scroll-locked\)\{padding-bottom:var\(--phone-keyboard-inset,0px\)/);
+});
+
+test('typing keeps only the caret above the dock without rewriting text or selection; modal scroll stays internal', () => {
+  const f = editingViewportFixture(); f.flush();
+  f.listeners.get('input')(); f.flush();
+  assert.equal(f.scrolls[0].top, 106);
+  assert.equal(f.originalRange.startOffset, 8);
+  f.geometry.caret = { top: 300, bottom: 324, height: 24 };
+  f.listeners.get('selectionchange')(); f.flush();
+  assert.equal(f.scrolls.length, 1, 'already-visible caret must not move the page');
+  f.selection.isCollapsed = false;
+  f.geometry.caret = { top: 530, bottom: 554, height: 24 };
+  f.listeners.get('selectionchange')(); f.flush();
+  assert.equal(f.scrolls.length, 1, 'text selection must not be pulled away while selecting');
+  const modal = editingViewportFixture({ inDialog: true }); modal.flush();
+  modal.listeners.get('input')(); modal.flush();
+  assert.equal(modal.scroller.scrollTop, 286);
+  assert.equal(modal.scrolls.length, 0, 'dialog editing must not scroll the locked background');
+});
+
+test('desktop viewport is untouched and phone fallback works without the Visual Viewport API', () => {
+  const desktop = editingViewportFixture({ mobile: false }); desktop.flush();
+  assert.equal(desktop.properties.size, 0); assert.equal(desktop.listeners.size, 0);
+  const phone = editingViewportFixture({ withViewport: false }); phone.flush();
+  assert.equal(phone.properties.get('--phone-visible-bottom'), '852px');
+  assert.equal(phone.classes.has('phone-keyboard-open'), false);
+  phone.window.innerHeight = 460;
+  phone.windowListeners.get('resize')(); phone.flush();
+  assert.equal(phone.properties.get('--phone-visible-height'), '460px');
+});
+
+test('a collapsed caret at an element boundary can be measured without inserting markers into the note', () => {
+  const f = editingViewportFixture(); f.flush();
+  const text = { nodeType: 3, textContent: '虛構末行文字' };
+  let measured = false;
+  f.originalRange.cloneRange = () => ({
+    startContainer: { nodeType: 1, childNodes: [text] }, startOffset: 1,
+    collapse() {}, setStart(node, offset) { assert.equal(node, text); assert.equal(offset, 5); measured = true; },
+    setEnd(node, offset) { assert.equal(node, text); assert.equal(offset, 6); },
+    getBoundingClientRect: () => measured ? f.geometry.caret : { top: 0, bottom: 0, height: 0 }
+  });
+  f.listeners.get('input')(); f.flush();
+  assert.equal(measured, true);
+  assert.equal(f.scrolls[0].top, 106);
+  assert.equal(text.textContent, '虛構末行文字');
+});
+
+test('a new empty line remains visible after Enter without inserting or removing note content', () => {
+  const f = editingViewportFixture(); f.flush();
+  const lineBreak = { nodeType: 1, tagName: 'BR', getBoundingClientRect: () => f.geometry.caret };
+  f.originalRange.cloneRange = () => ({ startContainer: { nodeType: 1, childNodes: [lineBreak] }, startOffset: 0, collapse() {}, getBoundingClientRect: () => ({ height: 0 }) });
+  f.listeners.get('input')(); f.flush();
+  assert.equal(f.scrolls[0].top, 106);
 });
 
 test('mobile-first runtime files are valid JavaScript and expose the daily capture contract', () => {
@@ -499,8 +593,11 @@ test('successful single-store inline save clears edit state and refreshes the sa
 
 test('SOP1 explicitly separates App daily notes from Google CSV imports and keeps retention undecided', () => {
   assert.equal(SOP1_VERSION, '1.2.16');
-  assert.match(sop, /流程版本：1\.2\.30/);
+  assert.match(sop, /流程版本：1\.2\.31/);
   assert.match(sop, /393 × 852 CSS 像素/);
+  assert.match(sop, /固定手機畫布不等於鍵盤開啟時的可見高度/);
+  assert.match(sop, /長原文末行游標也須可見/);
+  assert.match(sop, /不得冒充 iPhone 原生或第三方鍵盤驗收/);
   assert.match(sop, /水平位移必須固定為 0/);
   assert.match(sop, /不得修改任何客戶資料、正式版本、同步內容或備份/);
   assert.match(sop, /既有拜訪原文區預設展開/);
