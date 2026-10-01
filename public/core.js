@@ -261,6 +261,26 @@ export function project(b) {
     return { ...current.data, id: current.entity, type: current.type, deleted: current.deleted, conflict: heads.length > 1, heads, versions };
   });
 }
+// Literal, read-only search of current visit text. Offsets address UTF-16 text
+// with DOM-style LF line endings; the original record and version stay intact.
+export function searchStoreVisitText(visits, storeId, query, limit = 500) {
+  if (!Number.isSafeInteger(limit) || limit < 0) throw new RangeError('搜尋筆數上限須為非負整數。');
+  const needle = String(query ?? '').trim(), matches = [];
+  if (!needle) return { query: needle, matches, truncated: false };
+  const pattern = new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'giu');
+  const ordered = visits.filter(visit => visit.type === 'visit' && visit.store === storeId && !visit.deleted && !visit.conflict)
+    .sort((a, b) => (b.date || '').localeCompare(a.date || '') || b.id.localeCompare(a.id));
+  for (const visit of ordered) {
+    const text = String(visit.text ?? '').replace(/\r\n?/g, '\n');
+    pattern.lastIndex = 0;
+    let match;
+    while ((match = pattern.exec(text))) {
+      if (matches.length === limit) return { query: needle, matches, truncated: true };
+      matches.push({ visitId: visit.id, headId: visit.heads?.[0]?.id || '', start: match.index, end: match.index + match[0].length, text: match[0], date: visit.date || '', source: visit.source || '' });
+    }
+  }
+  return { query: needle, matches, truncated: false };
+}
 export function revision(type, entity, data, parents, device, deleted = false) {
   if (!validData(type, data)) throw new Error('欄位內容不完整或超過長度限制。');
   return { id: uuid(), type, entity, data: structuredClone(data), parents: [...parents], device, deleted, at: new Date().toISOString() };

@@ -330,6 +330,25 @@ test('reused dialogs reset their own scroll and restore the unchanged page posit
   assert.equal(document.body.classList.contains('dialog-scroll-locked'), false);
 });
 
+test('a queued close from the previous review cannot clear an immediately reopened single-store page', () => {
+  let closedHandler, cleared = 0, replaced = 0;
+  const review = { open: false, dataset: { singleStoreId: 'previous-store' }, classList: { toggle() {} }, addEventListener(event, handler) { assert.equal(event, 'close'); closedHandler = handler; } };
+  const actions = { hidden: false, replaceChildren() { replaced++; } };
+  const context = vm.createContext({ $: id => id === 'review' ? review : actions, singleStoreContext: null, clearBriefSearch() { cleared++; } });
+  const listener = app.split('\n').find(line => line.startsWith("$('review').addEventListener('close',") && line.includes('setReviewMode'));
+  assert.ok(listener, 'Exercise the actual registered review lifecycle listener');
+  vm.runInContext(app.slice(app.indexOf('function setReviewMode('), app.indexOf('function openDialog(')) + listener, context);
+  // Native dialog close is queued: a new page can already be open when it arrives.
+  review.open = true; review.dataset.singleStoreId = 'new-store';
+  const newContext = { storeId: 'new-store', id: 'unsaved-new-visit' }; context.singleStoreContext = newContext;
+  closedHandler();
+  assert.equal(cleared, 0); assert.equal(replaced, 0); assert.equal(actions.hidden, false);
+  assert.equal(review.dataset.singleStoreId, 'new-store'); assert.equal(context.singleStoreContext, newContext);
+  review.open = false; closedHandler();
+  assert.equal(cleared, 1); assert.equal(replaced, 1); assert.equal(actions.hidden, true);
+  assert.equal(review.dataset.singleStoreId, undefined); assert.equal(context.singleStoreContext, null);
+});
+
 test('a local draft survives encryption without creating a formal visit revision', async () => {
   const bundle = emptyBundle('mobile-first-test');
   bundle.ops.push(revision('store', 'pending-store', {
@@ -593,7 +612,7 @@ test('successful single-store inline save clears edit state and refreshes the sa
 
 test('SOP1 explicitly separates App daily notes from Google CSV imports and keeps retention undecided', () => {
   assert.equal(SOP1_VERSION, '1.2.16');
-  assert.match(sop, /流程版本：1\.2\.33/);
+  assert.match(sop, /流程版本：1\.2\.34/);
   assert.match(sop, /393 × 852 CSS 像素/);
   assert.match(sop, /固定手機畫布不等於鍵盤開啟時的可見高度/);
   assert.match(sop, /長原文末行游標也須可見/);

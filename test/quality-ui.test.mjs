@@ -139,7 +139,7 @@ test('CSV UI forces ambiguous stores to be resolved and resets fill choices when
 });
 test('busy state preserves disabled controls when a preview replaces the DOM', () => {
   let elements = [{ disabled: false, dataset: {} }, { disabled: true, dataset: {} }, { disabled: false, dataset: { close: 'review' } }];
-  const c = vm.createContext({ document: { querySelectorAll: () => elements }, updateBackupControls: () => {} });
+  const c = vm.createContext({ document: { querySelectorAll: () => elements }, updateBackupControls: () => {}, refreshBriefSearch: () => {} });
   vm.runInContext(app.slice(app.indexOf('function buttons('), app.indexOf('async function run(')), c);
   c.buttons(true); assert.equal(elements[0].disabled, true); assert.equal(elements[2].disabled, false);
   elements.push({ disabled: true, dataset: {} }); // Newly rendered unresolved import.

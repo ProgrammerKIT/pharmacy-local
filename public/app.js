@@ -1,4 +1,4 @@
-import { newMeta, checkEnvelope, derive, seal, unseal, planBackupImport, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates, buildStoreEnrichmentRequest, planStoreEnrichment, applyStoreEnrichment, readonlyHealthAudit, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, addReminderTasks, convertReminderTasks, completeReminderTask, reminderTaskHistory } from './core.js';
+import { newMeta, checkEnvelope, derive, seal, unseal, planBackupImport, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates, buildStoreEnrichmentRequest, planStoreEnrichment, applyStoreEnrichment, readonlyHealthAudit, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, addReminderTasks, convertReminderTasks, completeReminderTask, reminderTaskHistory, searchStoreVisitText } from './core.js';
 import { readLocal, writeLocal, archiveAndReplaceLocal, listLocalArchives, readLocalArchive } from './db.js';
 import { createCSVImport } from './csv-ui.js';
 import { PROFILE_FIELDS, FILL_FIELDS, scanQuality, setDistinctReview, sourceSuggestions, fillProfile } from './csv.js';
@@ -263,7 +263,7 @@ function resetDialogScroll(dialog) {
 function setReviewMode(mode) {
   const review = $('review'), actions = $('review-persistent-actions');
   review.classList.toggle('visit-brief-dialog', mode === 'visit-brief');
-  if (mode !== 'visit-brief') { delete review.dataset.singleStoreId; singleStoreContext = null; actions.hidden = true; actions.replaceChildren(); }
+  if (mode !== 'visit-brief') { clearBriefSearch(); delete review.dataset.singleStoreId; singleStoreContext = null; actions.hidden = true; actions.replaceChildren(); }
 }
 function openDialog(dialog, { reviewMode = '' } = {}) {
   if (dialog.id === 'review') setReviewMode(reviewMode);
@@ -279,7 +279,7 @@ function buttons(disabled) {
     if (disabled) { el.dataset.busyDisabled = el.disabled ? '1' : '0'; el.disabled = true; }
     else if (el.dataset.busyDisabled !== undefined) { el.disabled = el.dataset.busyDisabled === '1'; delete el.dataset.busyDisabled; }
   });
-  if (!disabled) updateBackupControls();
+  if (!disabled) { updateBackupControls(); refreshBriefSearch(); }
 }
 async function run(fn, errorTarget) {
   if (busy || updateHolding) return;
@@ -731,6 +731,7 @@ async function autoSync() {
   finally { autoFetching = false; }
 }
 function lockNow(reopen = !document.hidden) {
+  forgetBriefSearchQuery();
   if (!busy && backupPreview) { clearBackupPreview(); $('backup-review').close(); }
   if (busy || editorContext || inlineTextContext || reminderContext || payload?.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('store-reminder-dialog')?.open || csvImport.hasPending()) { pendingLock = true; document.body.classList.add('privacy-veil'); return; }
   captureTransientResumeState();
@@ -891,6 +892,118 @@ function openCandidateOverview() {
   }
   openDialog($('review'));
 }
+// Transient, local-only search. Never replace an editable node or touch its selection.
+let briefSearchContext = null, briefSearchTimer = null;
+function clearBriefSearchHighlights() {
+  for (const name of ['brief-search-all', 'brief-search-current']) globalThis.CSS?.highlights?.delete(name);
+  $('review-body').querySelectorAll('.brief-search-target').forEach(node => node.classList.remove('brief-search-target'));
+}
+function clearBriefSearch() {
+  clearTimeout(briefSearchTimer); briefSearchTimer = null; briefSearchContext = null;
+  clearBriefSearchHighlights();
+  $('brief-search-panel').hidden = true; $('brief-search').value = '';
+  $('brief-search-status').textContent = ''; $('brief-search-preview').replaceChildren();
+}
+function prepareBriefSearch(storeId, preserving) {
+  const old = preserving && briefSearchContext?.storeId === storeId ? briefSearchContext : null;
+  clearTimeout(briefSearchTimer); briefSearchTimer = null; clearBriefSearchHighlights();
+  briefSearchContext = { storeId, query: old?.query || '', matches: old?.matches || [], index: old?.index ?? 0, truncated: false, composing: false };
+  $('brief-search-panel').hidden = false; $('brief-search').value = briefSearchContext.query;
+}
+function forgetBriefSearchQuery() {
+  clearTimeout(briefSearchTimer); briefSearchTimer = null;
+  if (!briefSearchContext) return;
+  briefSearchContext.query = ''; briefSearchContext.matches = []; briefSearchContext.index = 0; briefSearchContext.composing = false;
+  $('brief-search').value = ''; refreshBriefSearch(); clearBriefSearchHighlights();
+}
+function briefSearchBlocked() {
+  return !!(singleStoreContext || payload?.draft || payload?.inlineTextDraft || (inlineTextContext && inlineTextContext.after !== inlineTextContext.before));
+}
+function briefSearchEditing() { return !!document.activeElement?.closest?.('#review [data-inline-edit-text]'); }
+function briefSearchRange(match) {
+  const element = $('review-body').querySelector(`.brief-history [data-inline-edit-text="${CSS.escape(match.visitId)}"]`);
+  const visit = by('visit', match.visitId);
+  if (!element || !visit || visit.heads?.[0]?.id !== match.headId || element.textContent !== (visit.text || '').replace(/\r\n?/g, '\n')) return null;
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT), range = document.createRange();
+  let node, offset = 0, started = false;
+  while ((node = walker.nextNode())) {
+    const end = offset + node.length;
+    if (!started && match.start < end) { range.setStart(node, match.start - offset); started = true; }
+    if (started && match.end <= end) { range.setEnd(node, match.end - offset); return range; }
+    offset = end;
+  }
+  return null;
+}
+function paintBriefSearch(scroll = false) {
+  clearBriefSearchHighlights();
+  const ctx = briefSearchContext;
+  if (!ctx || briefSearchBlocked() || briefSearchEditing() || ctx.composing || document.hidden || busy || updateHolding) return;
+  const match = ctx.matches[ctx.index]; if (!match) return;
+  const article = $('review-body').querySelector(`.brief-history [data-brief-visit="${CSS.escape(match.visitId)}"]`);
+  if (!article) return;
+  article.classList.add('brief-search-target');
+  const current = briefSearchRange(match);
+  if (globalThis.CSS?.highlights && typeof globalThis.Highlight === 'function') {
+    const ranges = ctx.matches.map(briefSearchRange).filter(Boolean);
+    CSS.highlights.set('brief-search-all', new Highlight(...ranges));
+    if (current) { const highlight = new Highlight(current); highlight.priority = 1; CSS.highlights.set('brief-search-current', highlight); }
+  }
+  if (scroll) {
+    article.closest('.brief-history').open = true;
+    const body = $('review-body'), target = current?.getBoundingClientRect();
+    const rect = target?.height ? target : article.getBoundingClientRect();
+    body.scrollTop += rect.top - body.getBoundingClientRect().top - Math.min(80, body.clientHeight / 4);
+  }
+}
+function refreshBriefSearch({ search = false, jump = false } = {}) {
+  const ctx = briefSearchContext;
+  if (!ctx || !$('review').open || $('review').dataset.singleStoreId !== ctx.storeId) return;
+  const blocked = briefSearchBlocked(), editing = briefSearchEditing();
+  if (search && !blocked && !ctx.composing) {
+    const previous = ctx.matches[ctx.index];
+    const result = searchStoreVisitText(all('visit'), ctx.storeId, ctx.query);
+    ctx.matches = result.matches; ctx.truncated = result.truncated;
+    const oldIndex = ctx.matches.findIndex(match => match.visitId === previous?.visitId && match.headId === previous?.headId && match.start === previous?.start);
+    ctx.index = oldIndex < 0 ? 0 : oldIndex;
+  }
+  $('brief-search').disabled = busy || updateHolding || blocked;
+  $('brief-search-clear').disabled = busy || updateHolding || blocked || !ctx.query;
+  for (const id of ['brief-search-prev', 'brief-search-next']) $(id).disabled = busy || updateHolding || blocked || ctx.composing || !ctx.matches.length;
+  const count = ctx.matches.length, match = ctx.matches[ctx.index];
+  $('brief-search-status').textContent = blocked ? '搜尋已暫停：請先完成或取消未完成的文字／拜訪草稿。'
+    : editing ? '正在編輯原文；搜尋標示暫停，保留目前查詢。'
+    : !ctx.query.trim() ? '搜尋本店全部正式拜訪原文；英文不分大小寫。'
+    : !count ? '找不到相同文字；不包含提醒、下次跟進或舊版本。'
+    : `${ctx.truncated ? '前 ' : '共 '}${count} 處 · 第 ${ctx.index + 1} 處${ctx.truncated ? '（尚有更多，請縮小關鍵字）' : ` · ${new Set(ctx.matches.map(item => item.visitId)).size} 筆紀錄`}`;
+  const preview = $('brief-search-preview');
+  preview.hidden = !match || blocked || editing;
+  if (match && !blocked && !editing) {
+    const text = String(by('visit', match.visitId)?.text || '').replace(/\r\n?/g, '\n');
+    preview.innerHTML = `<div class="muted">${esc(match.date || '原始日期未提供')} · ${esc(match.source || '來源未提供')}</div><div>${match.start > 35 ? '…' : ''}${esc(text.slice(Math.max(0, match.start - 35), match.start))}<mark>${esc(match.text)}</mark>${esc(text.slice(match.end, match.end + 55))}${match.end + 55 < text.length ? '…' : ''}</div>`;
+  } else preview.replaceChildren();
+  paintBriefSearch(jump);
+}
+function runBriefSearchQuery() {
+  clearTimeout(briefSearchTimer); briefSearchTimer = null;
+  if (!briefSearchContext || briefSearchContext.composing || briefSearchBlocked() || busy || updateHolding) return;
+  briefSearchContext.query = $('brief-search').value;
+  briefSearchContext.matches = []; briefSearchContext.index = 0;
+  refreshBriefSearch({ search: true, jump: true });
+}
+function scheduleBriefSearch() {
+  clearTimeout(briefSearchTimer); clearBriefSearchHighlights();
+  const ctx = briefSearchContext;
+  if (!ctx || ctx.composing || briefSearchBlocked() || busy || updateHolding) return;
+  briefSearchTimer = setTimeout(() => { if (ctx === briefSearchContext) runBriefSearchQuery(); }, 120);
+}
+function moveBriefSearch(direction) {
+  const ctx = briefSearchContext;
+  if (!ctx || ctx.composing || briefSearchBlocked() || busy || updateHolding) return;
+  if ($('brief-search').value !== ctx.query) return runBriefSearchQuery();
+  if (!ctx.matches.length) return;
+  ctx.index = (ctx.index + direction + ctx.matches.length) % ctx.matches.length;
+  refreshBriefSearch({ jump: true });
+}
 function briefTraceHTML(occurrences, field = 'text') {
   const items = occurrences || [];
   const label = items.length > 1 ? `查看 ${items.length} 筆原始紀錄` : '查看同筆原始拜訪文字';
@@ -918,6 +1031,7 @@ function activateSingleStoreCapture(restoreDraft = null) {
   if (draft) applyVisitDraft(draft);
   $('review-persistent-actions').innerHTML = '<button type="button" class="danger" data-discard-single-store-draft>捨棄草稿</button><button type="button" data-collapse-single-store-capture>先收起</button><button type="submit" form="single-store-capture-form" class="primary">完成紀錄</button>';
   $('review-persistent-actions').classList.add('capture-active');
+  refreshBriefSearch();
   form.scrollIntoView({ block: 'start' });
   queueMicrotask(() => { try { $('single-store-text')?.focus({ preventScroll: true }); } catch { $('single-store-text')?.focus(); } });
 }
@@ -932,6 +1046,7 @@ async function collapseSingleStoreCapture() {
   await flushVisitDraft(); singleStoreContext = null;
   $('single-store-capture-form').hidden = true;
   const actions = $('review-persistent-actions'); actions.classList.remove('capture-active'); actions.innerHTML = singleStoreIdleActions(storeId);
+  refreshBriefSearch({ search: true });
 }
 async function closeSingleStoreReview() {
   if (singleStoreContext) await flushVisitDraft();
@@ -975,6 +1090,7 @@ function openVisitBrief(storeId, { capture = false, restoreDraft = null, preserv
   } : null;
   const brief = visitBriefForStore(storeId, all('visit'), all('store'), all('person'));
   if (!brief) return toast('這間門市目前有衝突、身分待確認或已移到回收桶，無法建立重點卡。');
+  prepareBriefSearch(storeId, review.open && review.dataset.singleStoreId === storeId);
   const location = [brief.store.city, brief.store.district, brief.store.channel].filter(Boolean).join(' · ') || '地區／通路未提供';
   const reminders = brief.store.nextRemember || brief.store.everyTimeMust || brief.store.nextRememberTasks?.length || reminderTaskHistory(brief.store).length ? `<section class="brief-reminders">${reminderTasksHTML(brief.store)}${brief.store.nextRemember ? `<div><strong>下次記得（尚未轉成任務）</strong><p>${esc(brief.store.nextRemember)}</p></div>` : ''}${brief.store.everyTimeMust ? `<div><strong>每次必做、必給</strong><p>${esc(brief.store.everyTimeMust)}</p></div>` : ''}<button type="button" class="text-button" data-store-reminder="${esc(storeId)}">修改門市提醒</button></section>` : `<button type="button" class="brief-empty-reminder" data-store-reminder="${esc(storeId)}">＋ 填寫門市提醒</button>`;
   const followups = brief.followups.length ? brief.followups.map(item => `<article class="brief-item explicit"><div><time>${esc(item.date || '原始日期未提供')}</time>${item.source ? `<span class="pill">${esc(item.source)}</span>` : ''}${item.count > 1 ? `<span class="pill brief-duplicate">相同內容 ${item.count} 筆</span>` : ''}</div><p>${esc(item.text)}</p>${briefTraceHTML(item.occurrences, 'next')}</article>`).join('') : '<p class="empty">目前沒有明確填寫的下次跟進。</p>';
@@ -1001,6 +1117,7 @@ function openVisitBrief(storeId, { capture = false, restoreDraft = null, preserv
     restorePosition(); requestAnimationFrame(restorePosition);
   } else openDialog(review, { reviewMode: 'visit-brief' });
   if (capture) activateSingleStoreCapture(restoreDraft);
+  refreshBriefSearch({ search: true });
 }
 function canonicalPerson(id) { const seen = new Set(); let r = by('person', id); while (r?.sameAs && !r.conflict && !seen.has(r.id)) { seen.add(r.id); r = by('person', r.sameAs); } return r?.id || id; }
 function related(f = focus) {
@@ -2060,8 +2177,12 @@ document.addEventListener('click', event => {
 document.addEventListener('keydown', e => { const n = e.target.closest('.node[role="button"]'); if (n && ['Enter', ' '].includes(e.key) && !busy) { e.preventDefault(); if (n.dataset.candidateKey) openCandidateDetail(n.dataset.candidateKey, n.dataset.candidateStore || ''); else navigate(n.dataset.nodeType, n.dataset.nodeId); } });
 document.addEventListener('focusin', event => { const editor = event.target.closest?.('[data-inline-edit-text]'); if (editor) beginInlineTextEdit(editor.dataset.inlineEditText, editor); });
 document.addEventListener('beforeinput', blockInlineTextBeforeInput);
+document.addEventListener('focusin', event => { if (event.target.closest?.('#review [data-inline-edit-text]')) refreshBriefSearch(); });
+document.addEventListener('focusout', event => { if (event.target.closest?.('#review [data-inline-edit-text]')) queueMicrotask(() => refreshBriefSearch()); });
+document.addEventListener('beforeinput', event => { if (event.target.closest?.('#review [data-inline-edit-text]')) { clearTimeout(briefSearchTimer); clearBriefSearchHighlights(); } });
+document.addEventListener('compositionstart', event => { if (event.target.closest?.('#review [data-inline-edit-text]')) clearBriefSearchHighlights(); });
 document.addEventListener('input', event => {
-  const editor = event.target.closest?.('[data-inline-edit-text]'); if (editor) updateInlineText(editor.dataset.inlineEditText, editor);
+  const editor = event.target.closest?.('[data-inline-edit-text]'); if (editor) { updateInlineText(editor.dataset.inlineEditText, editor); refreshBriefSearch(); }
   const custom = event.target.closest?.('[data-reminder-custom-input]'); if (custom) changeCustomReminderOption(custom.closest('[data-reminder-options-for]'));
   if (event.target.id) document.querySelectorAll(`[data-reminder-options-for="${CSS.escape(event.target.id)}"]`).forEach(syncReminderOptionGroup);
 });
@@ -2080,9 +2201,22 @@ window.addEventListener('pagehide', () => { clearNearbyPosition(); if (editorCon
 window.addEventListener('pageshow', () => { if (!payload && !document.hidden) { document.body.classList.remove('privacy-veil'); showGate(); } });
 $('gate-form').addEventListener('submit', initializeOrUnlock); $('editor-form').addEventListener('submit', saveEditor); $('quick-text-form').addEventListener('submit', saveQuickTextEdit); $('store-reminder-form').addEventListener('submit', saveStoreReminder);
 $('review').addEventListener('submit', event => { if (event.target.id === 'single-store-capture-form') saveSingleStoreVisit(event); });
+$('brief-search').addEventListener('input', scheduleBriefSearch);
+$('brief-search').addEventListener('compositionstart', () => { if (briefSearchContext) { briefSearchContext.composing = true; clearTimeout(briefSearchTimer); clearBriefSearchHighlights(); } });
+$('brief-search').addEventListener('compositionend', () => { if (briefSearchContext) { briefSearchContext.composing = false; scheduleBriefSearch(); } });
+$('brief-search').addEventListener('keydown', event => {
+  if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229 || briefSearchContext?.composing) return;
+  event.preventDefault(); moveBriefSearch(event.shiftKey ? -1 : 1);
+});
+$('brief-search-prev').addEventListener('click', () => moveBriefSearch(-1));
+$('brief-search-next').addEventListener('click', () => moveBriefSearch(1));
+$('brief-search-clear').addEventListener('click', () => {
+  if (busy || updateHolding || briefSearchBlocked()) return;
+  forgetBriefSearchQuery(); $('brief-search').focus({ preventScroll: true });
+});
 document.querySelectorAll('dialog').forEach(dialog => dialog.addEventListener('close', () => queueMicrotask(releaseDialogBackground)));
 $('editor').addEventListener('close', () => editorContext = null);
-$('review').addEventListener('close', () => setReviewMode(''));
+$('review').addEventListener('close', () => { if (!$('review').open) setReviewMode(''); });
 $('quick-text-dialog').addEventListener('close', () => { quickTextContext = null; $('quick-text-error').textContent = ''; });
 $('quick-text-dialog').addEventListener('cancel', event => { if (busy) event.preventDefault(); });
 $('store-reminder-dialog').addEventListener('close', () => { reminderContext = null; $('store-reminder-error').textContent = ''; });

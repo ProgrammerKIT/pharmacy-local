@@ -17,6 +17,7 @@ export const CODE_FILES = [...RUNTIME_FILES,
   'scripts/sop1-package.mjs', 'test/csv-review.test.mjs', 'test/rebuild.test.mjs',
   'test/store-enrichment.test.mjs',
   'test/reminders.test.mjs', 'test/backup-plan.test.mjs', 'test/backup-import.test.mjs',
+  'test/single-store-search.test.mjs', 'test/qa/single-store-search-browser.mjs',
   'test/qa/backup-restore-browser.mjs', 'DEVICE-ACCEPTANCE.md',
   '.gitignore', '.github/workflows/release.yml',
 ];
