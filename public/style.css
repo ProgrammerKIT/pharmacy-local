@@ -195,3 +195,17 @@ dialog:focus{outline:none}
   #review.visit-brief-dialog:has(.inline-edit-actions:not([hidden])) .review-persistent-actions{display:none}
   .phone-keyboard-open #review.visit-brief-dialog{padding-top:10px;padding-bottom:8px}
 }
+
+/* Backup review owns scrolling and exposes explicit, accessible consent on both layouts. */
+#backup-review{overflow-wrap:anywhere}
+#backup-review .section-row{align-items:flex-start}
+#backup-review .section-row button{flex:none;min-width:44px;min-height:44px}
+.backup-counts{padding:12px;background:#f2f8f7;border-radius:8px;margin:12px 0}
+.backup-change{border:1px solid var(--line);padding:12px;border-radius:8px;margin:12px 0}
+.backup-change summary{cursor:pointer;font-weight:600}
+.backup-change pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;font-size:.88rem}
+.backup-confirm{border-top:1px solid var(--line);margin-top:20px;padding-top:12px;background:#fff}
+#backup-result:empty{display:none}
+#backup-result{border-top:1px solid var(--line);margin-top:18px;padding-top:18px}
+@media(max-width:760px){#backup-review .dialog-footer{display:grid;grid-template-columns:1fr}#backup-review .dialog-footer button{min-height:44px;width:100%;white-space:normal}#backup-review .check{align-items:flex-start}}
+.backup-version{padding:12px;border:1px solid var(--line);border-radius:8px;margin:12px 0}.backup-version h5{font-size:.9rem;margin:12px 0 4px}.backup-version details{margin-top:12px}

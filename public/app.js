@@ -1,4 +1,4 @@
-import { newMeta, derive, seal, unseal, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates, buildStoreEnrichmentRequest, planStoreEnrichment, applyStoreEnrichment, readonlyHealthAudit, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, addReminderTasks, convertReminderTasks, completeReminderTask, reminderTaskHistory } from './core.js';
+import { newMeta, checkEnvelope, derive, seal, unseal, planBackupImport, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates, buildStoreEnrichmentRequest, planStoreEnrichment, applyStoreEnrichment, readonlyHealthAudit, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, addReminderTasks, convertReminderTasks, completeReminderTask, reminderTaskHistory } from './core.js';
 import { readLocal, writeLocal, archiveAndReplaceLocal, listLocalArchives, readLocalArchive } from './db.js';
 import { createCSVImport } from './csv-ui.js';
 import { PROFILE_FIELDS, FILL_FIELDS, scanQuality, setDistinctReview, sourceSuggestions, fillProfile } from './csv.js';
@@ -231,7 +231,7 @@ let regionalCity = '', regionalDistrict = '';
 let updateHolding = false, macProgram = null, lastSyncFailure = null, syncWarning = '';
 let draftTimer = null, draftSaveChain = Promise.resolve(), discardingDraft = false, singleStoreContext = null, quickTextContext = null, inlineTextContext = null, inlineDraftTimer = null, inlineDraftSaveChain = Promise.resolve(), reminderContext = null, transientResumeState = null;
 let versionReview = null, resolutionPreview = null;
-let coordinatePreview = null, enrichmentPreview = null;
+let coordinatePreview = null, enrichmentPreview = null, backupPreview = null;
 let nearbyState = { status: 'idle', position: null, message: '' }, nearbyRequest = 0, nearbyDenied = false;
 const csvImport = createCSVImport({ host: $('csv-view'), getState: () => payload, run, saveBundle: async bundle => { await persist({ ...payload, bundle, dirty: true }); render(); }, notify: toast, exportReport: report => download(JSON.stringify({ ...report, appVersion: APP_VERSION }, null, 2), 'pharmacy-import-preview.json', 'application/json'), downloadSource: (blob, filename) => { if (!confirm('原始 CSV 是明文檔案。請確認下載到自己的本機資料夾，避開 iCloud Drive。')) return; download(unb64(payload.bundle.blobs[blob]), filename.replace(/[\/\\]/g, '_'), 'application/octet-stream'); } });
 const all = type => records.filter(r => r.type === type && (!r.deleted || r.conflict));
@@ -274,11 +274,12 @@ function openDialog(dialog, { reviewMode = '' } = {}) {
   requestAnimationFrame(() => { if (dialog.open) resetDialogScroll(dialog); });
 }
 function buttons(disabled) {
-  document.querySelectorAll('button, [data-reminder-complete], #csv-view input, #csv-view select, #regional-view select, #editor input, #editor select, #editor textarea, #review input, #review select, #review textarea, #store-reminder-dialog input, #store-reminder-dialog textarea').forEach(el => {
+  document.querySelectorAll('button, [data-reminder-complete], #csv-view input, #csv-view select, #regional-view select, #editor input, #editor select, #editor textarea, #review input, #review select, #review textarea, #store-reminder-dialog input, #store-reminder-dialog textarea, #backup-ack').forEach(el => {
     if (el.dataset.close) return;
     if (disabled) { el.dataset.busyDisabled = el.disabled ? '1' : '0'; el.disabled = true; }
     else if (el.dataset.busyDisabled !== undefined) { el.disabled = el.dataset.busyDisabled === '1'; delete el.dataset.busyDisabled; }
   });
+  if (!disabled) updateBackupControls();
 }
 async function run(fn, errorTarget) {
   if (busy || updateHolding) return;
@@ -690,7 +691,7 @@ async function openWorkspace() {
   $('gate').hidden = true; $('workspace').hidden = false;
   document.body.classList.toggle('privacy-veil', pendingLock);
   try { storagePersistent = await navigator.storage?.persist?.() || false; } catch {}
-  restoreTransientResumeState(); await runPeriodicHealthAudit(); clearInterval(autoTimer);
+  restoreTransientResumeState(); renderBackupResult(); await runPeriodicHealthAudit(); clearInterval(autoTimer);
   autoTimer = setInterval(autoSync, 15000);
   requestNearbyPosition();
 }
@@ -713,13 +714,13 @@ async function runPeriodicHealthAudit(force = false) {
   renderHealthAudit();
 }
 async function autoSync() {
-  if (updateHolding || autoFetching || !payload?.token || document.hidden || busy || editorContext || inlineTextContext || reminderContext || payload.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('store-reminder-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending()) return;
+  if (updateHolding || autoFetching || !payload?.token || document.hidden || busy || backupPreview || editorContext || inlineTextContext || reminderContext || payload.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('store-reminder-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending()) return;
   const sessionKey = key;
   autoFetching = true;
   try {
     // Offline probes never block editing or take the write lock, and carry no customer content.
     const remote = await api('/api/version');
-    if (updateHolding || !payload || key !== sessionKey || document.hidden || busy || editorContext || inlineTextContext || reminderContext || payload.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('store-reminder-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending()) return;
+    if (updateHolding || !payload || key !== sessionKey || document.hidden || busy || backupPreview || editorContext || inlineTextContext || reminderContext || payload.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('store-reminder-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending()) return;
     await run(async () => {
       try {
         if (payload.dirty || remote.version !== payload.serverVersion) await synchronize();
@@ -730,6 +731,7 @@ async function autoSync() {
   finally { autoFetching = false; }
 }
 function lockNow(reopen = !document.hidden) {
+  if (!busy && backupPreview) { clearBackupPreview(); $('backup-review').close(); }
   if (busy || editorContext || inlineTextContext || reminderContext || payload?.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('store-reminder-dialog')?.open || csvImport.hasPending()) { pendingLock = true; document.body.classList.add('privacy-veil'); return; }
   captureTransientResumeState();
   pendingLock = false; coordinatePreview = null; enrichmentPreview = null; clearNearbyPosition(); versionReview = null; resolutionPreview = null; inlineTextContext = null; reminderContext = null; clearTimeout(inlineDraftTimer); inlineDraftTimer = null; clearInterval(autoTimer); key = null; meta = null; payload = null; records = []; trail = []; editorContext = null; lastError = ''; macProgram = null; lastSyncFailure = null; syncWarning = '';
@@ -737,7 +739,7 @@ function lockNow(reopen = !document.hidden) {
   resetStoreFilters();
   for (const u of objectURLs) URL.revokeObjectURL(u); objectURLs = [];
   document.querySelectorAll('dialog').forEach(d => d.close());
-  for (const id of ['quality-content', 'regional-content', 'focus-header', 'graph', 'graph-pager', 'focus-detail', 'evidence-list', 'store-list', 'visit-list', 'recent-store-list', 'draft-banner-text', 'customer-list', 'entity-list', 'trash-list', 'review-body', 'editor-fields', 'conflict-list', 'connection-detail', 'program-detail', 'local-save-detail', 'mac-ack-detail', 'sync-success-detail', 'sync-failure-detail', 'connection-check', 'device-label', 'sync-result', 'storage-detail', 'sync-health-title', 'sync-health-body', 'pending-sync-detail', 'sync-conflict-count', 'health-audit-title', 'health-audit-time', 'health-audit-list']) $(id).replaceChildren();
+  for (const id of ['quality-content', 'regional-content', 'focus-header', 'graph', 'graph-pager', 'focus-detail', 'evidence-list', 'store-list', 'visit-list', 'recent-store-list', 'draft-banner-text', 'customer-list', 'entity-list', 'trash-list', 'review-body', 'editor-fields', 'conflict-list', 'connection-detail', 'program-detail', 'local-save-detail', 'mac-ack-detail', 'sync-success-detail', 'sync-failure-detail', 'connection-check', 'device-label', 'sync-result', 'storage-detail', 'sync-health-title', 'sync-health-body', 'pending-sync-detail', 'sync-conflict-count', 'health-audit-title', 'health-audit-time', 'health-audit-list', 'backup-result']) $(id).replaceChildren();
   $('connection-check').hidden = true;
   $('editor-form').reset(); $('gate-form').reset(); $('rebuild-connect-form').reset(); $('password').value = ''; $('backup-file').value = '';
   $('workspace').hidden = true; $('gate').hidden = false;
@@ -1810,21 +1812,126 @@ async function removeEntity(type, id) {
 }
 function download(bytes, filename, type) { const url = URL.createObjectURL(new Blob([bytes], { type })); objectURLs.push(url); const a = document.createElement('a'); a.href = url; a.download = filename; document.body.append(a); a.click(); a.remove(); setTimeout(() => { URL.revokeObjectURL(url); objectURLs = objectURLs.filter(u => u !== url); }, 60000); }
 async function exportBackup() { const envelope = await seal(payload.bundle, key, meta); download(JSON.stringify({ format: 'pharmacy-backup-1', envelope }), `pharmacy-${new Date().toISOString().slice(0, 10)}.pharmabackup`, 'application/octet-stream'); await persist({ ...payload, lastBackupExport: new Date().toISOString() }); renderHealthAudit(); toast('已產生加密備份，請儲存到本機或外接碟。'); }
+function assertBackupIdle() {
+  if (editorContext || singleStoreContext || inlineTextContext || reminderContext || payload?.draft || payload?.inlineTextDraft || csvImport.hasPending() || $('review').open || $('quick-text-dialog').open || $('store-reminder-dialog').open || $('rebuild-dialog').open) throw new Error('請先完成或取消目前的編輯、草稿或核對，再檢查備份；原輸入保持不變。');
+  if (pendingLock || document.hidden) throw new Error('App 已離開前景，請返回後重新選取備份。');
+}
+function clearBackupPreview() {
+  backupPreview = null;
+  $('backup-review-body').replaceChildren(); $('backup-ack').checked = false;
+  $('backup-error').textContent = ''; $('backup-apply').disabled = true;
+}
+function updateBackupControls() {
+  const button = $('backup-apply'); if (!button) return;
+  button.disabled = busy || !backupPreview?.plan.summary.hasChanges || !$('backup-ack').checked;
+  $('backup-ack').disabled = busy || !backupPreview?.plan.summary.hasChanges;
+}
+function backupSummaryHTML(summary) {
+  const labels = { store: '門市', visit: '拜訪', person: '人物', topic: '主題', source: 'Source Snapshot' };
+  return `<div class="backup-counts">${Object.entries(labels).map(([type, label]) => `<p><strong>${label}</strong>：${summary.before.entities[type]} → ${summary.after.entities[type]} 筆（新增 ${summary.newEntities[type]} 筆）<br><small>有效 ${summary.before.active[type]} → ${summary.after.active[type]}；回收桶 ${summary.before.deleted[type]} → ${summary.after.deleted[type]}</small></p>`).join('')}</div><p>增加 ${summary.addedRevisions} 個既有版本；${summary.identicalRevisions} 個版本已存在。新增 ${summary.newBlobs} 份附件／原始來源檔案。</p><p>既有紀錄目前版本改變 ${summary.changedExistingEntities} 筆；只補歷史 ${summary.historyOnlyEntities} 筆。衝突 ${summary.conflictsBefore} → ${summary.conflictsAfter} 筆（新增衝突 ${summary.newConflicts} 筆；備份已含解決版本 ${summary.resolvedConflicts} 筆）。</p><p class="${summary.movedToTrash || summary.revived ? 'error' : 'muted'}">有效紀錄移入回收桶 ${summary.movedToTrash} 筆；回收桶改為含有效版本 ${summary.revived} 筆（有衝突者仍待核對）。</p><p class="muted">筆數包含回收桶與衝突紀錄；衝突保留全部版本，尚未裁定內容或門市身分。合併不代表把目前資料倒退到備份日期。</p>`;
+}
+function backupChangeTitle(change) {
+  const labels = { store: '門市', visit: '拜訪', person: '人物', topic: '主題', source: 'Source Snapshot' };
+  const candidate = change.afterHeads.find(head => !head.deleted) || change.afterHeads[0];
+  const store = change.type === 'visit' ? backupPreview?.storeNames?.get(candidate?.data.store) : '';
+  const title = candidate?.data.name || candidate?.data.file || (change.type === 'visit' ? `${store || candidate?.data.store || '門市未提供'} · ${candidate?.data.date || '日期未提供'}` : change.entity);
+  const action = change.afterConflict ? '保留多版本，需另行核對' : change.afterDeleted ? '回收桶狀態' : change.beforeDeleted ? '恢復有效紀錄' : change.kind === 'added' ? '新增紀錄' : change.kind === 'history-only' ? '只補歷史，目前內容不變' : '目前版本將改變';
+  return `${labels[change.type]} · ${title}：${action}`;
+}
+function backupVersionHTML(head) {
+  const data = head.data, labels = { name: '名稱', text: '拜訪原文', date: '拜訪日期', source: '紀錄來源', next: '下次跟進', nextRemember: '下次記得（未轉換文字）', everyTimeMust: '每次必做、必給', address: '地址', city: '縣市', district: '行政區', contact: '窗口', desc: '備註', role: '職務' };
+  const fields = Object.entries(labels).filter(([field]) => Object.hasOwn(data, field)).map(([field, label]) => `<h5>${label}</h5><pre>${esc(reviewValue(data[field]))}</pre>`).join('');
+  const tasks = data.nextRememberTasks?.length ? `<h5>下次記得任務</h5>${data.nextRememberTasks.map(task => `<p>${task.completedAt ? '✓ 已完成' : '□ 待完成'}：${esc(task.text)}${task.completedAt ? `<br><small>完成：${esc(dateText(task.completedAt))}</small>` : ''}</p>`).join('')}` : '';
+  return `<article class="backup-version"><p>${esc(dateText(head.at))} · ${head.deleted ? '回收桶' : '保留紀錄'}</p>${fields}${tasks}<details><summary>完整欄位與來源證據</summary><p class="muted">版本識別：${esc(head.id)}</p><pre>${esc(reviewValue(data))}</pre></details></article>`;
+}
+function backupChangeHTML(change) {
+  const heads = (list, label) => `<section><h4>${label}</h4>${list.length ? list.map(backupVersionHTML).join('') : '<p>目前無此紀錄</p>'}</section>`;
+  return `<p class="muted">識別：${esc(change.entity)}</p>${change.beforeHeads.length === 1 && change.afterHeads.length === 1 && change.kind !== 'history-only' ? reviewFields(change.beforeHeads[0].data, change.afterHeads[0].data) : ''}${heads(change.beforeHeads, '套用前全部目前版本')}${heads(change.afterHeads, '套用後全部目前版本')}`;
+}
+function renderBackupChanges(page = 0) {
+  const ctx = backupPreview; if (!ctx) return;
+  const count = ctx.plan.changes.length, pages = Math.max(1, Math.ceil(count / 20));
+  ctx.changePage = Math.max(0, Math.min(page, pages - 1));
+  const start = ctx.changePage * 20;
+  $('backup-changes').innerHTML = ctx.plan.changes.slice(start, start + 20).map((change, index) => `<details class="backup-change" data-backup-change="${start + index}"><summary>${esc(backupChangeTitle(change))}</summary><div></div></details>`).join('') || '<p>沒有新增或改變的紀錄。</p>';
+  $('backup-pages').innerHTML = `<p>第 ${ctx.changePage + 1}／${pages} 頁 · 共 ${count} 筆</p><button type="button" data-backup-page="${ctx.changePage - 1}" ${ctx.changePage === 0 ? 'disabled' : ''}>上一頁</button> <button type="button" data-backup-page="${ctx.changePage + 1}" ${ctx.changePage + 1 === pages ? 'disabled' : ''}>下一頁</button>`;
+}
+function renderBackupWarnings(page = 0) {
+  const ctx = backupPreview, target = $('backup-warnings'); if (!ctx || !target) return;
+  const warnings = ctx.plan.summary.warnings, pages = Math.max(1, Math.ceil(warnings.length / 20));
+  page = Math.max(0, Math.min(page, pages - 1));
+  target.innerHTML = warnings.slice(page * 20, page * 20 + 20).map(w => `<p>${esc(labelsForBackupWarning(w))}</p>`).join('') + `<p>第 ${page + 1}／${pages} 頁</p><button type="button" data-backup-warning-page="${page - 1}" ${page === 0 ? 'disabled' : ''}>上一頁</button> <button type="button" data-backup-warning-page="${page + 1}" ${page + 1 === pages ? 'disabled' : ''}>下一頁</button>`;
+}
+function renderBackupPreview() {
+  const ctx = backupPreview, summary = ctx.plan.summary;
+  ctx.storeNames = new Map(project(ctx.plan.bundle).filter(record => record.type === 'store').map(store => [store.id, store.name + (store.conflict ? '（門市有衝突）' : '')]));
+  $('backup-review-title').textContent = summary.mode === 'restore' ? '在空白裝置還原 · 影響預覽' : '備份合併 · 影響預覽';
+  $('backup-review-body').innerHTML = `<p>已在本機解密並驗證檔案、版本鏈結、附件與原始來源內容。目前尚未寫入資料。</p><p class="muted">檔案：${esc(ctx.filename)}（${ctx.bytes} bytes）。檔名不代表已驗證的備份日期。</p>${summary.mode === 'restore' ? '<p>確認後會在這台空白裝置建立本機加密資料。需要重新配對 Mac；不會自動連接其他資料庫。</p>' : '<p>確認後保留本機全部既有版本，加入備份中的版本。若備份含較新的修改或刪除版本，目前顯示內容可能改變；請展開下方逐筆核對。已配對時，後續會依既有同步機制傳到 Mac 與其他裝置；內容、刪除或恢復狀態也會同步。</p>'}${backupSummaryHTML(summary)}<p class="muted">資料格式：${ctx.currentPayload?.bundle.schema ?? '空白裝置'} → ${ctx.plan.bundle.schema}${ctx.currentPayload && ctx.currentPayload.bundle.schema !== ctx.plan.bundle.schema ? '；格式升級也需確認，原文及歷史保持原樣。' : '。'}</p><p>備份不含尚未完成的草稿、裝置配對憑證或 GPS 位置。原始文字、任務完成歷史、CSV 與 Source Snapshot 依各版本原樣保留。</p>${summary.warnings.length ? `<details><summary>需要注意的歷史連結 · ${summary.warnings.length} 項</summary><p>下列紀錄指向未包含的門市、人物或主題；只列出問題，不猜補或裁定身分。</p><div id="backup-warnings"></div></details>` : ''}<details><summary>逐筆影響 · ${ctx.plan.changes.length} 筆（可展開內容對比）</summary><div id="backup-changes"></div><div id="backup-pages"></div></details>${summary.hasChanges ? '' : '<p class="insight">這份備份沒有可加入的版本或檔案，無需套用；關閉即可，資料不會寫入。</p>'}`;
+  renderBackupChanges(); renderBackupWarnings();
+  $('backup-ack').checked = false; $('backup-ack').disabled = !summary.hasChanges;
+  $('backup-apply').textContent = summary.mode === 'restore' ? '確認影響並在本機還原' : '確認影響並合併備份';
+  $('backup-error').textContent = ''; updateBackupControls(); openDialog($('backup-review'));
+}
+function labelsForBackupWarning(warning) {
+  return `${warning.type}:${warning.entity} → ${warning.targetType}:${warning.targetId}`;
+}
+function renderBackupResult() {
+  const result = payload?.lastBackupOperation, target = $('backup-result');
+  if (!target) return;
+  target.replaceChildren();
+  if (!result) return;
+  target.innerHTML = `<h3>最近一次確認套用結果</h3><p>${esc(dateText(result.at))} · ${result.summary.mode === 'restore' ? '已在本機還原' : '已在本機合併'}，加密儲存成功。</p>${backupSummaryHTML(result.summary)}<p class="muted">這是本機套用結果；Mac 是否收到請以上方同步狀態為準。驗證可讀不等於外接碟保存成功，也不等於真機還原演練通過。</p>`;
+}
 async function importBackup(file) {
+  if (backupPreview) throw new Error('請先關閉目前的備份預覽。');
   if (file.size > 36 * 1024 * 1024) throw new Error('備份檔案太大。');
-  const data = JSON.parse(await file.text()); if (data.format !== 'pharmacy-backup-1') throw new Error('不是此版本的加密備份。');
-  if (!payload) {
-    if (await readLocal()) throw new Error('本機已有資料，請先解鎖後合併。');
-    const password = $('password').value; if (!password) throw new Error('請先在密碼欄填寫備份密碼，再選取備份。');
-    const restoredKey = await derive(password, data.envelope), bundle = validateBundle(await unseal(data.envelope, restoredKey));
-    if (bundle.vaultId !== data.envelope.vaultId) throw new Error('備份身分不符。');
-    meta = data.envelope; key = restoredKey; localRevision = 0;
-    await persist({ schema: 1, device: uuid(), deviceName: '還原的裝置', token: null, bundle, dirty: true, serverVersion: 0, lastSync: null }); $('password').value = ''; await openWorkspace(); switchView('sync'); toast('已在本機還原，請重新配對 Mac。');
-  } else {
-    if (data.envelope.vaultId !== meta.vaultId || data.envelope.salt !== meta.salt) throw new Error('這份備份屬於另一個資料庫，已停止合併。');
-    const incoming = validateBundle(await unseal(data.envelope, key)), bundle = merge(payload.bundle, incoming);
-    await persist({ ...payload, bundle, dirty: true }); render(); toast('備份已合併。舊版本不會蓋掉較新的修改；可到歷史版本還原。');
-  }
+  const data = JSON.parse(await file.text()); if (data?.format !== 'pharmacy-backup-1') throw new Error('不是此版本的加密備份。');
+  const envelope = checkEnvelope(data.envelope);
+  if (payload && (envelope.vaultId !== meta.vaultId || envelope.salt !== meta.salt)) throw new Error('這份備份屬於另一個資料庫，已停止合併。');
+  assertBackupIdle();
+  const currentPayload = payload, currentKey = key, currentMeta = meta, expected = localRevision;
+  const baseline = JSON.stringify(payload), disk = await readLocal();
+  if (!currentPayload && disk) throw new Error('本機已有資料，請先解鎖後合併。');
+  if (currentPayload && (!disk || disk.revision !== expected)) throw new Error('另一個視窗已改變本機資料，請重新開啟後再選取備份。');
+  const password = !currentPayload ? $('password').value : '';
+  if (!currentPayload && !password) throw new Error('請先在密碼欄填寫備份密碼，再選取備份。');
+  const restoredKey = currentPayload ? currentKey : await derive(password, envelope);
+  const incoming = validateBundle(await unseal(envelope, restoredKey));
+  if (incoming.vaultId !== envelope.vaultId) throw new Error('備份身分不符。');
+  const plan = await planBackupImport(currentPayload?.bundle || null, incoming);
+  assertBackupIdle();
+  if (payload !== currentPayload || key !== currentKey || meta !== currentMeta || localRevision !== expected || JSON.stringify(payload) !== baseline) throw new Error('檢查期間本機狀態已改變，請重新選取備份。');
+  backupPreview = { plan, incoming, restoredKey, envelope, currentPayload, currentKey, currentMeta, expected, baseline, candidate: JSON.stringify(plan.bundle), filename: file.name || '加密備份', bytes: file.size };
+  renderBackupPreview();
+}
+async function applyBackupPreview() {
+  const ctx = backupPreview;
+  if (!ctx || !ctx.plan.summary.hasChanges || !$('backup-ack').checked) throw new Error('請先查看實際影響並勾選確認。');
+  assertBackupIdle();
+  const assertCurrent = () => {
+    if (backupPreview !== ctx || payload !== ctx.currentPayload || key !== ctx.currentKey || meta !== ctx.currentMeta || localRevision !== ctx.expected || JSON.stringify(payload) !== ctx.baseline || pendingLock || document.hidden) throw new Error('預覽期間本機狀態已改變，請關閉並重新選取備份；尚未套用。');
+  };
+  assertCurrent();
+  const disk = await readLocal();
+  if (ctx.currentPayload ? !disk || disk.revision !== ctx.expected : !!disk) throw new Error('另一個視窗已改變本機資料，請重新開啟並預覽；尚未套用。');
+  const plan = await planBackupImport(payload?.bundle || null, ctx.incoming);
+  if (JSON.stringify(plan.bundle) !== ctx.candidate || JSON.stringify(plan.summary) !== JSON.stringify(ctx.plan.summary)) throw new Error('備份結果已改變，請重新選取備份。');
+  assertCurrent();
+  const at = new Date().toISOString(), report = { at, summary: { ...plan.summary, warnings: [], warningCount: plan.summary.warnings.length } };
+  const next = withPendingSync(payload, payload ? { ...payload, bundle: plan.bundle, dirty: true, lastBackupOperation: report } : { schema: 1, device: uuid(), deviceName: '還原的裝置', token: null, bundle: plan.bundle, dirty: true, serverVersion: 0, lastSync: null, lastHealthAudit: at, lastBackupOperation: report });
+  const nextMeta = ctx.currentPayload ? ctx.currentMeta : ctx.envelope;
+  const encrypted = await seal(next, ctx.restoredKey, nextMeta, 'device');
+  assertCurrent();
+  // Use the reviewed revision, never a newer global revision after an await.
+  // Memory adopts the candidate only after the one IndexedDB transaction succeeds.
+  const rev = await writeLocal(encrypted, ctx.currentPayload ? ctx.expected : 0, ctx.restoredKey);
+  key = ctx.restoredKey; meta = nextMeta; payload = next; localRevision = rev;
+  slot = { envelope: encrypted, revision: rev, unlockKey: key };
+  clearBackupPreview(); $('backup-review').close(); $('password').value = '';
+  $('save-state').textContent = '手機已保存：已加密儲存於本機';
+  if (!ctx.currentPayload) await openWorkspace();
+  render(); renderBackupResult(); switchView('sync');
+  toast(plan.summary.mode === 'restore' ? '已在本機還原並保留全部歷史；尚未配對 Mac。' : '已依確認結果在本機合併；全部歷史保留，等待 Mac 同步確認。');
 }
 async function adoptRebuilt(event) {
   event.preventDefault();
@@ -1872,7 +1979,7 @@ document.addEventListener('click', event => {
   const node = event.target.closest('[data-node-type]'); if (node && !busy) return singleStoreContext ? toast('請先完成或收起這次拜訪紀錄，再切換頁面。') : navigate(node.dataset.nodeType, node.dataset.nodeId);
   if (!b) return;
   if (b.dataset.close) {
-    if (['rebuild-dialog', 'quick-text-dialog', 'store-reminder-dialog', 'review'].includes(b.dataset.close) && busy) return;
+    if (['rebuild-dialog', 'quick-text-dialog', 'store-reminder-dialog', 'review', 'backup-review'].includes(b.dataset.close) && busy) return;
     if (b.dataset.close === 'review' && singleStoreContext) return run(closeSingleStoreReview, 'single-store-error');
     if (b.dataset.close === 'editor' && editorContext?.type === 'visit') return run(async () => {
       await flushVisitDraft(); $('editor').close(); editorContext = null; render();
@@ -1965,11 +2072,11 @@ document.addEventListener('change', event => {
   const toggle = event.target.closest?.('[data-reminder-custom-toggle]'); if (toggle) changeCustomReminderOption(toggle.closest('[data-reminder-options-for]'), toggle.checked);
 });
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) { clearNearbyPosition(); if (editorContext?.type === 'visit' || singleStoreContext) void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); document.body.classList.add('privacy-veil'); if (payload || busy) lockNow(false); }
+  if (document.hidden) { clearNearbyPosition(); if (editorContext?.type === 'visit' || singleStoreContext) void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); document.body.classList.add('privacy-veil'); if (payload || busy || backupPreview) lockNow(false); }
   else if (pendingLock || !payload) { pendingLock = false; document.body.classList.remove('privacy-veil'); showGate(); }
   else { document.body.classList.remove('privacy-veil'); requestNearbyPosition(); }
 });
-window.addEventListener('pagehide', () => { clearNearbyPosition(); if (editorContext?.type === 'visit' || singleStoreContext) void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); if (payload || busy) lockNow(false); });
+window.addEventListener('pagehide', () => { clearNearbyPosition(); if (editorContext?.type === 'visit' || singleStoreContext) void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); if (payload || busy || backupPreview) lockNow(false); });
 window.addEventListener('pageshow', () => { if (!payload && !document.hidden) { document.body.classList.remove('privacy-veil'); showGate(); } });
 $('gate-form').addEventListener('submit', initializeOrUnlock); $('editor-form').addEventListener('submit', saveEditor); $('quick-text-form').addEventListener('submit', saveQuickTextEdit); $('store-reminder-form').addEventListener('submit', saveStoreReminder);
 $('review').addEventListener('submit', event => { if (event.target.id === 'single-store-capture-form') saveSingleStoreVisit(event); });
@@ -1990,6 +2097,22 @@ $('review').addEventListener('change', event => { if (singleStoreContext && even
 $('quality-content').addEventListener('change', e => { if (e.target.id === 'quality-field') { qualityField = e.target.value; qualityPage = 0; renderQuality(); } });
 $('gate-restore').addEventListener('click', () => { if (!$('password').value) { $('gate-error').textContent = '請先在密碼欄填寫備份密碼。'; return; } $('backup-file').click(); });
 $('backup-file').addEventListener('change', () => { const f = $('backup-file').files[0]; if (f) run(() => importBackup(f), payload ? null : 'gate-error'); $('backup-file').value = ''; });
+$('backup-review-body').addEventListener('click', event => {
+  if (busy) return;
+  const page = event.target.closest('[data-backup-page]'), warning = event.target.closest('[data-backup-warning-page]');
+  if (page) renderBackupChanges(Number(page.dataset.backupPage));
+  if (warning) renderBackupWarnings(Number(warning.dataset.backupWarningPage));
+});
+$('backup-review-body').addEventListener('toggle', event => {
+  const detail = event.target;
+  if (!backupPreview || !detail.open || !detail.matches('[data-backup-change]') || detail.dataset.loaded) return;
+  const change = backupPreview.plan.changes[Number(detail.dataset.backupChange)];
+  if (change) { detail.querySelector('div').innerHTML = backupChangeHTML(change); detail.dataset.loaded = '1'; }
+}, true);
+$('backup-ack').addEventListener('change', updateBackupControls);
+$('backup-apply').addEventListener('click', () => run(applyBackupPreview, 'backup-error'));
+$('backup-review').addEventListener('cancel', event => { if (busy) event.preventDefault(); });
+$('backup-review').addEventListener('close', clearBackupPreview);
 $('rebuild-connect-form').addEventListener('submit', adoptRebuilt);
 $('rebuild-dialog').addEventListener('cancel', event => { if (busy) event.preventDefault(); else $('rebuild-connect-form').reset(); });
 for (const prefix of ['', 'customer-']) for (const [id, field] of [['search', 'query'], ['district', 'district'], ['channel', 'kind']]) $(prefix + id).addEventListener(id === 'search' ? 'input' : 'change', event => changeStoreFilter(field, event.target.value));
@@ -2000,7 +2123,7 @@ new ResizeObserver(drawGraph).observe($('graph-wrap'));
 if (!isSecureContext || !crypto.subtle) { $('gate-error').textContent = '需要受信任的 HTTPS 連線。請完成 Mac 與 iPhone 憑證設定，不要略過憑證警告。'; $('gate-submit').disabled = true; }
 else {
   showGate();
-  const draftBusy = () => busy || gateOpening || !!editorContext || !!inlineTextContext || !!reminderContext || !!payload?.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('store-reminder-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending() || (!$('gate').hidden && [...$('gate-form').querySelectorAll('input')].some(el => el.value && !['device-name'].includes(el.id)));
+  const draftBusy = () => busy || gateOpening || !!backupPreview || !!editorContext || !!inlineTextContext || !!reminderContext || !!payload?.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('store-reminder-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending() || (!$('gate').hidden && [...$('gate-form').querySelectorAll('input')].some(el => el.value && !['device-name'].includes(el.id)));
   for (const name of ['click', 'submit', 'keydown', 'beforeinput']) document.addEventListener(name, event => { if (updateHolding && event.target.closest('button,input,select,textarea,form,a')) { event.preventDefault(); event.stopImmediatePropagation(); } }, true);
   startUpdates({ api, hasToken: () => !!payload?.token, isBusy: draftBusy, setHold: held => { updateHolding = held; document.body.classList.toggle('update-holding', held); }, notify: toast, onOfflineReady: () => { offlineReady = true; $('secure-state').textContent = '離線介面已備妥。iPhone 請先加入主畫面，再從主畫面進行配對。'; status(); } });
   if (location.hostname === 'localhost') $('secure-state').textContent = '請使用 Mac 顯示的 .local 網址開啟 App，管理頁才使用 localhost。';

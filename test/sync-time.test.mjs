@@ -25,7 +25,7 @@ async function client(f, device = 'phone') {
   const $ = id => { if (!elements.has(id)) elements.set(id, { textContent: '', hidden: false, open: false, dataset: {} }); return elements.get(id); };
   const c = vm.createContext({
     ...f, payload: { schema: 1, device, deviceName: device, token: `fictional-${device}`, bundle: structuredClone(f.bundle), dirty: false, serverVersion: 1, lastSync: OLD },
-    records: [], lastError: '', lastSyncFailure: null, syncWarning: '', macProgram: null, APP_VERSION, diagnoseConnection, clock: NOW, failure: null, updateHolding: false, autoFetching: false, busy: false, editorContext: null,
+    records: [], lastError: '', lastSyncFailure: null, syncWarning: '', macProgram: null, APP_VERSION, diagnoseConnection, clock: NOW, failure: null, updateHolding: false, autoFetching: false, busy: false, backupPreview: null, editorContext: null,
     document: { hidden: false }, csvImport: { hasPending: () => false }, location: { hostname: 'fictional.local' },
     offlineReady: true, storagePersistent: true, inlineTextContext: null, reminderContext: null, TextEncoder, seal, unseal, validateBundle, merge, $, dateText: value => value || '尚未同步', renderHealthAudit: () => {},
   });
@@ -133,6 +133,32 @@ test('background and active editing never produce a fresh automatic success time
   c.document.hidden = true; await c.autoSync();
   c.document.hidden = false; c.editorContext = {}; await c.autoSync();
   assert.equal(c.payload.lastSync, OLD); assert.equal(calls.length, 0);
+});
+
+test('read-only backup preview blocks automatic probes, uploads and local timestamp writes', async () => {
+  for (const dirty of [false, true]) {
+    const f=await fixture(),{c,calls,local}=await client(f);
+    c.payload.dirty=dirty;c.backupPreview={plan:{summary:{mode:'merge'}}};
+    const before=JSON.stringify(c.payload),disk=JSON.stringify(local.envelope),remote=JSON.stringify(f.remote);
+    await c.autoSync();
+    assert.equal(calls.length,0);assert.equal(JSON.stringify(c.payload),before);assert.equal(JSON.stringify(local.envelope),disk);assert.equal(JSON.stringify(f.remote),remote);
+    assert.equal(c.payload.lastSync,OLD);assert.equal(c.autoFetching,false);assert.equal(c.busy,false);
+  }
+});
+
+test('backup preview opened while a version probe is pending blocks later sync and success-time persistence', async () => {
+  for (const mode of ['unchanged','local-pending','remote-newer']) {
+    const f=await fixture(),{c,calls,local}=await client(f);
+    if(mode==='local-pending')c.payload.dirty=true;
+    if(mode==='remote-newer')f.remote.version=2;
+    let entered,release;const waiting=new Promise(resolve=>release=resolve),probeStarted=new Promise(resolve=>entered=resolve),api=c.api;
+    c.api=async(...args)=>{const response=await api(...args);entered();await waiting;return response;};
+    const before=JSON.stringify(c.payload),disk=JSON.stringify(local.envelope),remote=JSON.stringify(f.remote);
+    const probing=c.autoSync();await probeStarted;assert.equal(c.autoFetching,true);
+    c.backupPreview={plan:{summary:{mode:'merge'}}};release();await probing;
+    assert.deepEqual(calls,[['/api/version','GET']]);assert.equal(JSON.stringify(c.payload),before);assert.equal(JSON.stringify(local.envelope),disk);assert.equal(JSON.stringify(f.remote),remote);
+    assert.equal(c.payload.lastSync,OLD);assert.equal(c.autoFetching,false);assert.equal(c.busy,false);
+  }
 });
 
 
