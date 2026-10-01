@@ -15,6 +15,14 @@ import { exportCode } from '../scripts/release.mjs';
 import { CODE_FILES } from '../scripts/code-files.mjs';
 
 const keys = generateKeyPairSync('ed25519');
+const V1_5_40_RUNTIME_FILES = Object.freeze([
+  'package.json', 'server.mjs', 'scripts/setup.mjs', 'scripts/initial-customer.mjs',
+  'public/index.html', 'public/app.js', 'public/core.js', 'public/db.js',
+  'public/relations.js', 'public/csv.js', 'public/csv-ui.js', 'public/style.css',
+  'public/sw.js', 'public/update-client.js', 'public/version.js',
+  'public/admin.html', 'public/admin.js', 'public/manifest.webmanifest',
+  'public/icon.svg', 'public/icon-192.png', 'public/icon-512.png',
+]);
 const trust = { format: 'pharmacy-trust-1', repository: 'fictional-tests/program', publicKey: keys.publicKey.export({ type: 'spki', format: 'pem' }).toString() };
 const options = { repository: trust.repository, sequence: 10, privateKey: keys.privateKey };
 function temporary(t) { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pharmacy-update-test-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true })); return dir; }
@@ -36,6 +44,11 @@ test('signed package verifies; wrong key and tampering fail closed', () => {
   const wrong = generateKeyPairSync('ed25519').publicKey.export({ type: 'spki', format: 'pem' }).toString();
   assert.throws(() => readPackage(bytes, { ...trust, publicKey: wrong }), /簽章/);
   assert.throws(() => validateTrust({ ...trust, repository: '../private' }));
+});
+test('signed releases remain installable by the v1.5.40 runtime allowlist', () => {
+  const verified = readPackage(buildPackage(ROOT, options), trust);
+  assert.deepEqual(verified.files.map(file => file.path), [...V1_5_40_RUNTIME_FILES]);
+  assert.deepEqual([...RUNTIME_FILES], [...V1_5_40_RUNTIME_FILES]);
 });
 test('even signed packages cannot change data schema, add paths, repeat paths or lie about hashes', () => {
   const bytes = buildPackage(ROOT, options);

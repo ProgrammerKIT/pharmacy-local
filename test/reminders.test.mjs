@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption } from '../public/reminders.js';
+import { NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption } from '../public/core.js';
 
 test('fixed next-reminder options match the requested choices', () => {
   assert.deepEqual([...NEXT_REMINDER_OPTIONS], ['HAUD', 'Complete', '陳列盒（中）', '陳列盒（小）']);
