@@ -70,7 +70,7 @@ function changeCustomReminderOption(group, selected = true) {
     if (!setReminderDraftValue(group, previous ? setReminderOption(before, previous, false) : before)) { toggle.checked = true; return; }
     group.dataset.customApplied = ''; return;
   }
-  if (!current) { toggle.checked = true; input.focus(); return; }
+  if (!current) { toggle.checked = true; return; }
   let after = previous && previous !== current ? setReminderOption(before, previous, false) : before;
   after = setReminderOption(after, current, true);
   if (!setReminderDraftValue(group, after)) { input.value = previous; toggle.checked = !!previous; return; }
@@ -240,6 +240,28 @@ const name = (type, id) => by(type, id)?.name || (type === 'store' ? '已刪除�
 const dateText = at => at ? new Date(at).toLocaleString('zh-TW', { hour12: false }) : '尚未同步';
 function toast(message) { $('toast').textContent = message; $('toast').classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').classList.remove('show'), 6500); }
 let dialogScrollLock = null;
+function dismissKeyboard() {
+  const active = document.activeElement;
+  if (active?.matches?.('input,textarea') || active?.isContentEditable) active.blur();
+}
+function focusReadingSurface(scope = null) {
+  const dialog = scope?.closest?.('dialog[open]') || document.activeElement?.closest?.('dialog[open]') || [...document.querySelectorAll('dialog[open]')].at(-1);
+  dismissKeyboard();
+  const target = dialog?.querySelector('[data-dialog-focus]') || ($('workspace').hidden ? $('gate-title') : $('page-title'));
+  target?.focus({ preventScroll: true });
+}
+const invalidForms = new WeakSet();
+function showValidationWithoutKeyboard(event) {
+  event.preventDefault();
+  const field = event.target, form = field.form;
+  if (!form || invalidForms.has(form)) return;
+  invalidForms.add(form); queueMicrotask(() => invalidForms.delete(form));
+  dismissKeyboard();
+  const error = form.querySelector('[role="alert"],.error') || form.closest('dialog')?.querySelector('[role="alert"],.error') || $('gate-error');
+  if (error) error.textContent = '請檢查未完成或格式不符的欄位：' + field.validationMessage;
+  for (let parent = field.parentElement; parent && parent !== form; parent = parent.parentElement) if (parent.tagName === 'DETAILS') parent.open = true;
+  field.scrollIntoView({ block: 'nearest' });
+}
 function lockDialogBackground() {
   if (dialogScrollLock) return;
   const scrollTop = document.scrollingElement?.scrollTop || window.scrollY || 0;
@@ -267,10 +289,12 @@ function setReviewMode(mode) {
 }
 function openDialog(dialog, { reviewMode = '' } = {}) {
   if (dialog.id === 'review') setReviewMode(reviewMode);
+  // Capture a non-editable return target before native dialog focus/close restoration.
+  if (!dialog.open) focusReadingSurface();
   lockDialogBackground(); resetDialogScroll(dialog);
   if (!dialog.open) dialog.showModal();
   resetDialogScroll(dialog);
-  try { dialog.focus({ preventScroll: true }); } catch { dialog.focus(); }
+  focusReadingSurface(dialog);
   requestAnimationFrame(() => { if (dialog.open) resetDialogScroll(dialog); });
 }
 function buttons(disabled) {
@@ -840,6 +864,7 @@ function status() {
   $('storage-detail').textContent = `離線介面：${offlineReady ? '已備妥' : '尚待確認，請先保持連線'}。持久儲存：${storagePersistent ? '已獲允許' : '瀏覽器尚未允許，請定期同步及備份'}。資料 ${(new TextEncoder().encode(JSON.stringify(payload.bundle)).length / 1048576).toFixed(2)} / 24 MB（包含歷史與附件）。`;
 }
 function switchView(view) {
+  dismissKeyboard();
   activeView = view; Object.keys(titles).forEach(v => $(`${v}-view`).hidden = v !== view);
   const primary = view === 'regional' ? 'stores' : ['quality', 'csv', 'entities', 'explore', 'trash'].includes(view) ? 'sync' : view;
   document.querySelectorAll('.rail [data-view]').forEach(b => b.classList.toggle('active', b.dataset.view === primary));
@@ -1033,7 +1058,7 @@ function activateSingleStoreCapture(restoreDraft = null) {
   $('review-persistent-actions').classList.add('capture-active');
   refreshBriefSearch();
   form.scrollIntoView({ block: 'start' });
-  queueMicrotask(() => { try { $('single-store-text')?.focus({ preventScroll: true }); } catch { $('single-store-text')?.focus(); } });
+  focusReadingSurface($('review'));
 }
 function resumeSingleDraftFromReview() {
   singleStoreContext = null;
@@ -1544,7 +1569,7 @@ function resumeInlineTextDraft() {
   if (activeView === 'visits' && element && (!elementDialog || elementDialog.open) && inlineTextContext?.id === id && inlineTextContext.after !== inlineTextContext.before) {
     const collapsed = element.closest('details:not([open])'); if (collapsed) collapsed.open = true;
     element.scrollIntoView({ block: 'center' });
-    queueMicrotask(() => element.focus({ preventScroll: true }));
+    focusReadingSurface(element);
     return;
   }
   switchView('visits');
@@ -1557,7 +1582,7 @@ function resumeInlineTextDraft() {
   if (!element) return toast('找不到未完成修改的原始卡片；正式資料仍未被改寫。');
   const collapsed = element.closest('details:not([open])'); if (collapsed) collapsed.open = true;
   element.scrollIntoView({ block: 'center' });
-  queueMicrotask(() => element.focus({ preventScroll: true }));
+  focusReadingSurface(element);
 }
 function blockInlineTextBeforeInput(event) {
   const element = event.target.closest?.('[data-inline-edit-text]');
@@ -1579,7 +1604,6 @@ function openStoreReminder(storeId) {
   $('store-reminder-error').textContent = '';
   resetReminderOptionGroup('store-reminder-next');
   openDialog($('store-reminder-dialog'));
-  $('store-reminder-next').focus();
 }
 async function saveStoreReminder(event) {
   event.preventDefault();
@@ -1663,7 +1687,6 @@ function renderQuickTextDialog() {
   } else {
     $('quick-text-body').innerHTML = `<p><strong>${esc(ctx.storeName)}</strong></p><p class="muted">${esc(ctx.date || '原始日期未提供')} · ${esc(ctx.source || '來源未提供')}</p><div class="quick-text-scope"><strong>安全快速修改</strong><p>這裡只能改文字，不提供刪除。第一次按確認不會寫入正式資料，下一頁還會再顯示修改前／後內容讓你二次確認。</p></div><label>拜訪文字<textarea id="quick-text-value" maxlength="20000" spellcheck="false">${esc(ctx.after ?? ctx.before)}</textarea></label>`;
     $('quick-text-actions').innerHTML = '<button type="button" data-close="quick-text-dialog">取消</button><button type="submit" class="primary">確認修改內容</button>';
-    queueMicrotask(() => $('quick-text-value')?.focus());
   }
   openDialog(dialog);
 }
@@ -2084,8 +2107,13 @@ async function exportArchive(id) {
   const envelope = await seal(old.bundle, archived.unlockKey, archived.envelope);
   download(JSON.stringify({ format: 'pharmacy-backup-1', envelope }), 'pharmacy-isolated-old-vault.pharmabackup', 'application/octet-stream');
 }
-async function repairPair() {
-  const code = prompt('請輸入 Mac 管理頁新產生的配對碼：'); if (!code?.trim()) return;
+function openRepairPair() {
+  $('review-title').textContent = '重新配對此裝置';
+  $('review-body').innerHTML = '<form id="repair-pair-form"><p>保留本機資料，使用 Mac 管理頁新產生的配對碼重新連線。確認前不會送出配對碼或修改資料。</p><label>一次性配對碼<input id="repair-pair-code" autocomplete="off" autocapitalize="none" spellcheck="false" required></label><p id="repair-pair-error" class="error" role="alert"></p><div class="dialog-footer"><button type="button" data-close="review">取消</button><button type="submit" class="primary">確認重新配對</button></div></form>';
+  openDialog($('review'));
+}
+async function repairPair(code) {
+  if (!code?.trim()) return;
   const paired = await api('/api/pair', { method: 'POST', token: null, body: { code: code.trim(), label: payload.deviceName } });
   if (paired.snapshot.envelope && (paired.snapshot.envelope.vaultId !== meta.vaultId || paired.snapshot.envelope.salt !== meta.salt)) throw new Error('此 Mac 是另一個資料庫，本機資料未修改。');
   await persist({ ...payload, device: paired.id, token: paired.token, serverVersion: 0, dirty: true }); await synchronize(); toast('重新配對完成。');
@@ -2115,7 +2143,7 @@ document.addEventListener('click', event => {
   if (b.dataset.regionalSignal) return openRegionalSignal(b.dataset.regionalSignal);
   if (b.dataset.regionalStore) { if ($('review').open) $('review').close(); return navigate('store', b.dataset.regionalStore); }
   if (b.dataset.quickEditText) return openQuickTextEdit(b.dataset.quickEditText);
-  if (b.dataset.quickTextBack !== undefined) { const id = quickTextContext?.id, briefStoreId = quickTextContext?.briefStoreId; const selector = `[data-inline-edit-text="${CSS.escape(id || '')}"]`; const target = briefStoreId && $('review').open && $('review').dataset.singleStoreId === briefStoreId ? $('review').querySelector(selector) : document.querySelector(selector); $('quick-text-dialog').close(); quickTextContext = null; return target?.focus(); }
+  if (b.dataset.quickTextBack !== undefined) { const id = quickTextContext?.id, briefStoreId = quickTextContext?.briefStoreId; const selector = `[data-inline-edit-text="${CSS.escape(id || '')}"]`; const target = briefStoreId && $('review').open && $('review').dataset.singleStoreId === briefStoreId ? $('review').querySelector(selector) : document.querySelector(selector); $('quick-text-dialog').close(); quickTextContext = null; focusReadingSurface(target); return; }
   if (b.dataset.inlineCancel) { const review = b.closest('#review'), briefStoreId = review?.open && review.classList.contains('visit-brief-dialog') ? review.dataset.singleStoreId || '' : ''; return run(() => cancelInlineTextEdit(b.dataset.inlineCancel, briefStoreId)); }
   if (b.dataset.inlineReview) { const review = b.closest('#review'), briefStoreId = review?.open && review.classList.contains('visit-brief-dialog') ? review.dataset.singleStoreId || '' : ''; return run(() => reviewInlineTextEdit(b.dataset.inlineReview, briefStoreId), null); }
   if (b.dataset.resumeVisitDraft !== undefined) return resumeVisitDraft();
@@ -2172,11 +2200,12 @@ document.addEventListener('click', event => {
   if (b.id === 'run-health-audit') return run(async () => { await runPeriodicHealthAudit(true); toast('唯讀健檢已重新完成；沒有修改任何客戶紀錄。'); });
   if (b.id === 'export-backup') return run(exportBackup);
   if (b.id === 'import-backup') return $('backup-file').click();
-  if (b.id === 'repair-pair') return run(async () => { try { await repairPair(); } catch (e) { recordSyncFailure(e); throw e; } });
+  if (b.id === 'repair-pair') return openRepairPair();
 });
 document.addEventListener('keydown', e => { const n = e.target.closest('.node[role="button"]'); if (n && ['Enter', ' '].includes(e.key) && !busy) { e.preventDefault(); if (n.dataset.candidateKey) openCandidateDetail(n.dataset.candidateKey, n.dataset.candidateStore || ''); else navigate(n.dataset.nodeType, n.dataset.nodeId); } });
 document.addEventListener('focusin', event => { const editor = event.target.closest?.('[data-inline-edit-text]'); if (editor) beginInlineTextEdit(editor.dataset.inlineEditText, editor); });
 document.addEventListener('beforeinput', blockInlineTextBeforeInput);
+document.addEventListener('invalid', showValidationWithoutKeyboard, true);
 document.addEventListener('focusin', event => { if (event.target.closest?.('#review [data-inline-edit-text]')) refreshBriefSearch(); });
 document.addEventListener('focusout', event => { if (event.target.closest?.('#review [data-inline-edit-text]')) queueMicrotask(() => refreshBriefSearch()); });
 document.addEventListener('beforeinput', event => { if (event.target.closest?.('#review [data-inline-edit-text]')) { clearTimeout(briefSearchTimer); clearBriefSearchHighlights(); } });
@@ -2193,14 +2222,23 @@ document.addEventListener('change', event => {
   const toggle = event.target.closest?.('[data-reminder-custom-toggle]'); if (toggle) changeCustomReminderOption(toggle.closest('[data-reminder-options-for]'), toggle.checked);
 });
 document.addEventListener('visibilitychange', () => {
+  dismissKeyboard();
   if (document.hidden) { clearNearbyPosition(); if (editorContext?.type === 'visit' || singleStoreContext) void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); document.body.classList.add('privacy-veil'); if (payload || busy || backupPreview) lockNow(false); }
   else if (pendingLock || !payload) { pendingLock = false; document.body.classList.remove('privacy-veil'); showGate(); }
   else { document.body.classList.remove('privacy-veil'); requestNearbyPosition(); }
 });
-window.addEventListener('pagehide', () => { clearNearbyPosition(); if (editorContext?.type === 'visit' || singleStoreContext) void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); if (payload || busy || backupPreview) lockNow(false); });
-window.addEventListener('pageshow', () => { if (!payload && !document.hidden) { document.body.classList.remove('privacy-veil'); showGate(); } });
+window.addEventListener('pagehide', () => { dismissKeyboard(); clearNearbyPosition(); if (editorContext?.type === 'visit' || singleStoreContext) void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); if (payload || busy || backupPreview) lockNow(false); });
+window.addEventListener('pageshow', () => { dismissKeyboard(); if (!payload && !document.hidden) { document.body.classList.remove('privacy-veil'); showGate(); } });
 $('gate-form').addEventListener('submit', initializeOrUnlock); $('editor-form').addEventListener('submit', saveEditor); $('quick-text-form').addEventListener('submit', saveQuickTextEdit); $('store-reminder-form').addEventListener('submit', saveStoreReminder);
-$('review').addEventListener('submit', event => { if (event.target.id === 'single-store-capture-form') saveSingleStoreVisit(event); });
+$('review').addEventListener('submit', event => {
+  if (event.target.id === 'single-store-capture-form') saveSingleStoreVisit(event);
+  if (event.target.id === 'repair-pair-form') {
+    event.preventDefault(); void run(async () => {
+      try { await repairPair($('repair-pair-code').value); $('review').close(); }
+      catch (error) { recordSyncFailure(error); throw error; }
+    }, 'repair-pair-error');
+  }
+});
 $('brief-search').addEventListener('input', scheduleBriefSearch);
 $('brief-search').addEventListener('compositionstart', () => { if (briefSearchContext) { briefSearchContext.composing = true; clearTimeout(briefSearchTimer); clearBriefSearchHighlights(); } });
 $('brief-search').addEventListener('compositionend', () => { if (briefSearchContext) { briefSearchContext.composing = false; scheduleBriefSearch(); } });
@@ -2212,11 +2250,11 @@ $('brief-search-prev').addEventListener('click', () => moveBriefSearch(-1));
 $('brief-search-next').addEventListener('click', () => moveBriefSearch(1));
 $('brief-search-clear').addEventListener('click', () => {
   if (busy || updateHolding || briefSearchBlocked()) return;
-  forgetBriefSearchQuery(); $('brief-search').focus({ preventScroll: true });
+  forgetBriefSearchQuery(); focusReadingSurface($('review'));
 });
 document.querySelectorAll('dialog').forEach(dialog => dialog.addEventListener('close', () => queueMicrotask(releaseDialogBackground)));
 $('editor').addEventListener('close', () => editorContext = null);
-$('review').addEventListener('close', () => { if (!$('review').open) setReviewMode(''); });
+$('review').addEventListener('close', () => { if (!$('review').open) { setReviewMode(''); if ($('repair-pair-code')) $('repair-pair-code').value = ''; } });
 $('quick-text-dialog').addEventListener('close', () => { quickTextContext = null; $('quick-text-error').textContent = ''; });
 $('quick-text-dialog').addEventListener('cancel', event => { if (busy) event.preventDefault(); });
 $('store-reminder-dialog').addEventListener('close', () => { reminderContext = null; $('store-reminder-error').textContent = ''; });

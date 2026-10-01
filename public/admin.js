@@ -1,6 +1,22 @@
 import { newMeta, derive, seal, emptyBundle, uuid } from './core.js';
 const $ = id => document.getElementById(id), token = location.hash.slice(1);
 let rebuilding = false;
+function dismissAdminKeyboard() {
+  const active = document.activeElement;
+  if (active?.matches?.('input,textarea') || active?.isContentEditable) active.blur();
+}
+const invalidForms = new WeakSet();
+document.addEventListener('invalid', event => {
+  event.preventDefault();
+  const field = event.target, form = field.form;
+  if (!form || invalidForms.has(form)) return;
+  invalidForms.add(form); queueMicrotask(() => invalidForms.delete(form));
+  dismissAdminKeyboard(); $('admin-error').textContent = '請檢查未完成或格式不符的欄位：' + field.validationMessage;
+  field.scrollIntoView({ block: 'nearest' });
+}, true);
+document.addEventListener('visibilitychange', dismissAdminKeyboard);
+window.addEventListener('pagehide', dismissAdminKeyboard);
+window.addEventListener('pageshow', dismissAdminKeyboard);
 history.replaceState(null, '', '/admin');
 async function request(path, body) {
   const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 12000);
