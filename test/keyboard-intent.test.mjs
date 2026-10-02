@@ -153,10 +153,10 @@ test('background and bfcache lifecycle dismiss focus synchronously without remov
   Object.assign(f.context, {
     payload: { draft: { text: '保留中的虛構草稿' } }, editorContext: { type: 'visit' }, singleStoreContext: null,
     inlineTextContext: { after: '保留的直接修改' }, busy: false, backupPreview: null, pendingLock: false,
-    clearNearbyPosition() {}, requestNearbyPosition() {}, showGate() {}, lockNow() {},
+    clearNearbyPosition() {}, requestNearbyPosition() {}, showGate() {}, lockNow() {}, finishAttendancePrompt() {},
     flushVisitDraft() { f.events.push(['flush-visit']); }, flushInlineTextDraft() { f.events.push(['flush-inline']); }
   });
-  vm.runInContext(app.slice(app.indexOf("document.addEventListener('visibilitychange', () => {"), app.indexOf("$('gate-form').addEventListener('submit'")), f.context);
+  vm.runInContext(app.slice(app.indexOf("document.addEventListener('visibilitychange', () => {"), app.indexOf("$('visit-attendance-form').addEventListener('submit'")), f.context);
   const field = f.editable('composed-text', true);
   for (const [type, hidden] of [['visibilitychange', true], ['visibilitychange', false], ['pagehide', true], ['pageshow', false]]) {
     f.document.activeElement = field; f.document.hidden = hidden;

@@ -4,6 +4,7 @@ import { createCSVImport } from './csv-ui.js';
 import { PROFILE_FIELDS, FILL_FIELDS, scanQuality, setDistinctReview, sourceSuggestions, fillProfile } from './csv.js';
 import { entityRule, evidenceKind, sourceTags, groupCSVNotes, storeIdentityPending, relationVisitAllowed, retailChannel, filterStoreDirectory, candidateRelationsForStore, candidateOverview, candidateTrend, visitBriefForStore, regionalOptions, regionalInsights } from './relations.js';
 import { APP_VERSION } from './version.js';
+import { makeVisitAttendance, visitAttendanceForStore, attendanceTaipeiDate } from './core.js';
 import { startUpdates, requestLocal, diagnoseConnection } from './update-client.js';
 
 const $ = id => document.getElementById(id);
@@ -111,7 +112,9 @@ async function changeReminderTask(storeId, taskId, expectedHead, repeat = false)
   const impact = repeat ? '將新增一項同內容待辦；先前完成紀錄仍保留。' : '將記錄完成時間，並移到「已完成」歷史；不刪除任務。';
   if (!confirm(`${store.name}\n${task.text}\n\n${impact}\n拜訪原文與每次必做、必給保持原樣。\n確認${repeat ? '再加入待辦' : '完成'}？`)) return;
   const briefStoreId = $('review').open && $('review').classList.contains('visit-brief-dialog') ? $('review').dataset.singleStoreId : '';
-  await commitRevision('store', store.id, data, [expectedHead]);
+  const choice = await confirmStoreSave(store.id, store.name); if (!choice) return;
+  assertSaveParents('store', store.id, [expectedHead]);
+  await commitRevision('store', store.id, data, [expectedHead], false, {}, choice.attendance);
   if (briefStoreId) openVisitBrief(briefStoreId, { preservePosition: true });
   toast(repeat ? '已新增待辦，先前完成歷史保留。' : '已完成並保留紀錄，可展開「已完成」查看。');
 }
@@ -315,6 +318,61 @@ let updateHolding = false, macProgram = null, lastSyncFailure = null, syncWarnin
 let draftTimer = null, draftSaveChain = Promise.resolve(), discardingDraft = false, singleStoreContext = null, quickTextContext = null, inlineTextContext = null, inlineDraftTimer = null, inlineDraftSaveChain = Promise.resolve(), reminderContext = null, transientResumeState = null;
 let versionReview = null, resolutionPreview = null;
 let coordinatePreview = null, enrichmentPreview = null, backupPreview = null;
+let attendancePrompt = null, attendanceCache = null;
+function storeAttendance(storeId) {
+  const today = attendanceTaipeiDate(Date.now());
+  if (attendanceCache?.bundle !== payload.bundle || attendanceCache.today !== today) {
+    const grouped = new Map();
+    for (const op of payload.bundle.ops) if (op.visitAttendance) {
+      const id = op.visitAttendance.store;
+      if (!grouped.has(id)) grouped.set(id, []);
+      grouped.get(id).push(op);
+    }
+    attendanceCache = { bundle: payload.bundle, today, grouped, summaries: new Map() };
+  }
+  if (!attendanceCache.summaries.has(storeId)) attendanceCache.summaries.set(storeId, visitAttendanceForStore({ ops: attendanceCache.grouped.get(storeId) || [] }, storeId));
+  return attendanceCache.summaries.get(storeId);
+}
+function storeAttendanceHTML(storeId, history = false) {
+  const summary = storeAttendance(storeId);
+  const elapsed = summary.daysSince === 0 ? '今天已拜訪' : `距今 ${summary.daysSince} 天`;
+  const text = summary.latestDate ? `最近實際拜訪：${summary.latestDate} · ${summary.hasFutureDates ? '日期晚於今天，請核對裝置時間' : elapsed}` : '尚無已確認的拜訪日期';
+  return `<div class="store-attendance">${esc(text)}${history && summary.history.length ? `<details class="attendance-history"><summary>已確認拜訪日 · ${summary.history.length} 天</summary><p class="muted">以台北日期計算；同日多次勾選合併顯示，以下保留每次確認來源。</p>${summary.history.map(day => `<section data-attendance-date="${esc(day.date)}"><strong>${esc(day.date)}</strong>${day.occurrences.map(item => `<p>${esc(new Date(item.at).toLocaleTimeString('zh-TW', { timeZone: 'Asia/Taipei', hour12: false }))} · ${item.type === 'visit' ? '拜訪筆記儲存時確認' : '門市資料／待辦儲存時確認'}<small>來源版本：${esc(item.revisionId)}</small></p>`).join('')}</section>`).join('')}</details>` : ''}</div>`;
+}
+function assertSaveParents(type, id, parents) {
+  const current = project(payload.bundle).find(record => record.type === type && record.id === id);
+  if (parents.length ? !current || current.deleted || current.conflict || JSON.stringify(quickTextParents(current)) !== JSON.stringify([...parents].sort()) : !!current) throw new Error('資料已有新版本或衝突，本次沒有寫入；請重新開啟核對。');
+}
+function finishAttendancePrompt(result = null) {
+  const prompt = attendancePrompt; if (!prompt) return;
+  attendancePrompt = null;
+  $('visit-attendance-dialog').close();
+  for (const id of ['visit-attendance-store', 'visit-attendance-scope', 'visit-attendance-date', 'visit-attendance-error']) $(id).textContent = '';
+  $('visit-attendance-check').checked = false;
+  prompt.resolve(result);
+}
+async function confirmStoreSave(storeId, storeName, changed = true) {
+  // Complete draft writes first; no formal data is committed while the prompt is open.
+  await Promise.all([draftSaveChain, inlineDraftSaveChain]);
+  if (!payload || document.hidden || pendingLock) throw new Error('請先回到 App 解鎖後再儲存，原修改仍保留。');
+  const sessionKey = key, bundle = payload.bundle;
+  const currentStore = project(bundle).find(record => record.type === 'store' && record.id === storeId);
+  if (currentStore && (currentStore.deleted || currentStore.conflict)) throw new Error('門市已刪除或有衝突，本次沒有寫入；請先核對門市。');
+  const dialog = $('visit-attendance-dialog');
+  $('visit-attendance-check').checked = false;
+  $('visit-attendance-store').textContent = storeName;
+  $('visit-attendance-scope').textContent = changed ? '確認後才儲存剛才的修改。未勾選代表單純更新資料，不改變最近實際拜訪日期。' : '內容沒有變更。勾選後只新增本次實際拜訪的確認紀錄；未勾選則不寫入任何資料。';
+  $('visit-attendance-error').textContent = '';
+  const result = await new Promise(resolve => {
+    attendancePrompt = { resolve, storeId, date: attendanceTaipeiDate(Date.now()) };
+    $('visit-attendance-date').textContent = attendancePrompt.date + '（台北時間）';
+    openDialog(dialog);
+  });
+  await Promise.all([draftSaveChain, inlineDraftSaveChain]);
+  if (!result) return null;
+  if (!payload || key !== sessionKey || payload.bundle !== bundle || document.hidden || pendingLock) throw new Error('確認期間資料或工作階段已變更，本次沒有寫入；請重新檢查後再儲存。');
+  return result;
+}
 let nearbyState = { status: 'idle', position: null, message: '' }, nearbyRequest = 0, nearbyDenied = false;
 const csvImport = createCSVImport({ host: $('csv-view'), getState: () => payload, run, saveBundle: async bundle => { await persist({ ...payload, bundle, dirty: true }); render(); }, notify: toast, exportReport: report => download(JSON.stringify({ ...report, appVersion: APP_VERSION }, null, 2), 'pharmacy-import-preview.json', 'application/json'), downloadSource: (blob, filename) => { if (!confirm('原始 CSV 是明文檔案。請確認下載到自己的本機資料夾，避開 iCloud Drive。')) return; download(unb64(payload.bundle.blobs[blob]), filename.replace(/[\/\\]/g, '_'), 'application/octet-stream'); } });
 const all = type => records.filter(r => r.type === type && (!r.deleted || r.conflict));
@@ -382,7 +440,7 @@ function openDialog(dialog, { reviewMode = '' } = {}) {
 }
 function buttons(disabled) {
   document.querySelectorAll('button, [data-reminder-complete], #csv-view input, #csv-view select, #regional-view select, #editor input, #editor select, #editor textarea, #review input, #review select, #review textarea, #store-reminder-dialog input, #store-reminder-dialog textarea, #backup-ack').forEach(el => {
-    if (el.dataset.close) return;
+    if (el.dataset.close || el.closest('#visit-attendance-dialog')) return;
     if (disabled) { el.dataset.busyDisabled = el.disabled ? '1' : '0'; el.disabled = true; }
     else if (el.dataset.busyDisabled !== undefined) { el.disabled = el.dataset.busyDisabled === '1'; delete el.dataset.busyDisabled; }
   });
@@ -483,7 +541,7 @@ function renderQuickVisit() {
   const fallback = mobile && !located.length ? '<p class="nearby-fallback-label">先顯示最近使用的門市（不是距離排序）</p>' : '';
   $('recent-store-list').innerHTML = fallback + entries.map(({ store, distance }) => {
     const range = Number.isFinite(distance) ? (distance < 1000 ? `約 ${Math.round(distance / 10) * 10} 公尺` : `約 ${(distance / 1000).toFixed(1)} 公里`) + ' · 直線距離' : store.district || '地區未提供';
-    return `<button type="button" class="recent-store" ${storeIdentityPending(store) ? `data-quick-visit="${esc(store.id)}"` : `data-visit-brief="${esc(store.id)}"`}><strong>${esc(store.name)}</strong><small>${esc(range)}</small>${storeIdentityPending(store) ? '<small>身分待確認 · 直接記錄拜訪</small>' : '<small>查看重點並記錄拜訪</small>'}</button>`;
+    return `<button type="button" class="recent-store" ${storeIdentityPending(store) ? `data-quick-visit="${esc(store.id)}"` : `data-visit-brief="${esc(store.id)}"`}><strong>${esc(store.name)}</strong><small>${esc(range)}</small>${storeAttendanceHTML(store.id)}${storeIdentityPending(store) ? '<small>身分待確認 · 直接記錄拜訪</small>' : '<small>查看重點並記錄拜訪</small>'}</button>`;
   }).join('') || '<p class="muted">目前沒有可用門市，可按「新增拜訪」開始記錄。</p>';
 }
 function requestNearbyPosition(force = false) {
@@ -842,6 +900,7 @@ function lockNow(reopen = !document.hidden) {
   if (!busy && backupPreview) { clearBackupPreview(); $('backup-review').close(); }
   if (busy || editorContext || inlineTextContext || reminderContext || payload?.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('store-reminder-dialog')?.open || csvImport.hasPending()) { pendingLock = true; document.body.classList.add('privacy-veil'); return; }
   captureTransientResumeState();
+  attendanceCache = null;
   pendingLock = false; coordinatePreview = null; enrichmentPreview = null; clearNearbyPosition(); versionReview = null; resolutionPreview = null; inlineTextContext = null; reminderContext = null; clearTimeout(inlineDraftTimer); inlineDraftTimer = null; clearInterval(autoTimer); key = null; meta = null; payload = null; records = []; trail = []; editorContext = null; lastError = ''; macProgram = null; lastSyncFailure = null; syncWarning = '';
   csvImport.reset(); qualityCache = null; qualityReview = null; qualityTab = 'duplicates'; qualityField = ''; qualityPage = 0;
   resetStoreFilters();
@@ -1121,7 +1180,7 @@ function singleStoreCaptureHTML() {
   const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
   const options = ['', '現場觀察', '藥師主動提及', '詢問後回覆', '其他'];
   const pick = (type, inputName) => all(type).map(item => `<label class="check"><input type="checkbox" name="${inputName}" value="${esc(item.id)}">${esc(item.name)}</label>`).join('') || '<p class="muted">目前尚未建立可選項目，可直接完成拜訪紀錄。</p>';
-  return `<form id="single-store-capture-form" class="single-store-capture" hidden><div class="single-store-capture-head"><div><p class="eyebrow">QUICK CAPTURE</p><h3>記錄這次拜訪</h3></div><span class="pill">門市已固定</span></div><label>原始拜訪內容<textarea id="single-store-text" maxlength="20000" placeholder="直接輸入這次拜訪內容" spellcheck="false"></textarea></label><label>下次跟進（選填）<textarea id="single-store-next" maxlength="20000" placeholder="例如：下次確認庫存"></textarea></label><details class="single-store-more"><summary>更多欄位：日期、來源、人物、主題與附件</summary><div class="field-grid"><label>拜訪日期（未知可留空）<input type="date" id="single-store-date" value="${today}"></label><label>資訊來源<select id="single-store-source">${options.map(source => `<option value="${esc(source)}">${esc(source || '未指定')}</option>`).join('')}</select></label></div><label>相關主題</label><div class="check-grid">${pick('topic', 'single-topic')}</div><label>提及人物</label><div class="check-grid">${pick('person', 'single-person')}</div><label>附件（每個上限 3 MB）<input type="file" id="single-store-files" multiple accept="image/jpeg,image/png,image/webp,image/heic,application/pdf"></label><p class="muted">新選的附件無法靠草稿跨 App 關閉保存；完成紀錄前若 App 被系統終止，請重新選擇附件。</p></details><p id="single-store-draft-state" class="draft-state" role="status">尚未變更</p><p class="muted">輸入會先加密保存成本機草稿；只有按「完成紀錄」才建立正式拜訪版本。</p><p id="single-store-error" class="error" role="alert"></p></form>`;
+  return `<form id="single-store-capture-form" class="single-store-capture" hidden><div class="single-store-capture-head"><div><p class="eyebrow">QUICK CAPTURE</p><h3>記錄這次拜訪</h3></div><span class="pill">門市已固定</span></div><label>原始拜訪內容<textarea id="single-store-text" maxlength="20000" placeholder="直接輸入這次拜訪內容" spellcheck="false"></textarea></label><label>下次跟進（選填）<textarea id="single-store-next" maxlength="20000" placeholder="例如：下次確認庫存"></textarea></label><details class="single-store-more"><summary>更多欄位：日期、來源、人物、主題與附件</summary><div class="field-grid"><label>筆記日期（未知可留空）<input type="date" id="single-store-date" value="${today}"></label><label>資訊來源<select id="single-store-source">${options.map(source => `<option value="${esc(source)}">${esc(source || '未指定')}</option>`).join('')}</select></label></div><label>相關主題</label><div class="check-grid">${pick('topic', 'single-topic')}</div><label>提及人物</label><div class="check-grid">${pick('person', 'single-person')}</div><label>附件（每個上限 3 MB）<input type="file" id="single-store-files" multiple accept="image/jpeg,image/png,image/webp,image/heic,application/pdf"></label><p class="muted">新選的附件無法靠草稿跨 App 關閉保存；完成紀錄前若 App 被系統終止，請重新選擇附件。</p></details><p id="single-store-draft-state" class="draft-state" role="status">尚未變更</p><p class="muted">輸入會先加密保存成本機草稿；只有按「完成紀錄」才建立正式拜訪版本。</p><p id="single-store-error" class="error" role="alert"></p></form>`;
 }
 function singleStoreIdleActions(storeId) {
   const draft = payload?.draft?.format === 'visit-draft-1' ? payload.draft : null;
@@ -1180,8 +1239,11 @@ async function saveSingleStoreVisit(event) {
       if (!['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'application/pdf'].includes(file.type) && !/\.heic$/i.test(file.name)) throw new Error('附件只支援 JPEG、PNG、WebP、HEIC 與 PDF。');
       const bytes = new Uint8Array(await file.arrayBuffer()), id = await hashBytes(bytes); blobs[id] = b64(bytes); data.attachments.push({ blob: id, name: file.name.slice(0, 200), mime: file.type || 'application/octet-stream' });
     }
+    const choice = await confirmStoreSave(store.id, store.name); if (!choice) return;
+    if (singleStoreContext !== ctx) throw new Error('編輯畫面已變更，這次沒有建立紀錄。');
+    assertSaveParents('visit', ctx.id, ctx.parents);
     const bundle = structuredClone(payload.bundle); bundle.schema = 2;
-    bundle.ops.push(revision('visit', ctx.id, data, ctx.parents, payload.device)); Object.assign(bundle.blobs, blobs); validateBundle(bundle);
+    bundle.ops.push(revision('visit', ctx.id, data, ctx.parents, payload.device, false, choice.attendance)); Object.assign(bundle.blobs, blobs); validateBundle(bundle);
     await persist({ ...payload, bundle, dirty: true, draft: null });
     clearTimeout(draftTimer); draftTimer = null; singleStoreContext = null; render(); openVisitBrief(ctx.storeId);
     toast('拜訪已完成並保存於手機；你仍停留在這間門市，等待 Mac 確認收到。');
@@ -1214,7 +1276,7 @@ function openVisitBrief(storeId, { capture = false, restoreDraft = null, preserv
   const explicit = explicitItems ? `<section class="visit-brief-section"><h3>已明確連結的人物與主題</h3><p class="muted">每項連結都保留建立它的拜訪原文。</p><div class="brief-linked-list">${explicitItems}</div></section>` : '';
   singleStoreContext = null; review.dataset.singleStoreId = storeId;
   $('review-title').textContent = '單店拜訪｜' + brief.store.name;
-  reviewBody.innerHTML = `<div class="visit-brief-head"><p>${esc(location)} · ${brief.visitCount} 筆可用紀錄 · 最近：${esc(relationDate(brief.latestDate))}</p></div>${reminders}${singleStoreCaptureHTML()}<section class="visit-brief-section brief-followups"><h3>明確填寫的下次跟進</h3>${followups}</section><details class="brief-secondary" ${preserved?.secondaryOpen ? 'open' : ''}><summary>查看人物、主題、原文候選與最近拜訪原文</summary><div class="candidate-disclaimer"><strong>內容來源與限制</strong><p>只排列你已填寫的欄位、正式拜訪原文與可追溯候選；不生成或改寫正式拜訪內容。只把全半形、英文字母大小寫與空白差異視為相同內容，標點或用詞不同仍分開；完整歷史永遠保留每一筆。</p></div>${explicit}<section class="visit-brief-section"><h3>原文候選提示</h3><p class="muted">點選每個候選可核對命中的原句、日期、來源與原文狀態。</p><div class="candidate-chip-list">${candidates}</div></section><section class="visit-brief-section"><h3>最近 ${recentCount} 筆拜訪原文${brief.recent.length < recentCount ? ` · 合併顯示 ${brief.recent.length} 組` : ''}</h3>${recent}</section></details><details class="brief-history" ${preserved ? preserved.historyOpen ? 'open' : '' : 'open'}><summary>既有拜訪原文 · 全部 ${history.length} 筆（可直接修改）</summary><p class="muted">點一下既有拜訪原文即可直接輸入；修改會先加密保存成本機草稿，核對修改前後差異並最後確認後，才建立同一筆拜訪的新版本。這裡不去重，每筆原文、下次跟進與歷史都保留。</p>${historyHTML}</details>`;
+  reviewBody.innerHTML = `<div class="visit-brief-head"><p>${esc(location)} · ${brief.visitCount} 筆可用紀錄 · 最近筆記日期：${esc(relationDate(brief.latestDate))}</p>${storeAttendanceHTML(storeId, true)}</div>${reminders}${singleStoreCaptureHTML()}<section class="visit-brief-section brief-followups"><h3>明確填寫的下次跟進</h3>${followups}</section><details class="brief-secondary" ${preserved?.secondaryOpen ? 'open' : ''}><summary>查看人物、主題、原文候選與最近拜訪原文</summary><div class="candidate-disclaimer"><strong>內容來源與限制</strong><p>只排列你已填寫的欄位、正式拜訪原文與可追溯候選；不生成或改寫正式拜訪內容。只把全半形、英文字母大小寫與空白差異視為相同內容，標點或用詞不同仍分開；完整歷史永遠保留每一筆。</p></div>${explicit}<section class="visit-brief-section"><h3>原文候選提示</h3><p class="muted">點選每個候選可核對命中的原句、日期、來源與原文狀態。</p><div class="candidate-chip-list">${candidates}</div></section><section class="visit-brief-section"><h3>最近 ${recentCount} 筆拜訪原文${brief.recent.length < recentCount ? ` · 合併顯示 ${brief.recent.length} 組` : ''}</h3>${recent}</section></details><details class="brief-history" ${preserved ? preserved.historyOpen ? 'open' : '' : 'open'}><summary>既有拜訪原文 · 全部 ${history.length} 筆（可直接修改）</summary><p class="muted">點一下既有拜訪原文即可直接輸入；修改會先加密保存成本機草稿，核對修改前後差異並最後確認後，才建立同一筆拜訪的新版本。這裡不去重，每筆原文、下次跟進與歷史都保留。</p>${historyHTML}</details>`;
   $('review-persistent-actions').classList.remove('capture-active');
   $('review-persistent-actions').innerHTML = singleStoreIdleActions(storeId);
   $('review-persistent-actions').hidden = false;
@@ -1276,7 +1338,7 @@ function render() {
   $('conflict-list').innerHTML = records.filter(r => r.conflict).map(r => `<div class="conflict-card"><strong>${esc(r.name || name('store', r.store) + ' · ' + r.date)}</strong><p>${r.heads.length} 個版本待確認</p><button data-review="${r.type}:${esc(r.id)}">比較並處理</button></div>`).join('') || '<p class="muted">目前沒有衝突。</p>';
   if (activeView === 'trash') $('trash-list').innerHTML = records.filter(r => r.deleted && !r.conflict).map(r => `<article class="panel"><span class="pill">${kinds[r.type]}${r.mergedInto ? ' · 已整併' : ''}</span><h3>${esc(r.name || name('store', r.store) + ' · ' + r.date)}</h3><p>${r.mergedInto ? '已依裁定整併至：' + esc(name('store', r.mergedInto)) + '。原版本與歷史仍保留。' : esc(r.text || r.desc || r.contact || '')}</p><button data-restore="${r.type}:${esc(r.id)}">還原</button> <button data-history="${r.type}:${esc(r.id)}">查看歷史</button></article>`).join('') || '<p class="empty">回收桶是空的。</p>';
 }
-function entityCard(r) { const advanced = `${sourceButton(r)}<button class="text-button" data-edit="${r.type}:${esc(r.id)}">完整編輯</button><button class="text-button" data-history="${r.type}:${esc(r.id)}">歷史</button><button class="text-button danger" data-delete="${r.type}:${esc(r.id)}">刪除</button>`; return `<article class="panel"><span class="pill ${r.conflict ? 'warn' : ''}">${kinds[r.type]}${r.conflict ? ' · 有衝突' : ''}${storeIdentityPending(r) ? ' · 需要後續的確認' : ''}</span><h3>${esc(r.name)}</h3>${r.type === 'store' ? '<span class="pill retail-label">' + esc(retailChannel(r).label) + '</span>' : ''}${r.csvAliases?.length ? '<p class="muted">來源名稱：' + r.csvAliases.map(esc).join('／') + '</p>' : ''}<p>${esc(r.type === 'store' ? `${r.attr}\n${r.contact}` : r.type === 'person' ? `${r.confirmed ? '身分已核對' : '身分待確認'} · ${r.role}${r.sameAs ? '\n連到：' + name('person', r.sameAs) : ''}` : r.desc)}</p><div class="note-actions">${r.type === 'store' && !r.conflict ? `${!storeIdentityPending(r) ? `<button class="primary" data-visit-brief="${esc(r.id)}">單店拜訪</button>` : ''}<button class="secondary" data-new-visit-store="${esc(r.id)}">＋ 新增拜訪</button>` : ''}<details class="more-actions"><summary>更多操作</summary><div>${advanced}</div></details></div></article>`; }
+function entityCard(r) { const advanced = `${sourceButton(r)}<button class="text-button" data-edit="${r.type}:${esc(r.id)}">完整編輯</button><button class="text-button" data-history="${r.type}:${esc(r.id)}">歷史</button><button class="text-button danger" data-delete="${r.type}:${esc(r.id)}">刪除</button>`; return `<article class="panel"><span class="pill ${r.conflict ? 'warn' : ''}">${kinds[r.type]}${r.conflict ? ' · 有衝突' : ''}${storeIdentityPending(r) ? ' · 需要後續的確認' : ''}</span><h3>${esc(r.name)}</h3>${r.type === 'store' ? storeAttendanceHTML(r.id) : ''}${r.type === 'store' ? '<span class="pill retail-label">' + esc(retailChannel(r).label) + '</span>' : ''}${r.csvAliases?.length ? '<p class="muted">來源名稱：' + r.csvAliases.map(esc).join('／') + '</p>' : ''}<p>${esc(r.type === 'store' ? `${r.attr}\n${r.contact}` : r.type === 'person' ? `${r.confirmed ? '身分已核對' : '身分待確認'} · ${r.role}${r.sameAs ? '\n連到：' + name('person', r.sameAs) : ''}` : r.desc)}</p><div class="note-actions">${r.type === 'store' && !r.conflict ? `${!storeIdentityPending(r) ? `<button class="primary" data-visit-brief="${esc(r.id)}">單店拜訪</button>` : ''}<button class="secondary" data-new-visit-store="${esc(r.id)}">＋ 新增拜訪</button>` : ''}<details class="more-actions"><summary>更多操作</summary><div>${advanced}</div></details></div></article>`; }
 function qualityReport() {
   if (qualityCache?.bundle !== payload.bundle) qualityCache = { bundle: payload.bundle, report: scanQuality(records) };
   return qualityCache.report;
@@ -1595,7 +1657,7 @@ function openEditor(type, id = null, restoreDraft = null) {
     const selectedUnavailable = selectedStore !== '__new__' && (!selectedRecord || selectedRecord.deleted || selectedRecord.conflict);
     const unavailableOption = selectedUnavailable ? `<option value="${esc(selectedStore)}" selected disabled>原門市目前不可使用或有衝突，請重新選擇</option>` : '';
     const storeOptions = unavailableOption + orderedStores.map(s => `<option value="${esc(s.id)}" ${!selectedUnavailable && selectedStore === s.id ? 'selected' : ''}>${esc(s.name)}${s.district ? ' · ' + esc(s.district) : ''}</option>`).join('') + `<option value="__new__" ${selectedStore === '__new__' ? 'selected' : ''}>＋ 快速新增門市</option>`;
-    $('editor-fields').innerHTML = `<div class="visit-store-picker"><label>搜尋既有門市<input id="f-store-search" type="search" placeholder="輸入店名、來源名稱、地區或地址" autocomplete="off"></label><p id="f-store-match-count" class="muted"></p></div><div class="field-grid"><label>門市<select id="f-store">${storeOptions}</select></label><label>拜訪日期（未知可留空）<input type="date" id="f-date" value="${esc(base.date ?? new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10))}"></label></div><div id="quick-store-fields" class="quick-store" hidden><h3>快速新增門市</h3>${input('f-new-store-name', '門市名稱（必要）', '', 200)}${input('f-new-store-district', '地區（可稍後補）', '', 500)}${input('f-new-store-map-url', 'Google Maps 網址（可稍後補）', '', 2000)}<label class="check"><input id="f-new-store-pending" type="checkbox" checked> 身分待確認；先保存門市與拜訪，不自動合併</label><p class="muted">除名稱外都可稍後補。待確認門市不參與關聯分析，之後可在門市資料核實。</p></div><label>資訊來源<select id="f-source">${[...new Set(['藥師主動提及', '詢問後回覆', '現場觀察', '其他', ...(base.source ? [base.source] : [])])].map(x => `<option ${x === base.source ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></label>${textarea('f-text', '原始拜訪內容', base.text)}${textarea('f-next', '下次跟進', base.next)}<label>相關主題</label><div class="check-grid">${pick('topic', base.topics)}</div><label>提及人物</label><div class="check-grid">${pick('person', base.people)}</div><label>附件（每個上限 3 MB）<input type="file" id="f-files" multiple accept="image/jpeg,image/png,image/webp,image/heic,application/pdf"></label><p class="muted">支援圖片與 PDF。新選的附件檔案無法靠草稿跨 App 關閉／重新開啟保存；完成紀錄前若 App 被系統終止，請重新選擇附件。舊附件取消勾選可從此版本移除，歷史仍保留。</p><div class="check-grid">${(base.attachments || []).map((a, i) => `<label class="check"><input type="checkbox" name="keep-attachment" value="${i}" checked>${esc(a.name)}</label>`).join('')}</div><p id="draft-save-state" class="draft-state" role="status">尚未變更</p><p class="muted">文字與欄位變更會自動加密保存為本機草稿；「完成紀錄」才建立／更新正式拜訪版本。</p>`;
+    $('editor-fields').innerHTML = `<div class="visit-store-picker"><label>搜尋既有門市<input id="f-store-search" type="search" placeholder="輸入店名、來源名稱、地區或地址" autocomplete="off"></label><p id="f-store-match-count" class="muted"></p></div><div class="field-grid"><label>門市<select id="f-store">${storeOptions}</select></label><label>筆記日期（未知可留空）<input type="date" id="f-date" value="${esc(base.date ?? new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10))}"></label></div><div id="quick-store-fields" class="quick-store" hidden><h3>快速新增門市</h3>${input('f-new-store-name', '門市名稱（必要）', '', 200)}${input('f-new-store-district', '地區（可稍後補）', '', 500)}${input('f-new-store-map-url', 'Google Maps 網址（可稍後補）', '', 2000)}<label class="check"><input id="f-new-store-pending" type="checkbox" checked> 身分待確認；先保存門市與拜訪，不自動合併</label><p class="muted">除名稱外都可稍後補。待確認門市不參與關聯分析，之後可在門市資料核實。</p></div><label>資訊來源<select id="f-source">${[...new Set(['藥師主動提及', '詢問後回覆', '現場觀察', '其他', ...(base.source ? [base.source] : [])])].map(x => `<option ${x === base.source ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></label>${textarea('f-text', '原始拜訪內容', base.text)}${textarea('f-next', '下次跟進', base.next)}<label>相關主題</label><div class="check-grid">${pick('topic', base.topics)}</div><label>提及人物</label><div class="check-grid">${pick('person', base.people)}</div><label>附件（每個上限 3 MB）<input type="file" id="f-files" multiple accept="image/jpeg,image/png,image/webp,image/heic,application/pdf"></label><p class="muted">支援圖片與 PDF。新選的附件檔案無法靠草稿跨 App 關閉／重新開啟保存；完成紀錄前若 App 被系統終止，請重新選擇附件。舊附件取消勾選可從此版本移除，歷史仍保留。</p><div class="check-grid">${(base.attachments || []).map((a, i) => `<label class="check"><input type="checkbox" name="keep-attachment" value="${i}" checked>${esc(a.name)}</label>`).join('')}</div><p id="draft-save-state" class="draft-state" role="status">尚未變更</p><p class="muted">文字與欄位變更會自動加密保存為本機草稿；「完成紀錄」才建立／更新正式拜訪版本。</p>`;
     $('editor-save').textContent = '完成紀錄';
     $('discard-draft').hidden = !(restoreDraft?.format === 'visit-draft-1');
     toggleQuickStoreFields();
@@ -1695,12 +1757,15 @@ async function saveStoreReminder(event) {
     if (!ctx || !store || store.deleted || store.conflict || JSON.stringify(store.heads.map(head => head.id).sort()) !== JSON.stringify(ctx.parents)) throw new Error('這間門市已有新版本，本次沒有寫入；請關閉後重新開啟。');
     const before = store.heads[0].data, data = reminderFormData(before, 'store-reminder-next');
     data.everyTimeMust = $('store-reminder-every').value.trim();
-    if (JSON.stringify(data) === JSON.stringify({ ...before, everyTimeMust: before.everyTimeMust || '' })) { $('store-reminder-dialog').close(); reminderContext = null; return toast('門市提醒沒有變更。'); }
+    const changed = JSON.stringify(data) !== JSON.stringify({ ...before, everyTimeMust: before.everyTimeMust || '' });
     if (!confirmReminderChange(before, data)) return;
-    await commitRevision('store', store.id, data, ctx.parents);
+    const choice = await confirmStoreSave(store.id, store.name, changed); if (!choice) return;
+    if (reminderContext !== ctx) throw new Error('提醒畫面已變更，本次没有寫入。');
+    assertSaveParents('store', store.id, ctx.parents);
+    if (changed || choice.attendance) await commitRevision('store', store.id, changed ? data : before, ctx.parents, false, {}, choice.attendance);
     $('store-reminder-dialog').close(); reminderContext = null;
     if (ctx.briefStoreId) openVisitBrief(ctx.briefStoreId, { preservePosition: true });
-    toast('門市提醒已儲存並套用到這間門市的全部拜訪紀錄。');
+    toast(changed ? '門市提醒已儲存並套用到這間門市的全部拜訪紀錄。' : choice.attendance ? '已記錄今天實際拜訪；門市提醒內容保持原樣。' : '門市提醒沒有變更，未新增任何版本。');
   }, 'store-reminder-error');
 }
 function beginInlineTextEdit(id, element) {
@@ -1749,7 +1814,6 @@ async function reviewInlineTextEdit(id, originStoreId = '') {
   inlineTextContext.after = inlineTextValue(element); await flushInlineTextDraft();
   const visit = by('visit', id);
   if (!inlineTextContext.after.trim()) throw new Error('為避免誤刪，不能把整段拜訪文字存成空白。原文仍保留。');
-  if (inlineTextContext.after === inlineTextContext.before) throw new Error('文字沒有變更，尚未寫入任何資料。');
   if (!visit || visit.conflict || JSON.stringify(quickTextParents(visit)) !== JSON.stringify(inlineTextContext.parents)) throw new Error('這筆拜訪已有新版本，本次沒有寫入；請取消後重新修改。');
   quickTextContext = { ...inlineTextContext, step: 'confirm' }; renderQuickTextDialog();
 }
@@ -1765,7 +1829,7 @@ function renderQuickTextDialog() {
   $('quick-text-error').textContent = '';
   if (ctx.step === 'confirm') {
     const diff = diffTextSegments(ctx.before, ctx.after);
-    $('quick-text-body').innerHTML = `<div class="quick-text-scope"><strong>這次只會修改這一筆拜訪的文字欄。</strong><p>門市、日期、來源、主題、人物、附件與 CSV 原始來源不變；修改前文字會留在歷史版本中。</p></div><div class="quick-diff-legend" aria-label="修改標示說明"><span><i class="quick-diff-swatch removed"></i>修改前被刪除／取代</span><span><i class="quick-diff-swatch added"></i>修改後新增／取代</span></div><div class="quick-text-compare"><section><h3>修改前</h3><pre>${diffSegmentsHTML(diff.before)}</pre></section><section><h3>修改後</h3><pre>${diffSegmentsHTML(diff.after)}</pre></section></div>`;
+    $('quick-text-body').innerHTML = `<div class="quick-text-scope"><strong>${ctx.before === ctx.after ? '文字沒有變更；下一步可確認今天是否有實際拜訪。' : '這次只會修改這一筆拜訪的文字欄。'}</strong><p>門市、日期、來源、主題、人物、附件與 CSV 原始來源不變；修改前文字會留在歷史版本中。</p></div><div class="quick-diff-legend" aria-label="修改標示說明"><span><i class="quick-diff-swatch removed"></i>修改前被刪除／取代</span><span><i class="quick-diff-swatch added"></i>修改後新增／取代</span></div><div class="quick-text-compare"><section><h3>修改前</h3><pre>${diffSegmentsHTML(diff.before)}</pre></section><section><h3>修改後</h3><pre>${diffSegmentsHTML(diff.after)}</pre></section></div>`;
     $('quick-text-actions').innerHTML = '<button type="button" data-close="quick-text-dialog">取消</button><button type="button" data-quick-text-back>返回直接修改</button><button type="submit" class="primary">確定建立新版本</button>';
   } else {
     $('quick-text-body').innerHTML = `<p><strong>${esc(ctx.storeName)}</strong></p><p class="muted">${esc(ctx.date || '原始日期未提供')} · ${esc(ctx.source || '來源未提供')}</p><div class="quick-text-scope"><strong>安全快速修改</strong><p>這裡只能改文字，不提供刪除。第一次按確認不會寫入正式資料，下一頁還會再顯示修改前／後內容讓你二次確認。</p></div><label>拜訪文字<textarea id="quick-text-value" maxlength="20000" spellcheck="false">${esc(ctx.after ?? ctx.before)}</textarea></label>`;
@@ -1797,7 +1861,6 @@ async function saveQuickTextEdit(event) {
   if (quickTextContext.step === 'edit') {
     const next = $('quick-text-value').value;
     if (!next.trim()) { $('quick-text-error').textContent = '為避免誤刪，快速修改不能把整段文字存成空白。若確實需要清空，請使用完整編輯流程。'; return; }
-    if (next === quickTextContext.before) { $('quick-text-error').textContent = '文字沒有變更，尚未寫入任何資料。'; return; }
     quickTextContext.after = next; quickTextContext.step = 'confirm'; renderQuickTextDialog(); return;
   }
   await run(async () => {
@@ -1810,16 +1873,21 @@ async function saveQuickTextEdit(event) {
     if (!ctx.after.trim()) throw new Error('為避免誤刪，快速修改不能把整段文字存成空白。');
     const data = structuredClone(visit.heads[0].data);
     data.text = ctx.after;
-    const bundle = structuredClone(payload.bundle); bundle.schema = 2; bundle.ops.push(revision('visit', ctx.id, data, visit.heads.map(head => head.id), payload.device)); validateBundle(bundle);
-    await persist({ ...payload, bundle, dirty: true, inlineTextDraft: null });
+    const choice = await confirmStoreSave(data.store, name('store', data.store), ctx.after !== ctx.before); if (!choice) return;
+    if (quickTextContext !== ctx) throw new Error('修改畫面已變更，本次沒有寫入。');
+    assertSaveParents('visit', ctx.id, ctx.parents);
+    const bundle = structuredClone(payload.bundle); bundle.schema = 2;
+    if (ctx.after !== ctx.before || choice.attendance) bundle.ops.push(revision('visit', ctx.id, data, ctx.parents, payload.device, false, choice.attendance));
+    validateBundle(bundle);
+    await persist({ ...payload, bundle, dirty: payload.dirty || ctx.after !== ctx.before || !!choice.attendance, inlineTextDraft: null });
     const briefStoreId = ctx.briefStoreId || '';
     quickTextContext = null; inlineTextContext = null; $('quick-text-dialog').close(); render();
     if (briefStoreId && $('review').open && $('review').dataset.singleStoreId === briefStoreId) openVisitBrief(briefStoreId, { preservePosition: true });
-    toast('文字修改已建立為同一筆拜訪的新版本；舊文字與 CSV 原始來源都保留。');
+    toast(ctx.after !== ctx.before ? '文字修改已建立為同一筆拜訪的新版本；舊文字與 CSV 原始來源都保留。' : choice.attendance ? '已記錄今天實際拜訪；筆記原文保持原樣。' : '文字沒有變更，未新增任何版本。');
   }, 'quick-text-error');
 }
-async function commitRevision(type, id, data, parents, deleted = false, blobs = {}) {
-  const bundle = structuredClone(payload.bundle); bundle.schema = 2; bundle.ops.push(revision(type, id, data, parents, payload.device, deleted)); Object.assign(bundle.blobs, blobs); validateBundle(bundle);
+async function commitRevision(type, id, data, parents, deleted = false, blobs = {}, attendance) {
+  const bundle = structuredClone(payload.bundle); bundle.schema = 2; bundle.ops.push(revision(type, id, data, parents, payload.device, deleted, attendance)); Object.assign(bundle.blobs, blobs); validateBundle(bundle);
   await persist({ ...payload, bundle, dirty: true }); render();
 }
 async function saveEditor(event) {
@@ -1827,9 +1895,15 @@ async function saveEditor(event) {
     const ctx = editorContext; if (!ctx) return;
     if (ctx.fillFields) {
       const additions = Object.fromEntries(ctx.fillFields.map(field => [field, $('fill-' + field).value]));
-      const bundle = fillProfile(payload.bundle, ctx.id, additions, payload.device, ctx.parents);
+      fillProfile(payload.bundle, ctx.id, additions, payload.device, ctx.parents); // Validate the proposed additions before confirmation.
       const summary = Object.entries(additions).filter(([, value]) => value.trim()).map(([field, value]) => PROFILE_FIELDS[field] + '：' + value.trim()).join('\n');
       if (!confirm('確認補上以下欄位？\n' + summary + '\n原始來源與既有欄位會保留。')) return;
+      const choice = await confirmStoreSave(ctx.id, name('store', ctx.id)); if (!choice) return;
+      if (editorContext !== ctx) throw new Error('編輯畫面已變更，本次沒有寫入。');
+      assertSaveParents('store', ctx.id, ctx.parents);
+      const bundle = fillProfile(payload.bundle, ctx.id, additions, payload.device, ctx.parents);
+      if (choice.attendance) { const op = bundle.ops.at(-1); op.at = choice.attendance.at; op.visitAttendance = choice.attendance; }
+      validateBundle(bundle);
       await persist({ ...payload, bundle, dirty: true }); $('editor').close(); editorContext = null; render(); toast('欄位已補登，已保留歷史並等待同步。'); return;
     }
     const value = id => $(id).value.trim(); let d, blobs = {};
@@ -1877,14 +1951,22 @@ async function saveEditor(event) {
       previewResolution(ctx, d, false, blobs, true); return;
     }
     if (ctx.type === 'visit' && d.googleUpdatePending && d.text === d.googleText) d.googleUpdatePending = false;
+    let choice = {};
+    if (ctx.type === 'visit' || ctx.type === 'store') {
+      assertSaveParents(ctx.type, ctx.id, ctx.parents);
+      choice = await confirmStoreSave(ctx.type === 'store' ? ctx.id : d.store, ctx.type === 'store' ? d.name : quickStore?.data.name || name('store', d.store));
+      if (!choice) return;
+      if (editorContext !== ctx) throw new Error('編輯畫面已變更，本次沒有寫入。');
+      assertSaveParents(ctx.type, ctx.id, ctx.parents);
+    }
     if (ctx.type === 'visit') {
       const bundle = structuredClone(payload.bundle); bundle.schema = 2;
       if (quickStore) bundle.ops.push(revision('store', quickStore.id, quickStore.data, [], payload.device));
-      bundle.ops.push(revision('visit', ctx.id, d, ctx.parents, payload.device)); Object.assign(bundle.blobs, blobs); validateBundle(bundle);
+      bundle.ops.push(revision('visit', ctx.id, d, ctx.parents, payload.device, false, choice.attendance)); Object.assign(bundle.blobs, blobs); validateBundle(bundle);
       await persist({ ...payload, bundle, dirty: true, draft: null }); render(); clearTimeout(draftTimer); draftTimer = null;
       $('editor').close(); editorContext = null; toast(quickStore ? '新門市與拜訪已完成並保存於手機；等待 Mac 確認收到。' : '拜訪已完成並保存於手機；等待 Mac 確認收到。'); return;
     }
-    await commitRevision(ctx.type, ctx.id, d, ctx.parents, false, blobs); $('editor').close(); editorContext = null; toast('已加密儲存。Mac 可連線時會自動交換。');
+    await commitRevision(ctx.type, ctx.id, d, ctx.parents, false, blobs, choice.attendance); $('editor').close(); editorContext = null; toast('已加密儲存。Mac 可連線時會自動交換。');
   }, 'editor-error');
 }
 function describeData(type, data) {
@@ -1966,8 +2048,13 @@ function reviewFields(before, after) {
   }).join('');
   return `<p><strong>${changed.length} 個欄位不同</strong>${changed.length ? '：' + changed.map(k => esc(labels[k] || k)).join('、') : '；仍須核對是否有刪除狀態差異。'}</p>${rows}`;
 }
+function reviewAttendanceHTML(op, storeName = '') {
+  const attendance = op.visitAttendance; if (!attendance) return '';
+  const time = new Date(attendance.at).toLocaleTimeString('zh-TW', { timeZone: 'Asia/Taipei', hour12: false });
+  return `<section class="version-attendance"><h4>使用者已確認的實際拜訪</h4><p>${esc(attendance.date)} ${esc(time)}（台北時間）</p><p>${op.type === 'visit' ? '拜訪筆記儲存時確認' : '門市資料／待辦儲存時確認'}${storeName ? ` · ${esc(storeName)}` : ''}</p><small>門市識別：${esc(attendance.store)}<br>來源版本：${esc(op.id)}</small></section>`;
+}
 function reviewVersionLabel(o, index) {
-  return `版本 ${index + 1} · ${o.device === payload.device ? '本裝置' : '其他裝置 ' + o.device.slice(0, 8)} · ${dateText(o.at)}${o.deleted ? ' · 已刪除' : ' · 保留紀錄'}`;
+  return `版本 ${index + 1} · ${o.device === payload.device ? '本裝置' : '其他裝置 ' + o.device.slice(0, 8)} · ${dateText(o.at)}${o.deleted ? ' · 已刪除' : ' · 保留紀錄'}${o.visitAttendance ? ' · 已確認拜訪 ' + o.visitAttendance.date : ''}`;
 }
 function openReview(type, id, conflict) {
   const r = by(type, id); if (!r) return;
@@ -1976,7 +2063,7 @@ function openReview(type, id, conflict) {
   if (conflict) renderConflictReview();
   else {
     $('review-title').textContent = '歷史版本';
-    $('review-body').innerHTML = `<p>還原會先預覽，再建立新版本；不會抹除後續歷史。</p>${[...r.versions].sort((a, b) => b.at.localeCompare(a.at)).map(o => `<article class="version"><p>${esc(dateText(o.at))}${o.deleted ? ' · 已刪除' : ''}</p><pre>${esc(describeData(type, o.data))}</pre><button data-use-version="${esc(o.id)}">預覽還原這個內容</button></article>`).join('')}`;
+    $('review-body').innerHTML = `<p>還原會先預覽，再建立新版本；不會抹除後續歷史。已確認的拜訪保留在原來源版本，不因還原而重複新增；沒有拜訪標記的版本也不會推算為拜訪。</p>${[...r.versions].sort((a, b) => b.at.localeCompare(a.at)).map(o => `<article class="version"><p>${esc(dateText(o.at))}${o.deleted ? ' · 已刪除' : ''}</p>${reviewAttendanceHTML(o)}<pre>${esc(describeData(type, o.data))}</pre><button data-use-version="${esc(o.id)}">預覽還原這個內容</button></article>`).join('')}`;
   }
   openDialog($('review'));
 }
@@ -1985,7 +2072,7 @@ function renderConflictReview() {
   const baseline = versions.find(o => o.id === versionReview.baseline) || versions[0];
   const safePlan = safeConflictMerge(r);
   $('review-title').textContent = '比較衝突版本';
-  $('review-body').innerHTML = `<p><strong>${versions.length} 個版本待核對，目前沒有寫入任何變更。</strong></p><p>選一份作為對照，再看其他版本的差異。紅色是對照內容中不同的部分，綠色是另一版本不同的部分；顏色不代表正確、新舊或建議採用。時間是版本儲存時間，不是拜訪日期。</p>${safePlan.safe ? `<section class="safe-merge-card"><span class="pill">安全合併預覽可用</span><h3>各版本修改了不同欄位</h3><p>系統只組合沒有互相覆蓋的欄位，現在仍未寫入。請先查看完整結果，再決定是否建立處理版本。</p><ul>${safeMergeSummary(safePlan, r)}</ul><button class="primary" data-safe-conflict-preview>查看安全合併預覽</button></section>` : `<section class="safe-merge-card blocked"><strong>這次不提供自動合併建議</strong><p>${esc(safePlan.reason)}</p><p>你仍可逐版比較、採用其中一版，或以一個版本為起點人工整合。</p></section>`}<label>對照版本<select id="conflict-baseline">${versions.map((o, i) => `<option value="${esc(o.id)}" ${o.id === baseline.id ? 'selected' : ''}>${esc(reviewVersionLabel(o, i))}</option>`).join('')}</select></label>${versions.map((o, i) => `<article class="version"><h3>${esc(reviewVersionLabel(o, i))}</h3>${o.id === baseline.id ? '<p>目前對照版本</p>' : `<p>${o.deleted !== baseline.deleted ? '<strong>刪除狀態不同，請特別核對。</strong>' : '刪除狀態一致。'}</p>${reviewFields(baseline.data, o.data)}`}<details><summary>查看完整內容與來源欄位</summary><pre>${esc(reviewValue(o.data))}</pre></details><button class="secondary" data-use-version="${esc(o.id)}">${o.deleted ? '預覽採用刪除' : '預覽採用此版本'}</button> ${!o.deleted ? `<button data-merge-version="${esc(o.id)}">以此版本為起點整合</button>` : ''}</article>`).join('')}`;
+  $('review-body').innerHTML = `<p><strong>${versions.length} 個版本待核對，目前沒有寫入任何變更。</strong></p><p>選一份作為對照，再看其他版本的差異。紅色是對照內容中不同的部分，綠色是另一版本不同的部分；顏色不代表正確、新舊或建議採用。時間是版本儲存時間，不是拜訪日期。只有下方明確標示的拜訪確認才計入實際拜訪；採用或合併版本不會抹除其他版本的拜訪確認，也不會複製成新的拜訪。</p>${safePlan.safe ? `<section class="safe-merge-card"><span class="pill">安全合併預覽可用</span><h3>各版本修改了不同欄位</h3><p>系統只組合沒有互相覆蓋的欄位，現在仍未寫入。請先查看完整結果，再決定是否建立處理版本。</p><ul>${safeMergeSummary(safePlan, r)}</ul><button class="primary" data-safe-conflict-preview>查看安全合併預覽</button></section>` : `<section class="safe-merge-card blocked"><strong>這次不提供自動合併建議</strong><p>${esc(safePlan.reason)}</p><p>你仍可逐版比較、採用其中一版，或以一個版本為起點人工整合。</p></section>`}<label>對照版本<select id="conflict-baseline">${versions.map((o, i) => `<option value="${esc(o.id)}" ${o.id === baseline.id ? 'selected' : ''}>${esc(reviewVersionLabel(o, i))}</option>`).join('')}</select></label>${versions.map((o, i) => `<article class="version"><h3>${esc(reviewVersionLabel(o, i))}</h3>${reviewAttendanceHTML(o)}${o.id === baseline.id ? '<p>目前對照版本</p>' : `<p>${o.deleted !== baseline.deleted ? '<strong>刪除狀態不同，請特別核對。</strong>' : '刪除狀態一致。'}</p>${reviewFields(baseline.data, o.data)}`}<details><summary>查看完整內容與來源欄位</summary><pre>${esc(reviewValue(o.data))}</pre></details><button class="secondary" data-use-version="${esc(o.id)}">${o.deleted ? '預覽採用刪除' : '預覽採用此版本'}</button> ${!o.deleted ? `<button data-merge-version="${esc(o.id)}">以此版本為起點整合</button>` : ''}</article>`).join('')}`;
 }
 function previewSafeConflictMerge() {
   const r = checkedReview(versionReview), plan = safeConflictMerge(r);
@@ -1996,7 +2083,7 @@ function previewResolution(ctx, data, deleted = false, blobs = {}, fromEditor = 
   const r = checkedReview(ctx);
   resolutionPreview = { ...ctx, parents: [...ctx.parents], data: structuredClone(data), deleted, blobs, fromEditor };
   $('review-title').textContent = '確認衝突處理／還原結果';
-  $('review-body').innerHTML = `<p><strong>尚未寫入。${deleted ? '確認後，此紀錄將移到回收桶。' : '確認後，同一筆紀錄會建立一個新的有效版本。'}</strong></p><p>以下逐一比較目前版本與預計結果。${r.conflict ? '目前全部衝突將由這個結果解決。' : ''}未採用的內容仍保留在歷史中，原始 Source Snapshot 不變。</p><h3>預計保存的完整內容</h3><pre class="resolution-result">${esc(describeData(ctx.type, data))}</pre><details><summary>查看全部結果欄位</summary><pre>${esc(reviewValue(data))}</pre></details>${r.heads.map((o, i) => `<article class="version"><h3>相對於 ${esc(reviewVersionLabel(o, i))}</h3><p>${o.deleted !== deleted ? '<strong>刪除狀態將改變。</strong>' : '刪除狀態不變。'}</p>${reviewFields(o.data, data)}</article>`).join('')}<p id="resolution-error" class="error" role="alert"></p><div class="dialog-footer"><button data-resolution-back>返回${fromEditor ? '修改' : '核對'}</button><button class="primary" data-resolution-confirm>${deleted ? '確定移到回收桶並建立版本' : '確定建立處理結果版本'}</button></div>`;
+  $('review-body').innerHTML = `<p><strong>尚未寫入。${deleted ? '確認後，此紀錄將移到回收桶。' : '確認後，同一筆紀錄會建立一個新的有效版本。'}</strong></p><p>以下逐一比較目前版本與預計結果。${r.conflict ? '目前全部衝突將由這個結果解決。' : ''}未採用的內容與原有拜訪確認仍保留在歷史中，原始 Source Snapshot 不變；採用／還原版本不會新增實際拜訪日期。</p><h3>預計保存的完整內容</h3><pre class="resolution-result">${esc(describeData(ctx.type, data))}</pre><details><summary>查看全部結果欄位</summary><pre>${esc(reviewValue(data))}</pre></details>${r.heads.map((o, i) => `<article class="version"><h3>相對於 ${esc(reviewVersionLabel(o, i))}</h3><p>${o.deleted !== deleted ? '<strong>刪除狀態將改變。</strong>' : '刪除狀態不變。'}</p>${o.visitAttendance ? reviewAttendanceHTML(o) : ''}${reviewFields(o.data, data)}</article>`).join('')}<p id="resolution-error" class="error" role="alert"></p><div class="dialog-footer"><button data-resolution-back>返回${fromEditor ? '修改' : '核對'}</button><button class="primary" data-resolution-confirm>${deleted ? '確定移到回收桶並建立版本' : '確定建立處理結果版本'}</button></div>`;
   openDialog($('review'));
 }
 async function useVersion(id) {
@@ -2051,7 +2138,9 @@ function updateBackupControls() {
 }
 function backupSummaryHTML(summary) {
   const labels = { store: '門市', visit: '拜訪', person: '人物', topic: '主題', source: 'Source Snapshot' };
-  return `<div class="backup-counts">${Object.entries(labels).map(([type, label]) => `<p><strong>${label}</strong>：${summary.before.entities[type]} → ${summary.after.entities[type]} 筆（新增 ${summary.newEntities[type]} 筆）<br><small>有效 ${summary.before.active[type]} → ${summary.after.active[type]}；回收桶 ${summary.before.deleted[type]} → ${summary.after.deleted[type]}</small></p>`).join('')}</div><p>增加 ${summary.addedRevisions} 個既有版本；${summary.identicalRevisions} 個版本已存在。新增 ${summary.newBlobs} 份附件／原始來源檔案。</p><p>既有紀錄目前版本改變 ${summary.changedExistingEntities} 筆；只補歷史 ${summary.historyOnlyEntities} 筆。衝突 ${summary.conflictsBefore} → ${summary.conflictsAfter} 筆（新增衝突 ${summary.newConflicts} 筆；備份已含解決版本 ${summary.resolvedConflicts} 筆）。</p><p class="${summary.movedToTrash || summary.revived ? 'error' : 'muted'}">有效紀錄移入回收桶 ${summary.movedToTrash} 筆；回收桶改為含有效版本 ${summary.revived} 筆（有衝突者仍待核對）。</p><p class="muted">筆數包含回收桶與衝突紀錄；衝突保留全部版本，尚未裁定內容或門市身分。合併不代表把目前資料倒退到備份日期。</p>`;
+  const attendance = summary.visitAttendance;
+  const attendanceSummary = attendance ? `<section class="backup-attendance-summary"><h4>實際拜訪確認的影響</h4><p>確認來源 ${esc(attendance.beforeMarks)} → ${esc(attendance.afterMarks)} 份；加入備份中既有的 ${esc(attendance.addedMarks)} 份確認。</p><p>門市拜訪日 ${esc(attendance.beforeDays)} → ${esc(attendance.afterDays)} 組（新增 ${esc(attendance.addedDays)} 組門市／日期）。同一門市同一天只算一個拜訪日；不同門市分開計算。</p><p class="muted">保留原確認時間與來源，不把還原或合併當成今天的新拜訪；加入歷史確認可能改變最近實際拜訪與距今天數。</p></section>` : '';
+  return `<div class="backup-counts">${Object.entries(labels).map(([type, label]) => `<p><strong>${label}</strong>：${summary.before.entities[type]} → ${summary.after.entities[type]} 筆（新增 ${summary.newEntities[type]} 筆）<br><small>有效 ${summary.before.active[type]} → ${summary.after.active[type]}；回收桶 ${summary.before.deleted[type]} → ${summary.after.deleted[type]}</small></p>`).join('')}</div><p>增加 ${summary.addedRevisions} 個既有版本；${summary.identicalRevisions} 個版本已存在。新增 ${summary.newBlobs} 份附件／原始來源檔案。</p>${attendanceSummary}<p>既有紀錄目前版本改變 ${summary.changedExistingEntities} 筆；只補歷史 ${summary.historyOnlyEntities} 筆。衝突 ${summary.conflictsBefore} → ${summary.conflictsAfter} 筆（新增衝突 ${summary.newConflicts} 筆；備份已含解決版本 ${summary.resolvedConflicts} 筆）。</p><p class="${summary.movedToTrash || summary.revived ? 'error' : 'muted'}">有效紀錄移入回收桶 ${summary.movedToTrash} 筆；回收桶改為含有效版本 ${summary.revived} 筆（有衝突者仍待核對）。</p><p class="muted">筆數包含回收桶與衝突紀錄；衝突保留全部版本，尚未裁定內容或門市身分。合併不代表把目前資料倒退到備份日期。</p>`;
 }
 function backupChangeTitle(change) {
   const labels = { store: '門市', visit: '拜訪', person: '人物', topic: '主題', source: 'Source Snapshot' };
@@ -2059,17 +2148,22 @@ function backupChangeTitle(change) {
   const store = change.type === 'visit' ? backupPreview?.storeNames?.get(candidate?.data.store) : '';
   const title = candidate?.data.name || candidate?.data.file || (change.type === 'visit' ? `${store || candidate?.data.store || '門市未提供'} · ${candidate?.data.date || '日期未提供'}` : change.entity);
   const action = change.afterConflict ? '保留多版本，需另行核對' : change.afterDeleted ? '回收桶狀態' : change.beforeDeleted ? '恢復有效紀錄' : change.kind === 'added' ? '新增紀錄' : change.kind === 'history-only' ? '只補歷史，目前內容不變' : '目前版本將改變';
-  return `${labels[change.type]} · ${title}：${action}`;
+  return `${labels[change.type]} · ${title}：${action}${change.addedVisitAttendance?.length ? '；加入 ' + change.addedVisitAttendance.length + ' 份既有拜訪確認' : ''}`;
 }
 function backupVersionHTML(head) {
   const data = head.data, labels = { name: '名稱', text: '拜訪原文', date: '拜訪日期', source: '紀錄來源', next: '下次跟進', nextRemember: '下次記得（未轉換文字）', everyTimeMust: '每次必做、必給', address: '地址', city: '縣市', district: '行政區', contact: '窗口', desc: '備註', role: '職務' };
   const fields = Object.entries(labels).filter(([field]) => Object.hasOwn(data, field)).map(([field, label]) => `<h5>${label}</h5><pre>${esc(reviewValue(data[field]))}</pre>`).join('');
   const tasks = data.nextRememberTasks?.length ? `<h5>下次記得任務</h5>${data.nextRememberTasks.map(task => `<p>${task.completedAt ? '✓ 已完成' : '□ 待完成'}：${esc(task.text)}${task.completedAt ? `<br><small>完成：${esc(dateText(task.completedAt))}</small>` : ''}</p>`).join('')}` : '';
-  return `<article class="backup-version"><p>${esc(dateText(head.at))} · ${head.deleted ? '回收桶' : '保留紀錄'}</p>${fields}${tasks}<details><summary>完整欄位與來源證據</summary><p class="muted">版本識別：${esc(head.id)}</p><pre>${esc(reviewValue(data))}</pre></details></article>`;
+  return `<article class="backup-version"><p>${esc(dateText(head.at))} · ${head.deleted ? '回收桶' : '保留紀錄'}</p>${head.visitAttendance ? reviewAttendanceHTML(head, backupPreview?.storeNames?.get(head.visitAttendance.store) || '') : ''}${fields}${tasks}<details><summary>完整欄位與來源證據</summary><p class="muted">版本識別：${esc(head.id)}</p><pre>${esc(reviewValue(data))}</pre></details></article>`;
 }
 function backupChangeHTML(change) {
   const heads = (list, label) => `<section><h4>${label}</h4>${list.length ? list.map(backupVersionHTML).join('') : '<p>目前無此紀錄</p>'}</section>`;
-  return `<p class="muted">識別：${esc(change.entity)}</p>${change.beforeHeads.length === 1 && change.afterHeads.length === 1 && change.kind !== 'history-only' ? reviewFields(change.beforeHeads[0].data, change.afterHeads[0].data) : ''}${heads(change.beforeHeads, '套用前全部目前版本')}${heads(change.afterHeads, '套用後全部目前版本')}`;
+  const addedAttendance = change.addedVisitAttendance || [];
+  const onePair = change.beforeHeads.length === 1 && change.afterHeads.length === 1;
+  const contentUnchanged = onePair && [...new Set([...Object.keys(change.beforeHeads[0].data), ...Object.keys(change.afterHeads[0].data)])].every(field => JSON.stringify(change.beforeHeads[0].data[field]) === JSON.stringify(change.afterHeads[0].data[field]));
+  const comparison = contentUnchanged && addedAttendance.length ? `<p><strong>內容欄位沒有變更；仍會加入 ${addedAttendance.length} 份既有拜訪確認。</strong>請核對以下原確認日期、來源及刪除狀態。</p>` : onePair && change.kind !== 'history-only' ? reviewFields(change.beforeHeads[0].data, change.afterHeads[0].data) : '';
+  const attendance = addedAttendance.length ? `<details><summary>本次加入的拜訪確認來源 · ${addedAttendance.length} 份（含歷史版本）</summary><p>這些確認隨原版本保留；不是這次匯入新建立的拜訪。</p>${addedAttendance.map(op => reviewAttendanceHTML(op, backupPreview?.storeNames?.get(op.visitAttendance.store) || '')).join('')}</details>` : '';
+  return `<p class="muted">識別：${esc(change.entity)}</p>${comparison}${attendance}${heads(change.beforeHeads, '套用前全部目前版本')}${heads(change.afterHeads, '套用後全部目前版本')}`;
 }
 function renderBackupChanges(page = 0) {
   const ctx = backupPreview; if (!ctx) return;
@@ -2089,7 +2183,7 @@ function renderBackupPreview() {
   const ctx = backupPreview, summary = ctx.plan.summary;
   ctx.storeNames = new Map(project(ctx.plan.bundle).filter(record => record.type === 'store').map(store => [store.id, store.name + (store.conflict ? '（門市有衝突）' : '')]));
   $('backup-review-title').textContent = summary.mode === 'restore' ? '在空白裝置還原 · 影響預覽' : '備份合併 · 影響預覽';
-  $('backup-review-body').innerHTML = `<p>已在本機解密並驗證檔案、版本鏈結、附件與原始來源內容。目前尚未寫入資料。</p><p class="muted">檔案：${esc(ctx.filename)}（${ctx.bytes} bytes）。檔名不代表已驗證的備份日期。</p>${summary.mode === 'restore' ? '<p>確認後會在這台空白裝置建立本機加密資料。需要重新配對 Mac；不會自動連接其他資料庫。</p>' : '<p>確認後保留本機全部既有版本，加入備份中的版本。若備份含較新的修改或刪除版本，目前顯示內容可能改變；請展開下方逐筆核對。已配對時，後續會依既有同步機制傳到 Mac 與其他裝置；內容、刪除或恢復狀態也會同步。</p>'}${backupSummaryHTML(summary)}<p class="muted">資料格式：${ctx.currentPayload?.bundle.schema ?? '空白裝置'} → ${ctx.plan.bundle.schema}${ctx.currentPayload && ctx.currentPayload.bundle.schema !== ctx.plan.bundle.schema ? '；格式升級也需確認，原文及歷史保持原樣。' : '。'}</p><p>備份不含尚未完成的草稿、裝置配對憑證或 GPS 位置。原始文字、任務完成歷史、CSV 與 Source Snapshot 依各版本原樣保留。</p>${summary.warnings.length ? `<details><summary>需要注意的歷史連結 · ${summary.warnings.length} 項</summary><p>下列紀錄指向未包含的門市、人物或主題；只列出問題，不猜補或裁定身分。</p><div id="backup-warnings"></div></details>` : ''}<details><summary>逐筆影響 · ${ctx.plan.changes.length} 筆（可展開內容對比）</summary><div id="backup-changes"></div><div id="backup-pages"></div></details>${summary.hasChanges ? '' : '<p class="insight">這份備份沒有可加入的版本或檔案，無需套用；關閉即可，資料不會寫入。</p>'}`;
+  $('backup-review-body').innerHTML = `<p>已在本機解密並驗證檔案、版本鏈結、附件與原始來源內容。目前尚未寫入資料。</p><p class="muted">檔案：${esc(ctx.filename)}（${ctx.bytes} bytes）。檔名不代表已驗證的備份日期。</p>${summary.mode === 'restore' ? '<p>確認後會在這台空白裝置建立本機加密資料。需要重新配對 Mac；不會自動連接其他資料庫。</p>' : '<p>確認後保留本機全部既有版本，加入備份中的版本。若備份含較新的修改或刪除版本，目前顯示內容可能改變；請展開下方逐筆核對。已配對時，後續會依既有同步機制傳到 Mac 與其他裝置；內容、刪除或恢復狀態也會同步。</p>'}${backupSummaryHTML(summary)}<p class="muted">資料格式：${ctx.currentPayload?.bundle.schema ?? '空白裝置'} → ${ctx.plan.bundle.schema}${ctx.currentPayload && ctx.currentPayload.bundle.schema !== ctx.plan.bundle.schema ? '；格式升級也需確認，原文及歷史保持原樣。' : '。'}</p><p>備份不含尚未完成的草稿、裝置配對憑證或 GPS 位置。原始文字、任務完成歷史、實際拜訪確認、CSV 與 Source Snapshot 依各版本原樣保留。</p>${summary.warnings.length ? `<details><summary>需要注意的歷史連結 · ${summary.warnings.length} 項</summary><p>下列紀錄指向未包含的門市、人物或主題；只列出問題，不猜補或裁定身分。</p><div id="backup-warnings"></div></details>` : ''}<details><summary>逐筆影響 · ${ctx.plan.changes.length} 筆（可展開內容對比）</summary><div id="backup-changes"></div><div id="backup-pages"></div></details>${summary.hasChanges ? '' : '<p class="insight">這份備份沒有可加入的版本或檔案，無需套用；關閉即可，資料不會寫入。</p>'}`;
   renderBackupChanges(); renderBackupWarnings();
   $('backup-ack').checked = false; $('backup-ack').disabled = !summary.hasChanges;
   $('backup-apply').textContent = summary.mode === 'restore' ? '確認影響並在本機還原' : '確認影響並合併備份';
@@ -2167,7 +2261,7 @@ async function adoptRebuilt(event) {
     const envelope = await seal(next.payload, next.key, next.meta, 'device');
     const rev = await archiveAndReplaceLocal(envelope, localRevision, next.key);
     // Only adopt after the archive and active slot commit in one transaction.
-    clearNearbyPosition(); meta = next.meta; key = next.key; payload = next.payload; localRevision = rev; slot = { envelope, revision: rev, unlockKey: key };
+    attendanceCache = null; clearNearbyPosition(); meta = next.meta; key = next.key; payload = next.payload; localRevision = rev; slot = { envelope, revision: rev, unlockKey: key };
     csvImport.reset(); qualityCache = null; qualityReview = null; editorContext = null; records = []; trail = []; focus = { type: 'store', id: '' }; graphPage = 0;
     for (const u of objectURLs) URL.revokeObjectURL(u); objectURLs = [];
     for (const id of ['focus-header', 'graph', 'graph-pager', 'focus-detail', 'evidence-list', 'store-list', 'visit-list', 'customer-list', 'entity-list', 'trash-list', 'review-body', 'editor-fields', 'quality-content']) $(id).replaceChildren();
@@ -2306,12 +2400,25 @@ document.addEventListener('change', event => {
 });
 document.addEventListener('visibilitychange', () => {
   dismissKeyboard();
-  if (document.hidden) { clearNearbyPosition(); if (editorContext?.type === 'visit' || singleStoreContext) void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); document.body.classList.add('privacy-veil'); if (payload || busy || backupPreview) lockNow(false); }
+  if (document.hidden) { finishAttendancePrompt(); clearNearbyPosition(); if (editorContext?.type === 'visit' || singleStoreContext) void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); document.body.classList.add('privacy-veil'); if (payload || busy || backupPreview) lockNow(false); }
   else if (pendingLock || !payload) { pendingLock = false; document.body.classList.remove('privacy-veil'); showGate(); }
   else { document.body.classList.remove('privacy-veil'); requestNearbyPosition(); }
 });
-window.addEventListener('pagehide', () => { dismissKeyboard(); clearNearbyPosition(); if (editorContext?.type === 'visit' || singleStoreContext) void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); if (payload || busy || backupPreview) lockNow(false); });
+window.addEventListener('pagehide', () => { finishAttendancePrompt(); dismissKeyboard(); clearNearbyPosition(); if (editorContext?.type === 'visit' || singleStoreContext) void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); if (payload || busy || backupPreview) lockNow(false); });
 window.addEventListener('pageshow', () => { dismissKeyboard(); if (!payload && !document.hidden) { document.body.classList.remove('privacy-veil'); showGate(); } });
+$('visit-attendance-form').addEventListener('submit', event => {
+  event.preventDefault(); if (!attendancePrompt) return;
+  const at = new Date().toISOString(), date = attendanceTaipeiDate(at);
+  if (date !== attendancePrompt.date) {
+    attendancePrompt.date = date; $('visit-attendance-date').textContent = date + '（台北時間）';
+    $('visit-attendance-check').checked = false;
+    $('visit-attendance-error').textContent = '日期已跨日，請重新核對今天是否實際拜訪，再確認儲存。'; return;
+  }
+  finishAttendancePrompt({ attendance: $('visit-attendance-check').checked ? makeVisitAttendance(attendancePrompt.storeId, at) : undefined });
+});
+$('visit-attendance-cancel').addEventListener('click', () => finishAttendancePrompt());
+$('visit-attendance-dialog').addEventListener('cancel', event => { event.preventDefault(); finishAttendancePrompt(); });
+$('visit-attendance-dialog').addEventListener('close', () => { if (!$('visit-attendance-dialog').open) finishAttendancePrompt(); });
 $('gate-form').addEventListener('submit', initializeOrUnlock); $('editor-form').addEventListener('submit', saveEditor); $('quick-text-form').addEventListener('submit', saveQuickTextEdit); $('store-reminder-form').addEventListener('submit', saveStoreReminder);
 $('review').addEventListener('submit', event => {
   if (event.target.id === 'single-store-capture-form') saveSingleStoreVisit(event);

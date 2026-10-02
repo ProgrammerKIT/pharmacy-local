@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import { createCSVImport } from '../public/csv-ui.js';
-import { emptyBundle, revision, project, b64 } from '../public/core.js';
+import { emptyBundle, revision, project, validateBundle, b64 } from '../public/core.js';
 import { PROFILE_FIELDS, FILL_FIELDS, scanQuality, setDistinctReview, sourceSuggestions, fillProfile, prepareCSV, planCSV } from '../public/csv.js';
 import { groupCSVNotes, sourceTags, storeIdentityPending, relationVisitAllowed, evidenceKind, entityRule } from '../public/relations.js';
 
@@ -138,11 +138,11 @@ test('CSV UI forces ambiguous stores to be resolved and resets fill choices when
   await h.click('csv-cancel'); assert.equal(h.ui.hasPending(), false); assert.equal(h.saved.length, 0);
 });
 test('busy state preserves disabled controls when a preview replaces the DOM', () => {
-  let elements = [{ disabled: false, dataset: {} }, { disabled: true, dataset: {} }, { disabled: false, dataset: { close: 'review' } }];
+  let elements = [{ disabled: false, dataset: {} }, { disabled: true, dataset: {} }, { disabled: false, dataset: { close: 'review' } }].map(el=>({...el,closest:()=>null}));
   const c = vm.createContext({ document: { querySelectorAll: () => elements }, updateBackupControls: () => {}, refreshBriefSearch: () => {} });
   vm.runInContext(app.slice(app.indexOf('function buttons('), app.indexOf('async function run(')), c);
   c.buttons(true); assert.equal(elements[0].disabled, true); assert.equal(elements[2].disabled, false);
-  elements.push({ disabled: true, dataset: {} }); // Newly rendered unresolved import.
+  elements.push({ disabled: true, dataset: {}, closest:()=>null }); // Newly rendered unresolved import.
   c.buttons(false); assert.equal(elements[0].disabled, false); assert.equal(elements[1].disabled, true); assert.equal(elements[3].disabled, true);
   assert.equal(elements[0].dataset.busyDisabled, undefined);
 });
@@ -150,10 +150,13 @@ test('quality UI renders escaped evidence, persists and withdraws decisions, and
   const b = bundle(), first = b.ops[0];
   b.ops.push(revision('store', 's1', { ...first.data, address: '乙地址' }, [], 'mac'));
   const nodes = new Map(), $ = id => { if (!nodes.has(id)) nodes.set(id, { innerHTML: '', value: '', textContent: '', open: false, showModal() { this.open = true; }, close() { this.open = false; } }); return nodes.get(id); };
-  const c = vm.createContext({ $, structuredClone, PROFILE_FIELDS, FILL_FIELDS, scanQuality, setDistinctReview, sourceSuggestions, fillProfile, esc,
+  const c = vm.createContext({ $, structuredClone, project, validateBundle, PROFILE_FIELDS, FILL_FIELDS, scanQuality, setDistinctReview, sourceSuggestions, fillProfile, esc,
     payload: { bundle: b, device: 'phone' }, records: project(b), qualityTab: 'duplicates', qualityField: '', qualityPage: 0, qualityCache: null, qualityReview: null, editorContext: null,
-    sourceButton: () => '', input: (id, label) => { $(id); return '<label>' + esc(label) + '</label>'; }, openDialog: dialog => dialog.showModal(), toast: () => {}, confirm: () => true });
+    sourceButton: () => '', input: (id, label) => { $(id); return '<label>' + esc(label) + '</label>'; }, openDialog: dialog => dialog.showModal(), toast: () => {}, confirm: () => true,
+    confirmStoreSave:async()=>({}), quickTextParents:record=>record.heads.map(head=>head.id).sort() });
   c.by = (type, id) => c.records.find(r => r.type === type && r.id === id);
+  c.name=(type,id)=>c.by(type,id)?.name || '';
+  vm.runInContext(app.slice(app.indexOf('function assertSaveParents('),app.indexOf('function finishAttendancePrompt(')),c);
   c.persist = async next => { c.payload = next; };
   c.render = () => { c.records = project(c.payload.bundle); c.renderQuality(); };
   c.run = async fn => fn();

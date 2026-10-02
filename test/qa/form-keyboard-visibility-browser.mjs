@@ -239,7 +239,12 @@ async function acceptance(width, spec) {
       assert.ok(await page.locator('#quick-text-dialog .quick-diff-added').count());
       assert.deepEqual((await snapshot(page)).payload.bundle, t.initialBundle, 'First submit shows differences without changing formal original text');
       await page.locator('#quick-text-dialog button[type="submit"]').click();
+      await page.locator('#visit-attendance-dialog').waitFor({ state: 'visible' });
+      assert.equal(await page.locator('#visit-attendance-check').isChecked(), false);
+      assert.deepEqual((await snapshot(page)).payload.bundle, t.initialBundle, 'Attendance confirmation is still a preview');
+      await page.locator('#visit-attendance-confirm').click();
       const saved = await stored(page, value => value?.payload.bundle.ops.length === t.initialBundle.ops.length + 1);
+      assert.equal(saved.payload.bundle.ops.at(-1).visitAttendance, undefined);
       assert.equal(saved.payload.bundle.ops.at(-1).data.text, normalized);
       for (const op of t.initialBundle.ops) assert.deepEqual(saved.payload.bundle.ops.find(item => item.id === op.id), op);
       confirmedVersion = true;

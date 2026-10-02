@@ -104,8 +104,11 @@ function taskHarness({ confirm = true, fail = false } = {}) {
     esc: value => String(value ?? '').replace(/[&<>"']/g, x=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[x])),dateText:x=>x,
     payload:{bundle,device:'test',dirty:false},singleStoreContext:null,editorContext:null,reminderContext:null,inlineTextContext:null,
     confirm: message => { c.prompts.push(message); return c.allow; },prompts:[],allow:confirm,toast:message=>c.messages.push(message),messages:[],saves:0,
+    confirmStoreSave:async()=>({}),quickTextParents:record=>record.heads.map(head=>head.id).sort(),
     openVisitBrief:()=>{},run:async fn=>fn(),render:()=>{},persist:async next=>{if(fail)throw new Error('disk full');c.payload=next;c.saves++;} });
   c.by=(type,id)=>project(c.payload.bundle).find(r=>r.type===type&&r.id===id);
+  c.name=(type,id)=>c.by(type,id)?.name || '';
+  vm.runInContext(app.slice(app.indexOf('function assertSaveParents('),app.indexOf('function finishAttendancePrompt(')),c);
   vm.runInContext(app.slice(app.indexOf('function reminderTasksHTML('),app.indexOf('function lockPhoneViewportScale(')), c);
   vm.runInContext(app.slice(app.indexOf('async function commitRevision('),app.indexOf('async function saveEditor(')), c);
   vm.runInContext(app.slice(app.indexOf('async function saveStoreReminder('),app.indexOf('function beginInlineTextEdit(')), c);

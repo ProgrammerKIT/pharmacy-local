@@ -20,6 +20,7 @@ export const CODE_FILES = [...RUNTIME_FILES,
   'test/single-store-search.test.mjs', 'test/qa/single-store-search-browser.mjs',
   'test/keyboard-intent.test.mjs', 'test/qa/keyboard-intent-browser.mjs',
   'test/form-keyboard-visibility.test.mjs', 'test/qa/form-keyboard-visibility-browser.mjs',
+  'test/visit-attendance.test.mjs', 'test/attendance-review-ui.test.mjs', 'test/qa/visit-attendance-browser.mjs',
   'test/qa/backup-restore-browser.mjs', 'DEVICE-ACCEPTANCE.md',
   '.gitignore', '.github/workflows/release.yml',
 ];

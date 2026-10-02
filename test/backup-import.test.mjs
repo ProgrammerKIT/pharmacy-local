@@ -32,7 +32,7 @@ async function harness({restore = false} = {}) {
   const fixture = await seed, meta = structuredClone(fixture.meta), nodes = new Map();
   const $ = id => {
     if (!nodes.has(id)) nodes.set(id, {id,open:false,value:'',checked:false,disabled:false,textContent:'',innerHTML:'',dataset:{},classList:{add(){},remove(){}},reset(){},
-      replaceChildren(){this.innerHTML='';},close(){this.open=false;if(id==='backup-review')c.clearBackupPreview();}});
+      closest(){return null;},replaceChildren(){this.innerHTML='';},close(){this.open=false;if(id==='backup-review')c.clearBackupPreview();}});
     return nodes.get(id);
   };
   const payload = restore ? null : {schema:1,device:'synthetic-device',deviceName:'Synthetic',token:'synthetic-token',bundle:structuredClone(fixture.bundle),dirty:false,serverVersion:4,lastSync:'2026-10-01T03:00:00.000Z'};

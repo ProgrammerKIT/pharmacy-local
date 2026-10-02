@@ -93,6 +93,11 @@ async function explicitText(page, selector) {
   assert.equal(await field.evaluate(el => document.activeElement === el && window.qaTextEntry(el)), true, `Direct click must focus ${selector}`);
   return field;
 }
+async function confirmOrdinarySave(t) {
+  await t.page.locator('#visit-attendance-dialog').waitFor({ state: 'visible' });
+  assert.equal(await t.page.locator('#visit-attendance-check').isChecked(), false);
+  await noAuto(t, 'attendance-unchecked-final-confirmation', () => t.page.locator('#visit-attendance-confirm').click());
+}
 async function intentionalTabNavigation(t) {
   const { page, width } = t, before = await snapshot(page);
   assert.equal(await page.evaluate(() => document.activeElement.id), 'editor-title');
@@ -255,6 +260,7 @@ async function captureAcceptance(width) {
     await noAuto(t, 'capture-banner-resume', () => page.locator('#resume-draft').click());
     assert.equal(await page.locator('#single-store-text').inputValue(), '虛構本次拜訪內容');
     await noAuto(t, 'capture-save', () => page.locator('button[form="single-store-capture-form"]').click());
+    await confirmOrdinarySave(t);
     const saved = await stored(page, value => value.payload.bundle.ops.length === t.initialBundle.ops.length + 1 && !value.payload.draft);
     assert.equal(saved.payload.bundle.ops.at(-1).data.text, '虛構本次拜訪內容');
     for (const op of t.initialBundle.ops) assert.deepEqual(saved.payload.bundle.ops.find(item => item.id === op.id), op);
@@ -282,6 +288,7 @@ async function inlineAcceptance(width) {
     await visibilityRoundTrip(t, changed, 'inline');
     await noAuto(t, 'diff-open-after-return', () => page.locator('#review [data-inline-review="qa-note"]').click());
     await noAuto(t, 'diff-confirm-save', () => page.locator('#quick-text-dialog button[type="submit"]').click());
+    await confirmOrdinarySave(t);
     const saved = await stored(page, value => value.payload.bundle.ops.length === t.initialBundle.ops.length + 1 && !value.payload.inlineTextDraft);
     assert.equal(saved.payload.bundle.ops.at(-1).entity, 'qa-note'); assert.equal(saved.payload.bundle.ops.at(-1).data.text, changed);
     for (const op of t.initialBundle.ops) assert.deepEqual(saved.payload.bundle.ops.find(item => item.id === op.id), op);

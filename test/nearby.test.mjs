@@ -35,7 +35,7 @@ function harness(mobile=true){
   navigator:{userAgent:mobile?'iPhone':'Macintosh',geolocation:{getCurrentPosition(s,f,o){calls++;success=s;failure=f;options=o;}}},
   document:{hidden:false},payload:{bundle:{ops:[],blobs:{}}},key:{},nearbyRequest:0,nearbyDenied:false,nearbyState:{status:'idle',position:null,message:''},
   all:()=>[store('a',25,121),store('b',25.001,121),store('c',25.002,121),store('d',25.003,121),store('e',25.004,121)],
-  recentStores:limit=>{recentLimit=limit;return[store('recent',26,121)];},storeIdentityPending:()=>false,esc:x=>String(x)
+  recentStores:limit=>{recentLimit=limit;return[store('recent',26,121)];},storeIdentityPending:()=>false,storeAttendanceHTML:()=>'',esc:x=>String(x)
  });
  vm.runInContext(app.slice(app.indexOf('function clearNearbyPosition('),app.indexOf('function visitStoreSearchText(')),c);
  return {c,$,calls:()=>calls,success:()=>success,failure:()=>failure,options:()=>options,recentLimit:()=>recentLimit};
