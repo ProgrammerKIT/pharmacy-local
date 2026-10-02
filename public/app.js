@@ -335,7 +335,7 @@ function storeAttendance(storeId) {
 }
 function storeAttendanceHTML(storeId, history = false) {
   const summary = storeAttendance(storeId);
-  const elapsed = summary.daysSince === 0 ? '今天已拜訪' : `距今 ${summary.daysSince} 天`;
+  const elapsed = `距離目前 ${summary.daysSince} 天`;
   const text = summary.latestDate ? `最近實際拜訪：${summary.latestDate} · ${summary.hasFutureDates ? '日期晚於今天，請核對裝置時間' : elapsed}` : '尚無已確認的拜訪日期';
   return `<div class="store-attendance">${esc(text)}${history && summary.history.length ? `<details class="attendance-history"><summary>已確認拜訪日 · ${summary.history.length} 天</summary><p class="muted">以台北日期計算；同日多次勾選合併顯示，以下保留每次確認來源。</p>${summary.history.map(day => `<section data-attendance-date="${esc(day.date)}"><strong>${esc(day.date)}</strong>${day.occurrences.map(item => `<p>${esc(new Date(item.at).toLocaleTimeString('zh-TW', { timeZone: 'Asia/Taipei', hour12: false }))} · ${item.type === 'visit' ? '拜訪筆記儲存時確認' : '門市資料／待辦儲存時確認'}<small>來源版本：${esc(item.revisionId)}</small></p>`).join('')}</section>`).join('')}</details>` : ''}</div>`;
 }
