@@ -29,7 +29,7 @@ function harness() {
   };
   const c = vm.createContext({ $, esc, Date: Clock, structuredClone, project, revision, validateBundle, planBackupImport, makeVisitAttendance, attendanceTaipeiDate, diffTextSegments,
     payload: { bundle: f.bundle, device: 'synthetic-device', dirty: false, inlineTextDraft: { id: f.visit.entity, text: f.visit.data.text } }, key: {},
-    document: { hidden: false }, pendingLock: false, attendancePrompt: null, draftSaveChain: Promise.resolve(), inlineDraftSaveChain: Promise.resolve(),
+    document: { hidden: false }, pendingLock: false, attendancePrompt: null, draftSaveChain: Promise.resolve(), inlineDraftSaveChain: Promise.resolve(), reminderDraftSaveChain: Promise.resolve(),
     quickTextContext: { id: f.visit.entity, parents: [f.visit.id], before: f.visit.data.text, after: f.visit.data.text, step: 'confirm' }, inlineTextContext: { id: f.visit.entity },
     versionReview: null, resolutionPreview: null, backupPreview: null,
     openDialog: node => node.showModal(), dateText: value => value, toast: text => state.toasts.push(text), name: () => f.store.data.name,
@@ -68,6 +68,24 @@ test('confirmation waits for drafts before showing and after consent, without wr
   h.submit(); await tick(); assert.equal(completed, false);
   finishDraft(); const result = await pending;
   assert.equal(result.attendance, undefined); assert.equal(h.state.writes.length, 0);
+});
+
+test('attendance confirmation waits for reminder encryption both before opening and after explicit consent', async () => {
+  const h = harness(), before = JSON.stringify(h.c.payload); let release;
+  h.c.reminderDraftSaveChain = new Promise(resolve => { release = resolve; });
+  const pending = h.c.confirmStoreSave(h.store.entity, h.store.data.name); await tick();
+  assert.equal(h.$('visit-attendance-dialog').open, false); assert.equal(h.state.writes.length, 0);
+  release(); await tick(); assert.equal(h.$('visit-attendance-dialog').open, true);
+  let finishReminder; h.c.reminderDraftSaveChain = new Promise(resolve => { finishReminder = resolve; });
+  let completed = false; pending.then(() => { completed = true; });
+  h.$('visit-attendance-check').checked = true; h.submit(); await tick(); assert.equal(completed, false);
+  assert.equal(JSON.stringify(h.c.payload), before);
+  finishReminder(); assert.equal((await pending).attendance.store, h.store.entity);
+  assert.equal(h.state.writes.length, 0);
+
+  const failed = harness(); failed.c.reminderDraftSaveChain = Promise.reject(new Error('synthetic reminder encryption failure'));
+  await assert.rejects(failed.c.confirmStoreSave(failed.store.entity, failed.store.data.name), /reminder encryption failure/);
+  assert.equal(failed.$('visit-attendance-dialog').open, false); assert.equal(failed.state.writes.length, 0);
 });
 
 test('background or pending lock blocks new confirmation and cancels consent without writes', async () => {

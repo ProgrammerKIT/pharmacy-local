@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import { newMeta, derive, seal, unseal, checkEnvelope, emptyBundle, revision, validateBundle, project, planBackupImport, addReminderTasks, completeReminderTask, hashBytes, b64, uuid } from '../public/core.js';
+import { newMeta, derive, seal, unseal, checkEnvelope, emptyBundle, revision, validateBundle, project, planBackupImport, addReminderTasks, completeReminderTask, reminderHasOption, hashBytes, b64, uuid } from '../public/core.js';
 
 // Real application handlers and cryptography with synthetic fixtures only.
 // The modeled disk is isolated memory: never open a real browser vault or network.
@@ -54,12 +54,16 @@ async function harness({restore = false} = {}) {
       state.disk={envelope,revision:expected+1,unlockKey:key};return expected+1;
     }
   });
-  vm.runInContext(app.slice(app.indexOf('function buttons('),app.indexOf('function programDetail(')) + app.slice(app.indexOf('function withPendingSync('),app.indexOf('function pendingSyncSummary(')) + app.slice(app.indexOf('function assertBackupIdle('),app.indexOf('async function adoptRebuilt(')),c);
+  vm.runInContext(app.slice(app.indexOf('function storedReminderDrafts('),app.indexOf('function reminderDraftFor(')) + app.slice(app.indexOf('function buttons('),app.indexOf('function programDetail(')) + app.slice(app.indexOf('function withPendingSync('),app.indexOf('function pendingSyncSummary(')) + app.slice(app.indexOf('function assertBackupIdle('),app.indexOf('async function adoptRebuilt(')),c);
   $('password').value = password;
   const file = backupFile(await seal(fixture.incoming,fixture.key,fixture.meta));
   return {c,$,state,fixture,file};
 }
 async function preview(h) { await h.c.importBackup(h.file);h.$('backup-ack').checked=true;h.c.updateBackupControls(); }
+function reminderDraft(h) {
+  return {format:'store-reminder-draft-1',storeId:'s',storeName:'虛構未完成提醒',parents:[h.fixture.done.id],baseEvery:'',baseLegacy:'',savedAt:'2026-10-03T01:00:00.000Z',
+    fields:{next:'虛構未送出待辦',every:'',customText:'',customApplied:'',convert:false,customChecked:false}};
+}
 
 test('backup inspection and cancellation preserve current data, source bytes and encryption session',async()=>{
   const h=await harness(), {c,$,state,fixture}=h, original=JSON.stringify(c.payload), currentKey=c.key,currentMeta=c.meta;
@@ -151,6 +155,22 @@ test('open editors, encrypted drafts, CSV previews, dialogs and background state
   }
 });
 
+test('encrypted reminder drafts block backup inspection and accepted application without losing any pending input',async()=>{
+  for(const applying of [false,true]) {
+    const h=await harness();if(applying)await preview(h);
+    h.c.payload.reminderDrafts=[reminderDraft(h)];
+    const before=JSON.stringify(h.c.payload),disk=JSON.stringify(h.state.disk),decrypts=h.state.decrypts;
+    await assert.rejects(applying?h.c.applyBackupPreview():h.c.importBackup(h.file),/編輯、草稿或核對/);
+    assert.equal(JSON.stringify(h.c.payload),before);assert.equal(JSON.stringify(h.state.disk),disk);
+    assert.equal(h.state.writes.length,0);assert.equal(h.state.decrypts,decrypts);
+    assert.equal(!!h.c.backupPreview,applying);
+  }
+  const malformed=await harness();malformed.c.payload.reminderDrafts=[{format:'unknown-draft'}];
+  const before=JSON.stringify(malformed.c.payload);
+  await assert.rejects(malformed.c.importBackup(malformed.file),/提醒草稿格式無法辨識/);
+  assert.equal(JSON.stringify(malformed.c.payload),before);assert.equal(malformed.state.writes.length,0);assert.equal(malformed.state.decrypts,0);
+});
+
 test('malformed files and foreign envelopes fail before decryption or any session mutation',async()=>{
   const invalid=[{size:36*1024*1024+1,text:async()=>{throw new Error('must not read');}},{size:2,text:async()=>'{x'}, {size:2,text:async()=>'{}'},backupFile({format:'broken'})];
   for(const file of invalid) {
@@ -191,10 +211,27 @@ test('real run guard ignores repeated apply clicks and restores controls after a
 });
 
 function installRealLock(h) {
-  const {c,state}=h;
-  Object.assign(c,{clearTimeout(){},clearInterval(){},inlineDraftTimer:null,autoTimer:null,objectURLs:[],captureTransientResumeState(){state.resumeCaptured=true;},clearNearbyPosition(){state.locationCleared=true;},forgetBriefSearchQuery(){state.searchForgotten=true;},resetStoreFilters(){},showGate(){state.gateShown=true;}});
+  const {c,state,$}=h;
+  Object.assign(c,{clearTimeout(){},clearInterval(){},inlineDraftTimer:null,reminderDraftTimer:null,autoTimer:null,objectURLs:[],captureTransientResumeState(){state.resumeCaptured=true;},clearNearbyPosition(){state.locationCleared=true;},forgetBriefSearchQuery(){state.searchForgotten=true;},resetStoreFilters(){},showGate(){state.gateShown=true;}});
   c.document.body={classList:{add(){state.veiled=true;},remove(){state.veiled=false;}}};c.csvImport.reset=()=>{};
+  const custom={value:'虛構先前自訂文字'},toggle={checked:true},option={value:'HAUD',checked:true};
+  const group={dataset:{reminderOptionsFor:'store-reminder-next',customApplied:custom.value},
+    querySelector:selector=>selector==='[data-reminder-custom-input]'?custom:selector==='[data-reminder-custom-toggle]'?toggle:null,
+    querySelectorAll:selector=>selector==='[data-reminder-option]'?[option]:[]};
+  $('store-reminder-next').value='HAUD\n'+custom.value;$('store-reminder-every').value='虛構先前固定提醒';
+  $('store-reminder-error').textContent='虛構舊錯誤含未送出內容';
+  // Model native form.reset, then exercise the real dataset/custom-option cleanup.
+  $('store-reminder-form').reset=()=>{for(const id of ['store-reminder-next','store-reminder-every'])$(id).value='';custom.value='';toggle.checked=false;option.checked=false;};
+  c.document.querySelector=selector=>selector==='[data-reminder-options-for="store-reminder-next"]'?group:null;
+  c.CSS={escape:value=>value};c.reminderHasOption=reminderHasOption;state.reminderOptionGroup=group;state.reminderControls={custom,toggle,option};
+  vm.runInContext(app.slice(app.indexOf('function reminderOptionTarget('),app.indexOf('function setReminderDraftValue(')),c);
   vm.runInContext(app.slice(app.indexOf('function lockNow('),app.indexOf('async function showGate(')),c);
+}
+function assertReminderDOMCleared(h) {
+  assert.equal(h.state.reminderOptionGroup.dataset.customApplied,'');
+  assert.equal(h.state.reminderControls.custom.value,'');assert.equal(h.state.reminderControls.toggle.checked,false);assert.equal(h.state.reminderControls.option.checked,false);
+  for(const id of ['store-reminder-next','store-reminder-every'])assert.equal(h.$(id).value,'');
+  assert.equal(h.$('store-reminder-error').textContent,'');
 }
 
 test('actual lock cancels and clears decrypted backup preview in both merge and empty-restore modes without a disk write',async()=>{
@@ -205,6 +242,7 @@ test('actual lock cancels and clears decrypted backup preview in both merge and 
     assert.equal(c.backupPreview,null);assert.equal($('backup-review').open,false);assert.equal($('backup-review-body').innerHTML,'');assert.equal($('backup-ack').checked,false);
     assert.equal(c.payload,null);assert.equal(c.key,null);assert.equal(c.meta,null);assert.equal($('password').value,'');assert.equal(c.pendingLock,false);
     assert.equal(JSON.stringify(original),before);assert.equal(JSON.stringify(state.disk),disk);assert.equal(state.writes.length,0);assert.equal(state.locationCleared,true);assert.equal(state.searchForgotten,true);
+    assertReminderDOMCleared(h);
     assert.equal(inspected.plan.summary.mode,restore?'restore':'merge');await assert.rejects(c.applyBackupPreview(),/勾選確認/);
   }
 });
@@ -215,6 +253,7 @@ test('backgrounding during backup encryption defers the real lock, aborts apply,
   await c.run(c.applyBackupPreview,'backup-error');
   assert.equal(state.writes.length,0);assert.equal(JSON.stringify(state.disk),disk);assert.equal(JSON.stringify(original),before);
   assert.equal(c.payload,null);assert.equal(c.key,null);assert.equal(c.backupPreview,null);assert.equal(c.busy,false);assert.equal(c.pendingLock,false);assert.equal($('backup-review').open,false);
+  assertReminderDOMCleared(h);
 });
 
 test('large preview pages stay read-only and render at most 20 summaries and warnings without eagerly expanding note text',async()=>{

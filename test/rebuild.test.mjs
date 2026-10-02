@@ -153,12 +153,18 @@ test('actual device-switch UI keeps the active vault on failure, then clears old
   const paired={id:'fresh-id',token:'fresh-token',snapshot:{version:2,envelope:fresh.envelope,rebuild:{id:uuid()}}};
   const nodes=new Map();const $=id=>{if(!nodes.has(id))nodes.set(id,{value:'',checked:false,textContent:'',innerHTML:'old graph',close(){this.closed=true;},reset(){},replaceChildren(){this.innerHTML='';}});return nodes.get(id);};
   $('rebuild-code').value='fixture-code';$('rebuild-understood').checked=true;
-  let failWrite=true,writes=0,locationClears=0;
+  let failWrite=true,writes=0,locationClears=0,pairCalls=0;
   const ctx=vm.createContext({$,meta:old.meta,key:old.key,payload:{bundle:old.bundle,deviceName:'Mac'},localRevision:1,slot:{},openRebuiltSnapshot,seal,editorContext:null,csvImport:{hasPending:()=>false,reset(){}},qualityCache:{},qualityReview:{},records:project(old.bundle),trail:['old'],focus:{type:'store',id:'old-store'},graphPage:1,objectURLs:[],lastError:'old',lastSyncFailure:{},syncWarning:'',
-    clearNearbyPosition:()=>{locationClears++;},api:async()=>paired,archiveAndReplaceLocal:async()=>{if(failWrite)throw new Error('quota');writes++;return 2;},openWorkspace:async()=>{},switchView:view=>ctx.view=view,toast:message=>ctx.notice=message,
+    singleStoreContext:null,reminderContext:null,inlineTextContext:null,
+    clearNearbyPosition:()=>{locationClears++;},api:async()=>{pairCalls++;return paired;},archiveAndReplaceLocal:async()=>{if(failWrite)throw new Error('quota');writes++;return 2;},openWorkspace:async()=>{},switchView:view=>ctx.view=view,toast:message=>ctx.notice=message,
     run:async(fn,errorTarget)=>{try{await fn();}catch(e){$(errorTarget).textContent=e.message;}},
   });
-  vm.runInContext("let storeFilters = {query:'old',groups:['great-tree']};" + app.slice(app.indexOf('function resetStoreFilters('),app.indexOf('function changeStoreFilter(')) + app.slice(app.indexOf('async function adoptRebuilt('),app.indexOf('async function openArchives(')),ctx);
+  vm.runInContext("let storeFilters = {query:'old',groups:['great-tree']};" + app.slice(app.indexOf('function storedReminderDrafts('),app.indexOf('function reminderDraftFor(')) + app.slice(app.indexOf('function resetStoreFilters('),app.indexOf('function changeStoreFilter(')) + app.slice(app.indexOf('async function adoptRebuilt('),app.indexOf('async function openArchives(')),ctx);
+  ctx.payload.reminderDrafts=[{format:'store-reminder-draft-1',storeId:'old-store',storeName:'虛構未完成門市',parents:[old.bundle.ops[0].id],baseEvery:'',baseLegacy:'',savedAt:'2026-10-03T01:00:00.000Z',fields:{next:'保留的虛構提醒',every:'',customText:'',customApplied:'',convert:false,customChecked:false}}];
+  const pendingDraft=JSON.stringify(ctx.payload);$('rebuild-connect-password').value=PASSWORD;
+  await ctx.adoptRebuilt({preventDefault(){}});
+  assert.match($('rebuild-connect-error').textContent,/未完成草稿/);assert.equal(JSON.stringify(ctx.payload),pendingDraft);assert.equal(pairCalls,0);assert.equal(writes,0);assert.equal(locationClears,0);
+  delete ctx.payload.reminderDrafts;
   $('rebuild-connect-password').value='wrong';await ctx.adoptRebuilt({preventDefault(){}});assert.equal(ctx.meta.vaultId,old.meta.vaultId);assert.equal(writes,0);
   $('rebuild-connect-password').value=PASSWORD;await ctx.adoptRebuilt({preventDefault(){}});assert.equal(ctx.meta.vaultId,old.meta.vaultId);assert.equal($('graph').innerHTML,'old graph');assert.equal(writes,0);
   assert.equal(locationClears,0);failWrite=false;$('rebuild-connect-password').value=PASSWORD;await ctx.adoptRebuilt({preventDefault(){}});

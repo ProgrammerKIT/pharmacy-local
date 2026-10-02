@@ -95,6 +95,14 @@ async function stored(page, predicate) {
   for (let n = 0; n < 70; n++) { const value = await snapshot(page); if (predicate(value)) return value; await page.waitForTimeout(100); }
   throw new Error('Timed out waiting for encrypted fictional draft/commit');
 }
+async function reminderSnapshot(page, spec, expectedValue, baselineSlot) {
+  await page.locator('#store-reminder-draft-state[data-state="saved"]').waitFor({ state: 'attached' });
+  const field = { 'reminder-next': 'next', 'reminder-custom': 'customText', 'reminder-every': 'every' }[spec.name];
+  const saved = await stored(page, value => value?.payload.reminderDrafts?.find(d => d.storeId === 'qa-store-a')?.fields[field] === expectedValue);
+  const withoutDraft = value => { const copy = structuredClone(value.payload); delete copy.reminderDrafts; return copy; };
+  assert.deepEqual(withoutDraft(saved), withoutDraft(baselineSlot), 'Reminder input changes only encrypted device drafts, never formal bundle, dirty, attendance or sync metadata');
+  assert.equal(saved.payload.reminderDrafts.length, 1); return saved;
+}
 async function viewport(page, height, offsetTop = 0, event = 'resize') {
   await page.evaluate(({ height, offsetTop, event }) => { Object.assign(window.qaViewport, { height, offsetTop }); window.qaViewport.dispatchEvent(new Event(event)); }, { height, offsetTop, event });
   await page.waitForTimeout(240);
@@ -209,9 +217,10 @@ async function acceptance(width, spec) {
     await field.evaluate(el => { el.setSelectionRange(el.value.length, el.value.length); document.dispatchEvent(new Event('selectionchange')); });
     await page.waitForTimeout(250);
     const longVisible = await assertCaretVisible(page, spec.selector, spec.name + '-long-text-end');
-    const stable = await snapshot(page);
+    const reminderDraft = spec.kind === 'reminder' && mode !== 'baseline';
+    const stable = reminderDraft ? await reminderSnapshot(page, spec, normalized, baselineSlot) : await snapshot(page);
     if (spec.draft) assert.deepEqual(stable.payload.bundle, t.initialBundle, 'Typing only creates an encrypted draft');
-    else assert.deepEqual(stable, baselineSlot, 'Unsaved form input must not write any encrypted data');
+    else if (!reminderDraft) assert.deepEqual(stable, baselineSlot, 'Unsaved form input must not write any encrypted data');
     if (width === 393) await viewport(page, 320, 30);
     const shorterVisible = await assertCaretVisible(page, spec.selector, spec.name + '-shorter-keyboard');
     if (width === 393 && spec.kind === 'single') assert.ok(shorterVisible.fieldHeight <= 142, 'Single-store 34dvh minimum must yield to the keyboard-height cap (140px at 320px visual height)');
@@ -229,7 +238,9 @@ async function acceptance(width, spec) {
     await page.waitForTimeout(350);
     assert.deepEqual(await field.evaluate(el => ({ start: el.selectionStart, end: el.selectionEnd, direction: el.selectionDirection, value: el.value })), selected);
     await field.evaluate(el => { el.setSelectionRange(el.value.length, el.value.length); document.dispatchEvent(new Event('selectionchange')); }); await page.waitForTimeout(250);
-    const beforeManual = await snapshot(page);
+    // The synthetic composition input may schedule a new device draft even though
+    // its DOM value stays the same. Drain it before testing read-only gestures.
+    const beforeManual = reminderDraft ? await reminderSnapshot(page, spec, normalized, baselineSlot) : await snapshot(page);
     await page.screenshot({ path: path.join(outputDir, `${spec.name}-${width}-keyboard.png`) });
     const manualScroll = await userScrollAndClose(t, spec);
     assert.deepEqual(await snapshot(page), beforeManual, 'Manual scroll and keyboard close cannot write data');

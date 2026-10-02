@@ -8,7 +8,8 @@ import { newMeta, derive, seal, unseal, emptyBundle, revision, merge, validateBu
 
 // Run the actual application functions, with a local in-memory transport and real encryption.
 const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
-const functions = app.slice(app.indexOf('function programDetail()'), app.indexOf('async function api(')) +
+const functions = app.slice(app.indexOf('function storedReminderDrafts('), app.indexOf('function reminderDraftFor(')) +
+  app.slice(app.indexOf('function programDetail()'), app.indexOf('async function api(')) +
   app.slice(app.indexOf('function withPendingSync('), app.indexOf('function draftState(')) +
   app.slice(app.indexOf('async function checkConnection()'), app.indexOf('async function persist(')) +
   app.slice(app.indexOf('async function autoSync()'), app.indexOf('function lockNow(')) +

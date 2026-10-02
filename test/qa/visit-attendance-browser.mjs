@@ -83,6 +83,10 @@ async function stored(page, predicate) {
   for (let n = 0; n < 70; n++) { const value = await snapshot(page); if (predicate(value)) return value; await page.waitForTimeout(100); }
   throw new Error('Timed out waiting for encrypted fictional draft/commit');
 }
+function assertOnlyReminderDraftChanged(before, after, message) {
+  const withoutDraft = value => { const copy = structuredClone(value.payload); delete copy.reminderDrafts; return copy; };
+  assert.deepEqual(withoutDraft(after), withoutDraft(before), `${message}: formal bundle, dirty, attendance and all other device state remain identical`);
+}
 async function noAuto(t, label, action, { unchanged = false } = {}) {
   const { page, width } = t, before = unchanged ? await snapshot(page) : null;
   const start = await page.evaluate(() => window.qaFocusEvents.length);
@@ -100,7 +104,12 @@ async function explicitText(page, selector) {
 }
 async function closeDialogs(page) {
   assert.equal(await page.locator('#visit-attendance-dialog').isVisible(), false, 'Finish the pending confirmation first');
-  for (const id of ['quick-text-dialog', 'store-reminder-dialog', 'editor', 'review']) if (await page.locator('#' + id).isVisible()) await page.locator(`#${id} [data-close="${id}"]`).first().click();
+  for (const id of ['quick-text-dialog', 'store-reminder-dialog', 'editor', 'review']) if (await page.locator('#' + id).isVisible()) {
+    const dialog = page.locator('#' + id);
+    if (id === 'store-reminder-dialog') await dialog.getByRole('button', { name: '稍後繼續', exact: true }).click();
+    else await page.locator(`#${id} [data-close="${id}"]`).first().click();
+    await dialog.waitFor({ state: 'hidden' });
+  }
 }
 async function openStore(page) {
   await closeDialogs(page); await page.locator('.rail [data-view="stores"]').click();
@@ -119,7 +128,10 @@ async function prepare(t, route, phase) {
   if (['reminder-add', 'task-complete', 'task-repeat', 'inline', 'single-store'].includes(route)) await openStore(page);
   if (route === 'reminder-add') {
     await page.locator('#review [data-store-reminder]').first().click(); selector = '#store-reminder-next';
+    const before = await snapshot(page);
     await (await explicitText(page, selector)).fill(text); expectedValue = text;
+    const drafted = await stored(page, value => value?.payload.reminderDrafts?.find(d => d.storeId === 'qa-store-a')?.fields.next === text);
+    assertOnlyReminderDraftChanged(before, drafted, 'Reminder typing only saves a device draft');
     submit = () => page.locator('#store-reminder-dialog button[type="submit"]').click();
   }
   if (route === 'task-complete') submit = () => page.locator('#review [data-reminder-complete]').first().click();
@@ -211,12 +223,19 @@ async function routeAcceptance(width, route) {
       assert.equal(actual, first.expectedValue, 'Cancelled confirmation preserves edited form text');
     }
     if (route === 'inline') assert.equal((await snapshot(page)).payload.inlineTextDraft?.after, first.expectedValue);
+    if (route === 'reminder-add') {
+      const cancelled = await snapshot(page);
+      assert.equal(cancelled.payload.reminderDrafts?.find(d => d.storeId === 'qa-store-a')?.fields.next, first.expectedValue);
+      assert.equal(cancelled.payload.dirty, false, 'Cancelled reminder confirmation does not mark formal data dirty');
+    }
     if (['single-store', 'full-visit'].includes(route)) assert.equal((await snapshot(page)).payload.draft?.fields?.text, first.expectedValue);
     await ask(t, `${route}-reopen-unchecked`, first.submit);
     const ordinary = await confirm(t, false, initial); assert.equal(ordinary.payload.bundle.ops.some(op => op.visitAttendance), false);
+    if (route === 'reminder-add') assert.equal(ordinary.payload.reminderDrafts.some(d => d.storeId === 'qa-store-a'), false, 'Only successful formal save removes this store draft');
     const second = await prepare(t, route, 2); await ask(t, `${route}-ask-checked-save`, second.submit);
     await page.screenshot({ path: path.join(outputDir, `${route}-${width}-confirmation.png`) });
     const saved = await confirm(t, true, ordinary.payload.bundle); const attendance = await summary(page);
+    if (route === 'reminder-add') assert.equal(saved.payload.reminderDrafts.some(d => d.storeId === 'qa-store-a'), false);
     assert.equal(attendance.dates.length, 1, 'A store has one displayed attendance date');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true);
     assert.deepEqual(t.errors, []); assert.deepEqual(t.external, []);
@@ -250,17 +269,20 @@ async function unchangedAcceptance(width) {
     const submit = () => page.locator('#store-reminder-dialog button[type="submit"]').click();
     await ask(t, 'unchanged-reminder', submit);
     await noAuto(t, 'unchanged-reminder-unchecked', () => page.locator('#visit-attendance-confirm').click());
-    assert.deepEqual(await snapshot(page), initial, 'No changes plus unchecked confirmation is a byte-for-byte no-op');
+    await page.locator('#store-reminder-dialog').waitFor({ state: 'hidden' });
+    const completed = await snapshot(page);
+    assertOnlyReminderDraftChanged(initial, completed, 'Unchanged unchecked confirmation can only finalize device reminder draft state');
+    assert.deepEqual(completed.payload.reminderDrafts || [], [], 'No pending reminder draft remains after explicit confirmation');
     await openStore(page); await page.locator('#review [data-store-reminder]').first().click();
     await ask(t, 'unchanged-reminder-only-attendance', submit);
     await noAuto(t, 'unchanged-reminder-escape', () => page.keyboard.press('Escape'));
-    assert.deepEqual(await snapshot(page), initial, 'Escape cancels without writing');
+    assert.deepEqual(await snapshot(page), completed, 'Escape cancels without writing encrypted data');
     await ask(t, 'unchanged-reminder-reopen', submit);
     const saved = await confirm(t, true, initial.payload.bundle);
     assert.deepEqual(saved.payload.bundle.ops.at(-1).data, initial.payload.bundle.ops.find(op => op.entity === 'qa-store-a').data, 'Attendance-only confirmation preserves all original store data');
     const attendance = await summary(page); assert.equal(attendance.dates.length, 1);
     assert.deepEqual(t.errors, []); assert.deepEqual(t.external, []);
-    report.scenarios.push({ name: 'unchanged-reminder-and-escape', width, checks: ['no-op-zero-encrypted-writes', 'escape-cancels', 'attendance-only-preserves-data'] });
+    report.scenarios.push({ name: 'unchanged-reminder-and-escape', width, checks: ['no-op-zero-formal-writes', 'explicit-confirmation-device-draft-finalization-only', 'escape-zero-encrypted-writes', 'attendance-only-preserves-data'] });
   } catch (error) { await page.screenshot({ path: path.join(outputDir, `failure-unchanged-${width}.png`) }); throw error; }
   finally { await context.close(); }
 }
