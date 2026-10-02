@@ -146,6 +146,51 @@ const plain = x => x !== null && typeof x === 'object' && !Array.isArray(x);
 const str = (s, max = 20000) => typeof s === 'string' && s.length <= max;
 const ids = a => Array.isArray(a) && a.length <= 100 && a.every(x => str(x, 100));
 const taskTime = value => str(value, 40) && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value) && Number.isFinite(Date.parse(value));
+const attendanceCalendar = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Taipei', calendar: 'gregory', numberingSystem: 'latn', year: 'numeric', month: '2-digit', day: '2-digit', era: 'short' });
+function attendanceInstant(value) {
+  if (!taskTime(value)) return false;
+  return new Date(value).toISOString() === value;
+}
+export function attendanceTaipeiDate(value) {
+  const timestamp = typeof value === 'number' ? value : value instanceof Date ? value.getTime() : attendanceInstant(value) ? Date.parse(value) : NaN;
+  if (!Number.isFinite(timestamp)) throw new Error('拜訪確認時間不正確。');
+  const instant = new Date(timestamp);
+  if (!Number.isFinite(instant.getTime())) throw new Error('拜訪確認時間不正確。');
+  const parts = Object.fromEntries(attendanceCalendar.formatToParts(instant).map(part => [part.type, part.value]));
+  const date = `${parts.year.padStart(4, '0')}-${parts.month}-${parts.day}`;
+  if (parts.era !== 'AD' || !/^\d{4}-\d\d-\d\d$/.test(date)) throw new Error('拜訪確認日期超出支援範圍。');
+  return date;
+}
+export function makeVisitAttendance(store, at = new Date().toISOString()) {
+  if (!str(store, 100) || !store.trim() || !attendanceInstant(at)) throw new Error('拜訪確認資料不完整。');
+  return { store, date: attendanceTaipeiDate(at), at };
+}
+function validVisitAttendance(op) {
+  const attendance = op?.visitAttendance;
+  if (!plain(attendance) || Object.keys(attendance).length !== 3 || !['store', 'date', 'at'].every(field => Object.hasOwn(attendance, field)) ||
+      !str(attendance.store, 100) || !attendance.store.trim() || !attendanceInstant(attendance.at) || attendance.at !== op.at ||
+      op.deleted !== false || !str(op.entity, 100) || !op.entity.trim() ||
+      !(op.type === 'store' && op.entity === attendance.store || op.type === 'visit' && op.data?.store === attendance.store)) return false;
+  try { return attendance.date === attendanceTaipeiDate(attendance.at); } catch { return false; }
+}
+// Read evidence from all retained revisions, not only the current head. A later
+// ordinary edit or restore neither copies an attendance event nor erases it.
+// Bundles are validated at their input boundary; this read never validates or
+// rewrites the full graph, and ignores malformed attendance evidence locally.
+export function visitAttendanceForStore(bundle, storeId, now = Date.now()) {
+  const today = attendanceTaipeiDate(now), dates = new Map(), ops = Array.isArray(bundle?.ops) ? bundle.ops : [];
+  for (const op of ops) {
+    if (op?.visitAttendance?.store !== storeId || !str(op.id, 100) || !op.id || !validVisitAttendance(op) || !validData(op.type, op.data)) continue;
+    const attendance = op.visitAttendance;
+    if (!dates.has(attendance.date)) dates.set(attendance.date, []);
+    dates.get(attendance.date).push({ entityId: op.entity, type: op.type, revisionId: op.id, at: attendance.at });
+  }
+  const history = [...dates].sort(([a], [b]) => b.localeCompare(a)).map(([date, occurrences]) => ({ date, occurrences: occurrences.sort((a, b) => b.at.localeCompare(a.at) || b.revisionId.localeCompare(a.revisionId)) }));
+  const latestDate = history[0]?.date || '', hasFutureDates = !!latestDate && latestDate > today;
+  // Compare UTC ordinals of the two Taipei calendar dates, not elapsed hours.
+  const daysSince = !latestDate || hasFutureDates ? null : (Date.parse(today + 'T00:00:00.000Z') - Date.parse(latestDate + 'T00:00:00.000Z')) / 86400000;
+  return { today, latestDate, daysSince, hasFutureDates, history };
+}
 function validReminderTasks(d) {
   const tasks = d.nextRememberTasks;
   if (tasks !== undefined && (!Array.isArray(tasks) || tasks.length > 1000 || !tasks.every(t => plain(t) && str(t.id, 100) && t.id && str(t.text, 2000) && t.text.trim() && taskTime(t.createdAt) && (t.completedAt === '' || taskTime(t.completedAt))) || new Set(tasks.map(t => t.id)).size !== tasks.length)) return false;
@@ -217,13 +262,16 @@ export function validData(type, d) {
 }
 export function validateBundle(b) {
   if (!plain(b) || ![1, 2].includes(b.schema) || !str(b.vaultId, 100) || !Array.isArray(b.ops) || b.ops.length > 30000 || !plain(b.blobs)) throw new Error('資料庫格式不符，或需要更新至支援此資料的程式版本。');
-  const seen = new Map(), sourceEntities = new Map();
+  const seen = new Map(), sourceEntities = new Map(), storeEntities = new Set();
   for (const o of b.ops) {
     if (!plain(o) || !str(o.id, 100) || !o.id || seen.has(o.id) || !types.includes(o.type) || !str(o.entity, 100) || !ids(o.parents) || new Set(o.parents).size !== o.parents.length || !str(o.device, 100) || !str(o.at, 40) || typeof o.deleted !== 'boolean' || !validData(o.type, o.data)) throw new Error('紀錄或版本資訊不完整。');
     if (o.type === 'source' && (o.deleted || o.parents.length || sourceEntities.has(o.entity))) throw new Error('原始來源快照只能新增一次，不能修改或刪除。');
     if (o.type === 'source') sourceEntities.set(o.entity, o);
+    if (o.type === 'store') storeEntities.add(o.entity);
+    if (Object.hasOwn(o, 'visitAttendance') && !validVisitAttendance(o)) throw new Error('拜訪確認資料不完整或與紀錄不符。');
     seen.set(o.id, o);
   }
+  for (const o of b.ops) if (Object.hasOwn(o, 'visitAttendance') && !storeEntities.has(o.visitAttendance.store)) throw new Error('拜訪確認所屬門市不存在。');
   for (const o of b.ops) for (const p of o.parents) {
     const parent = seen.get(p);
     if (!parent || parent.entity !== o.entity || parent.type !== o.type || parent.id === o.id) throw new Error('版本鏈結不完整。');
@@ -281,9 +329,14 @@ export function searchStoreVisitText(visits, storeId, query, limit = 500) {
   }
   return { query: needle, matches, truncated: false };
 }
-export function revision(type, entity, data, parents, device, deleted = false) {
+export function revision(type, entity, data, parents, device, deleted = false, attendance) {
   if (!validData(type, data)) throw new Error('欄位內容不完整或超過長度限制。');
-  return { id: uuid(), type, entity, data: structuredClone(data), parents: [...parents], device, deleted, at: new Date().toISOString() };
+  const op = { id: uuid(), type, entity, data: structuredClone(data), parents: [...parents], device, deleted, at: new Date().toISOString() };
+  if (attendance !== undefined) {
+    op.visitAttendance = structuredClone(attendance); op.at = attendance?.at;
+    if (!validVisitAttendance(op)) throw new Error('拜訪確認資料不完整或與紀錄不符。');
+  }
+  return op;
 }
 export function readonlyHealthAudit(input) {
   const now = Number.isFinite(input.now) ? input.now : Date.now(), week = 7 * 24 * 60 * 60 * 1000;
@@ -349,6 +402,15 @@ export async function planBackupImport(currentBundle, incomingBundle) {
   const beforeByKey = new Map(beforeRecords.map(record => [recordKey(record), record]));
   const existingOps = new Set((current?.ops || []).map(op => op.id));
   const addedOps = incoming.ops.filter(op => !existingOps.has(op.id));
+  const beforeAttendance = (current?.ops || []).filter(op => op.visitAttendance), afterAttendance = bundle.ops.filter(op => op.visitAttendance);
+  const attendanceDay = op => JSON.stringify([op.visitAttendance.store, op.visitAttendance.date]);
+  const beforeAttendanceDays = new Set(beforeAttendance.map(attendanceDay)), afterAttendanceDays = new Set(afterAttendance.map(attendanceDay));
+  const addedAttendanceByEntity = new Map();
+  for (const op of addedOps) if (op.visitAttendance) {
+    const key = JSON.stringify([op.type, op.entity]);
+    if (!addedAttendanceByEntity.has(key)) addedAttendanceByEntity.set(key, []);
+    addedAttendanceByEntity.get(key).push(op);
+  }
   const affected = new Set(addedOps.map(op => JSON.stringify([op.type, op.entity])));
   const newEntities = backupTypeCounts(), changes = [];
   let changedExistingEntities = 0, historyOnlyEntities = 0, newConflicts = 0, resolvedConflicts = 0, movedToTrash = 0, revived = 0;
@@ -365,7 +427,7 @@ export async function planBackupImport(currentBundle, incomingBundle) {
     const kind = !before ? 'added' : headsChanged ? 'heads-changed' : 'history-only';
     if (before && headsChanged) changedExistingEntities++;
     if (kind === 'history-only') historyOnlyEntities++;
-    changes.push({ type: after.type, entity: after.id, kind, beforeHeads, afterHeads, beforeDeleted: before?.deleted || false, afterDeleted: after.deleted, beforeConflict: before?.conflict || false, afterConflict: after.conflict });
+    changes.push({ type: after.type, entity: after.id, kind, beforeHeads, afterHeads, beforeDeleted: before?.deleted || false, afterDeleted: after.deleted, beforeConflict: before?.conflict || false, afterConflict: after.conflict, addedVisitAttendance: addedAttendanceByEntity.get(key) || [] });
   }
   changes.sort((a, b) => JSON.stringify([a.type, a.entity]).localeCompare(JSON.stringify([b.type, b.entity])));
   const before = backupCounts(current, beforeRecords), after = backupCounts(bundle, afterRecords);
@@ -375,6 +437,7 @@ export async function planBackupImport(currentBundle, incomingBundle) {
     before, incoming: backupCounts(incoming, incomingRecords), after,
     addedRevisions: addedOps.length, identicalRevisions: incoming.ops.length - addedOps.length, newBlobs, newEntities,
     changedExistingEntities, historyOnlyEntities, conflictsBefore: before.conflicts, conflictsAfter: after.conflicts,
+    visitAttendance: { beforeMarks: beforeAttendance.length, afterMarks: afterAttendance.length, addedMarks: afterAttendance.length - beforeAttendance.length, beforeDays: beforeAttendanceDays.size, afterDays: afterAttendanceDays.size, addedDays: [...afterAttendanceDays].filter(day => !beforeAttendanceDays.has(day)).length },
     newConflicts, resolvedConflicts, movedToTrash, revived, warnings: backupReferenceWarnings(bundle)
   };
   return freezeBackupPlan({ bundle, summary, changes });

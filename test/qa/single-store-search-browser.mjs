@@ -199,7 +199,11 @@ async function editingAcceptance(width) {
     }
     await page.locator('#review [data-inline-review="qa-long"]').click(); await page.locator('#quick-text-dialog').waitFor({ state: 'visible' });
     assert.ok(await page.locator('#quick-text-dialog .quick-diff-added').count()); assert.deepEqual((await snapshot(page)).payload.bundle, t.initialBundle, 'Diff preview may save draft but cannot save formal text');
-    await page.locator('#quick-text-dialog button[type="submit"]').click(); await page.locator('#quick-text-dialog').waitFor({ state: 'hidden' });
+    await page.locator('#quick-text-dialog button[type="submit"]').click();
+    await page.locator('#visit-attendance-dialog').waitFor({ state: 'visible' });
+    assert.equal(await page.locator('#visit-attendance-check').isChecked(), false);
+    assert.deepEqual((await snapshot(page)).payload.bundle, t.initialBundle, 'Final attendance choice has not committed the text');
+    await page.locator('#visit-attendance-confirm').click(); await page.locator('#quick-text-dialog').waitFor({ state: 'hidden' });
     const saved = await waitForStored(page, s => s.payload.bundle.ops.length === t.initialBundle.ops.length + 1 && !s.payload.inlineTextDraft);
     retains(t.initialBundle, saved.payload.bundle); assert.equal(saved.payload.bundle.ops.at(-1).entity, 'qa-long'); assert.equal(saved.payload.bundle.ops.at(-1).data.text, changed);
     assert.equal(await page.locator('#brief-search').inputValue(), 'Complete'); assert.equal(await page.locator('#brief-search').isEnabled(), true);

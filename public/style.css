@@ -236,3 +236,11 @@ dialog:focus{outline:none}
 #backup-result{border-top:1px solid var(--line);margin-top:18px;padding-top:18px}
 @media(max-width:760px){#backup-review .dialog-footer{display:grid;grid-template-columns:1fr}#backup-review .dialog-footer button{min-height:44px;width:100%;white-space:normal}#backup-review .check{align-items:flex-start}}
 .backup-version{padding:12px;border:1px solid var(--line);border-radius:8px;margin:12px 0}.backup-version h5{font-size:.9rem;margin:12px 0 4px}.backup-version details{margin-top:12px}
+
+/* Explicit actual-visit confirmation, independent from note/version dates. */
+.store-attendance { margin: .65rem 0; color: var(--muted, #617787); font-size: .9rem; line-height: 1.6; overflow-wrap: anywhere; }
+.attendance-history { margin-top: .5rem; }
+.attendance-history section { padding: .5rem 0; border-bottom: 1px solid #dbe4e8; }
+.attendance-history small { display: block; font-size: .75rem; }
+#visit-attendance-dialog { max-width: 560px; }
+.attendance-check { padding: 1rem; border: 1px solid #bddcd7; border-radius: .75rem; background: #edf7f5; font-weight: 700; }

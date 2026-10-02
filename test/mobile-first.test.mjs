@@ -412,11 +412,13 @@ test('single-store quick capture creates exactly one formal visit only on submit
     singleStoreContext:{storeId:'store-one',id:'visit-one',parents:[],draftTouched:true}, payload:{bundle,device:'phone',draft:{format:'visit-draft-1'}}, draftTimer:null,
     $:id=>nodes.get(id), document:{querySelectorAll:selector=>selector.includes('single-topic')?[{value:'topic-one'}]:selector.includes('single-person')?[{value:'person-one'}]:[]},
     by:(type,id)=>type==='store'?stores.find(store=>store.id===id):null, storeIdentityPending, flushVisitDraft:async()=>{},
-    hashBytes:async()=>'', b64:()=>'', revision, validateBundle, structuredClone, Uint8Array, clearTimeout,
+    hashBytes:async()=>'', b64:()=>'', revision, validateBundle, project, structuredClone, Uint8Array, clearTimeout,
+    confirmStoreSave:async()=>({}),quickTextParents:record=>record.heads.map(head=>head.id).sort(),
     persist:async next=>{persisted=structuredClone(next);context.payload=next;}, render:()=>{}, openVisitBrief:id=>{reopened=id;}, toast:value=>{message=value;},
     run:async fn=>fn()
   });
   const captureSource=app.slice(app.indexOf('function captureVisitDraft('),app.indexOf('function applyVisitDraft('));
+  vm.runInContext(app.slice(app.indexOf('function assertSaveParents('),app.indexOf('function finishAttendancePrompt(')),context);
   vm.runInContext(captureSource,context);
   const pending=context.captureVisitDraft();
   assert.equal(pending.format,'visit-draft-1');assert.equal(pending.baseData,null);assert.equal(pending.fields.store,'store-one');
@@ -590,7 +592,7 @@ test('successful single-store inline save clears edit state and refreshes the sa
     payload: { schema: 1, device: 'phone', bundle, dirty: false, inlineTextDraft: { format: 'inline-text-draft-1', id: 'visit-1', before: '修改前原文', after: '修改後原文', parents: [original.id] } },
     quickTextContext: { id: 'visit-1', before: '修改前原文', after: '修改後原文', parents: [original.id], step: 'confirm', briefStoreId: 'store-1' },
     inlineTextContext: { id: 'visit-1', before: '修改前原文', after: '修改後原文', parents: [original.id], briefStoreId: 'store-1' },
-    structuredClone, revision, validateBundle,
+    structuredClone, revision, validateBundle, project, confirmStoreSave:async()=>({}),name:()=> '虛構測試門市',
     quickTextParents: record => record.heads.map(head => head.id).sort(),
     by: (type, id) => project(context.payload.bundle).find(record => record.type === type && record.id === id),
     persist: async next => { context.payload = next; },
@@ -605,6 +607,7 @@ test('successful single-store inline save clears edit state and refreshes the sa
     toast: value => { message = value; },
     run: async fn => fn()
   });
+  vm.runInContext(app.slice(app.indexOf('function assertSaveParents('),app.indexOf('function finishAttendancePrompt(')),context);
   vm.runInContext(app.slice(app.indexOf('async function saveQuickTextEdit('), app.indexOf('async function commitRevision(')), context);
   let prevented = false;
   await context.saveQuickTextEdit({ preventDefault() { prevented = true; } });
@@ -617,7 +620,7 @@ test('successful single-store inline save clears edit state and refreshes the sa
 
 test('SOP1 explicitly separates App daily notes from Google CSV imports and keeps retention undecided', () => {
   assert.equal(SOP1_VERSION, '1.2.16');
-  assert.match(sop, /流程版本：1\.2\.36/);
+  assert.match(sop, /流程版本：1\.2\.37/);
   assert.match(sop, /393 × 852 CSS 像素/);
   assert.match(sop, /固定手機畫布不等於鍵盤開啟時的可見高度/);
   assert.match(sop, /長原文末行游標也須可見/);
