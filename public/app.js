@@ -150,59 +150,130 @@ lockPhoneViewportScale();
 function installPhoneEditingViewport() {
   if (!window.matchMedia?.('(max-width: 760px)').matches) return;
   const root = document.documentElement, viewport = window.visualViewport;
-  let frame = 0, revealCaret = false;
+  let frame = 0, revealCaret = false, viewportChanged = false;
+  let previousHeight = viewport?.height || window.innerHeight, previousTop = viewport?.offsetTop || 0, fallbackHeight = window.innerHeight;
+  let allowViewportPan = true;
+  let pointer = null, suppressSelectionUntil = 0;
   const observed = new Set();
   const resizeObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(() => schedule(false)) : null;
-  function schedule(reveal = false) {
-    revealCaret ||= reveal;
+  function schedule(reveal = false, resized = false) {
+    revealCaret ||= reveal; viewportChanged ||= resized;
     if (!frame) frame = requestAnimationFrame(update);
+  }
+  function textControl(element) {
+    return element?.matches?.('textarea,input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]):not([type="color"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="hidden"])') && !element.disabled && !element.readOnly;
+  }
+  function controlCaret(control) {
+    const rect = control.getBoundingClientRect();
+    // Single-line controls need no text copy (especially passwords/pairing codes).
+    if (control.tagName !== 'TEXTAREA') return rect;
+    if (control.selectionStart !== control.selectionEnd) return null;
+    const style = getComputedStyle(control), mirror = document.createElement('div');
+    mirror.setAttribute('aria-hidden', 'true'); mirror.setAttribute('data-phone-caret-mirror', ''); mirror.inert = true;
+    Object.assign(mirror.style, { position: 'fixed', left: '-10000px', top: '0', visibility: 'hidden', pointerEvents: 'none', userSelect: 'none', margin: '0', height: 'auto', minHeight: '0', maxHeight: 'none', overflow: 'visible' });
+    for (const prop of ['boxSizing', 'fontFamily', 'fontSize', 'fontStyle', 'fontWeight', 'fontStretch', 'fontVariant', 'fontKerning', 'fontFeatureSettings', 'fontVariationSettings', 'textRendering', 'wordBreak', 'lineHeight', 'letterSpacing', 'wordSpacing', 'textAlign', 'textIndent', 'textTransform', 'direction', 'tabSize', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth', 'borderStyle']) mirror.style[prop] = style[prop];
+    // Match the actual text area width, excluding its native vertical scrollbar.
+    mirror.style.width = `${control.clientWidth + (parseFloat(style.borderLeftWidth) || 0) + (parseFloat(style.borderRightWidth) || 0)}px`;
+    mirror.style.boxSizing = 'border-box';
+    mirror.style.whiteSpace = control.wrap === 'off' ? 'pre' : 'pre-wrap';
+    mirror.style.overflowWrap = control.wrap === 'off' ? 'normal' : 'break-word';
+    const offset = Math.min(control.value.length, control.selectionEnd ?? 0);
+    const before = document.createTextNode(control.value.slice(0, offset));
+    const marker = document.createElement('span');
+    marker.textContent = control.value.slice(offset) || '\u200b';
+    mirror.append(before, marker);
+    try {
+      document.body.append(mirror);
+      const markerRect = marker.getClientRects()[0] || marker.getBoundingClientRect();
+      const mirrorRect = mirror.getBoundingClientRect();
+      const lineHeight = parseFloat(style.lineHeight) || (parseFloat(style.fontSize) || 16) * 1.5;
+      const localTop = markerRect.top - mirrorRect.top;
+      const contentTop = control.clientTop + (parseFloat(style.paddingTop) || 0);
+      const contentBottom = control.clientTop + control.clientHeight - (parseFloat(style.paddingBottom) || 0);
+      // Scroll only the control's own text when its current caret is internally clipped.
+      if (localTop - control.scrollTop < contentTop) control.scrollTop = Math.max(0, localTop - contentTop);
+      else if (localTop + lineHeight - control.scrollTop > contentBottom) control.scrollTop += localTop + lineHeight - control.scrollTop - contentBottom;
+      const top = rect.top + localTop - control.scrollTop;
+      return { top, bottom: top + lineHeight, height: lineHeight };
+    } finally { mirror.remove(); }
+  }
+  function scrollContainer(element, dialog) {
+    for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+      if (parent === document.body || parent === document.documentElement) break;
+      if (parent === dialog || /^(auto|scroll|overlay)$/.test(getComputedStyle(parent).overflowY)) return parent;
+    }
+    return null;
   }
   function update() {
     frame = 0;
     const top = Math.max(0, viewport?.offsetTop || 0), height = viewport?.height || window.innerHeight;
     if (!Number.isFinite(height) || height <= 0) return;
+    const expanding = height > previousHeight + 1;
+    const shrinking = height < previousHeight - 1, panning = Math.abs(top - previousTop) > 1;
+    previousHeight = height; previousTop = top;
     root.style.setProperty('--phone-visible-top', `${top}px`);
     root.style.setProperty('--phone-visible-height', `${height}px`);
     root.style.setProperty('--phone-visible-bottom', `${top + height}px`);
-    root.style.setProperty('--phone-keyboard-inset', `${Math.max(0, window.innerHeight - height)}px`);
-    const keyboard = (window.innerHeight - height) > 120;
+    if (!viewport) fallbackHeight = Math.max(fallbackHeight, window.innerHeight);
+    const keyboardInset = Math.max(0, (viewport ? window.innerHeight : fallbackHeight) - height);
+    root.style.setProperty('--phone-keyboard-inset', `${keyboardInset}px`);
+    const keyboard = keyboardInset > 120;
     root.classList.toggle('phone-keyboard-open', keyboard);
-    const dialog = document.activeElement?.closest?.('dialog[open]') || [...document.querySelectorAll('dialog[open]')].at(-1);
+    const active = document.activeElement;
+    const dialog = active?.closest?.('dialog[open]') || [...document.querySelectorAll('dialog[open]')].at(-1);
     const scope = dialog || document;
     const actions = [...scope.querySelectorAll('.inline-edit-actions:not([hidden])')].filter(el => el.getClientRects().length);
     const dock = actions[0];
     for (const action of observed) if (!actions.includes(action)) { resizeObserver?.unobserve(action); observed.delete(action); }
-    for (const action of actions) if (!observed.has(action)) { observed.add(action); resizeObserver?.observe(action); }
+    for (const action of actions) if (!observed.has(action)) { resizeObserver?.observe(action); observed.add(action); }
     const dockHeight = dock?.getBoundingClientRect().height || 0;
     root.style.setProperty('--phone-edit-dock-height', `${dockHeight}px`);
-    if (!revealCaret) return;
+    const reveal = revealCaret || (viewportChanged && (shrinking || panning) && !expanding && performance.now() >= suppressSelectionUntil);
+    viewportChanged = false;
+    // Geometry still follows a closing keyboard, but it must not pull reading back to the caret.
+    if (!keyboard || expanding) { revealCaret = false; return; }
+    if (pointer) { if (pointer.moved) revealCaret = false; else revealCaret ||= reveal || shrinking; return; }
     revealCaret = false;
-    const editor = document.activeElement?.closest?.('[data-inline-edit-text]');
-    const selection = window.getSelection();
-    if (!editor || !selection?.rangeCount || selection.isCollapsed === false || !editor.contains(selection.focusNode)) return;
-    const range = selection.getRangeAt(0).cloneRange();
-    range.collapse(false);
-    let caret = range.getBoundingClientRect();
-    // Empty/newline caret ranges may have no rect. Measure adjacent text without changing the DOM or selection.
-    if (!caret.height) {
-      let node = range.startContainer, offset = range.startOffset;
-      if (node.nodeType !== 3) {
-        const previous = offset > 0;
-        node = node.childNodes?.[previous ? offset - 1 : 0];
-        while (node?.[previous ? 'lastChild' : 'firstChild']) node = node[previous ? 'lastChild' : 'firstChild'];
-        offset = previous ? node?.textContent?.length || 0 : 0;
+    if (!reveal) return;
+    const control = textControl(active) ? active : null;
+    const editor = control || active?.closest?.('[data-inline-edit-text]');
+    if (!editor) return;
+    let caret;
+    if (control) caret = controlCaret(control);
+    else {
+      const selection = window.getSelection();
+      if (!selection?.rangeCount || selection.isCollapsed === false || !editor.contains(selection.focusNode)) return;
+      const range = selection.getRangeAt(0).cloneRange();
+      range.collapse(false);
+      caret = range.getBoundingClientRect();
+      // Empty/newline caret ranges may have no rect. Measure adjacent text without changing the DOM or selection.
+      if (!caret.height) {
+        let node = range.startContainer, offset = range.startOffset;
+        if (node.nodeType !== 3) {
+          const previous = offset > 0;
+          node = node.childNodes?.[previous ? offset - 1 : 0];
+          while (node?.[previous ? 'lastChild' : 'firstChild']) node = node[previous ? 'lastChild' : 'firstChild'];
+          offset = previous ? node?.textContent?.length || 0 : 0;
+        }
+        if (node?.nodeType === 3 && node.textContent?.length) {
+          range.setStart(node, Math.max(0, offset - 1));
+          range.setEnd(node, Math.max(1, offset));
+          caret = range.getBoundingClientRect();
+        }
+        else if (node?.nodeType === 1 && node.tagName === 'BR') caret = node.getBoundingClientRect();
       }
-      if (node?.nodeType === 3 && node.textContent?.length) {
-        range.setStart(node, Math.max(0, offset - 1));
-        range.setEnd(node, Math.max(1, offset));
-        caret = range.getBoundingClientRect();
-      }
-      else if (node?.nodeType === 1 && node.tagName === 'BR') caret = node.getBoundingClientRect();
     }
-    if (!caret.height) return;
-    const scroller = editor.closest('#review-body'), bounds = scroller?.getBoundingClientRect();
-    const lower = Math.min(top + height - 16, dock ? dock.getBoundingClientRect().top - 12 : Infinity, bounds ? bounds.bottom - 12 : Infinity);
-    const upper = Math.max(top + 12, bounds ? bounds.top + 12 : 0);
+    if (!caret?.height) return;
+    const scroller = scrollContainer(editor, dialog), bounds = scroller?.getBoundingClientRect();
+    let lower = Math.min(top + height - 16, dock ? dock.getBoundingClientRect().top - 12 : Infinity, bounds ? bounds.bottom - 8 : Infinity);
+    let upper = Math.max(top + 12, bounds ? bounds.top + 8 : 0);
+    if (dialog) {
+      const header = dialog.querySelector(':scope > .section-row, :scope > form > .section-row');
+      const headerRect = header?.getBoundingClientRect();
+      if (headerRect && !header.contains(editor)) upper = Math.max(upper, headerRect.bottom + 8);
+      const footer = dialog.querySelector('.dialog-footer');
+      if (footer && !footer.contains(editor) && ['sticky', 'fixed'].includes(getComputedStyle(footer).position)) lower = Math.min(lower, footer.getBoundingClientRect().top - 8);
+    }
     if (lower <= upper) return;
     const delta = caret.bottom > lower ? caret.bottom - lower : caret.top < upper ? caret.top - upper : 0;
     if (delta) {
@@ -210,15 +281,27 @@ function installPhoneEditingViewport() {
       else window.scrollBy({ top: delta, left: 0, behavior: 'instant' });
     }
   }
-  viewport?.addEventListener('resize', () => schedule(true), { passive: true });
-  viewport?.addEventListener('scroll', () => schedule(false), { passive: true });
-  window.addEventListener('resize', () => schedule(true), { passive: true });
+  viewport?.addEventListener('resize', () => schedule(false, true), { passive: true });
+  viewport?.addEventListener('scroll', () => schedule(false, allowViewportPan), { passive: true });
+  window.addEventListener('resize', () => schedule(false, true), { passive: true });
   window.addEventListener('pageshow', () => schedule(false), { passive: true });
-  document.addEventListener('focusin', () => schedule(true));
+  document.addEventListener('focusin', () => { allowViewportPan = true; schedule(true); });
   document.addEventListener('focusout', () => schedule(false));
-  document.addEventListener('input', () => schedule(true));
-  document.addEventListener('selectionchange', () => schedule(true));
-  if (typeof MutationObserver === 'function') new MutationObserver(() => schedule(false)).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['hidden', 'open'] });
+  document.addEventListener('input', () => { allowViewportPan = true; schedule(true); });
+  document.addEventListener('selectionchange', () => { if (!pointer && performance.now() >= suppressSelectionUntil) schedule(true); });
+  document.addEventListener('pointerdown', event => { pointer = { id: event.pointerId, x: event.clientX, y: event.clientY, moved: false, target: event.target }; }, { passive: true });
+  document.addEventListener('pointermove', event => { if (pointer?.id === event.pointerId && Math.hypot(event.clientX - pointer.x, event.clientY - pointer.y) > 8) { pointer.moved = true; revealCaret = false; allowViewportPan = false; } }, { passive: true });
+  for (const type of ['pointerup', 'pointercancel']) document.addEventListener(type, () => {
+    const moved = pointer?.moved, target = pointer?.target; pointer = null;
+    if (moved || type === 'pointercancel') { revealCaret = false; allowViewportPan = false; suppressSelectionUntil = performance.now() + 250; }
+    else if (target === document.activeElement && (textControl(target) || target?.closest?.('[data-inline-edit-text]'))) { allowViewportPan = true; schedule(true); }
+    else if (revealCaret) schedule(true);
+  }, { passive: true });
+  document.addEventListener('wheel', () => { allowViewportPan = false; revealCaret = false; suppressSelectionUntil = performance.now() + 250; }, { passive: true });
+  if (typeof MutationObserver === 'function') new MutationObserver(records => {
+    // Ignore the transient, hidden measurement mirror; it never represents an App layout change.
+    if (records.some(record => record.type === 'attributes' || [...record.addedNodes, ...record.removedNodes].some(node => !node.hasAttribute?.('data-phone-caret-mirror')))) schedule(false);
+  }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['hidden', 'open'] });
   schedule(false);
 }
 installPhoneEditingViewport();

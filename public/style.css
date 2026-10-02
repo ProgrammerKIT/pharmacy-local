@@ -213,6 +213,14 @@ dialog:focus{outline:none}
   #review-body{scroll-padding-bottom:calc(var(--phone-edit-dock-height,0px) + 24px)}
   #review.visit-brief-dialog:has(.inline-edit-actions:not([hidden])) .review-persistent-actions{display:none}
   .phone-keyboard-open #review.visit-brief-dialog{padding-top:10px;padding-bottom:8px}
+  .phone-keyboard-open dialog:not(.visit-brief-dialog){padding:12px}
+  .phone-keyboard-open dialog>form>.section-row,.phone-keyboard-open dialog:not(.visit-brief-dialog)>.section-row{top:-12px;padding:4px 0 8px;margin-bottom:10px;gap:8px;align-items:center}
+  .phone-keyboard-open #review>.section-row{top:auto}
+  .phone-keyboard-open dialog>form>.section-row .eyebrow,.phone-keyboard-open dialog:not(.visit-brief-dialog)>.section-row .eyebrow{display:none}
+  .phone-keyboard-open dialog>form>.section-row h2,.phone-keyboard-open dialog:not(.visit-brief-dialog)>.section-row h2{font-size:.95rem;line-height:1.3;overflow-wrap:anywhere}
+  .phone-keyboard-open dialog>form>.section-row>[data-close],.phone-keyboard-open dialog>.section-row>[data-close]{flex:0 0 44px;width:44px;height:44px;padding:0}
+  .phone-keyboard-open dialog textarea,.phone-keyboard-open #quick-text-dialog textarea,.phone-keyboard-open #single-store-text{min-height:100px;max-height:max(100px,calc(var(--phone-visible-height,100dvh) - 180px))}
+
 }
 
 /* Backup review owns scrolling and exposes explicit, accessible consent on both layouts. */

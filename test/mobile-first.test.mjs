@@ -59,17 +59,18 @@ function editingViewportFixture({ mobile = true, withViewport = true, inDialog =
   const frames = [], scrolls = [], watched = [];
   const geometry = { caret: { top: 530, bottom: 554, height: 24 }, dock: { top: 460, height: 100 }, selection: true };
   const action = { getClientRects: () => [{}], getBoundingClientRect: () => geometry.dock };
-  const scroller = { scrollTop: 180, getBoundingClientRect: () => ({ top: 210, bottom: 588 }) };
+  const scroller = { scrollTop: 180, computed: { overflowY: 'auto' }, getBoundingClientRect: () => ({ top: 210, bottom: 588 }) };
   const editor = { closest: selector => selector === '[data-inline-edit-text]' ? editor : selector === '#review-body' && inDialog ? scroller : null, contains: node => node === text };
   const text = { nodeType: 3 };
   const originalRange = { startContainer: text, startOffset: 8, cloneRange: () => ({ startContainer: text, startOffset: 8, collapse() {}, setStart() {}, getBoundingClientRect: () => geometry.caret }) };
   const selection = { rangeCount: 1, focusNode: text, isCollapsed: true, getRangeAt: () => originalRange };
-  const scope = { querySelectorAll: () => [action] };
+  const scope = { querySelectorAll: () => [action], querySelector: () => null };
   const document = { activeElement: editor, body: {}, documentElement: { style: { setProperty: (key, value) => properties.set(key, value) }, classList: { toggle: (key, value) => value ? classes.add(key) : classes.delete(key) } }, querySelectorAll: selector => selector === 'dialog[open]' ? inDialog ? [scope] : [] : [action], addEventListener: (type, handler) => listeners.set(type, handler) };
+  editor.parentElement = inDialog ? scroller : document.body; scroller.parentElement = scope;
   const viewport = { offsetTop: 180, height: 400, addEventListener: (type, handler) => viewportListeners.set(type, handler) };
   const window = { innerHeight: 852, matchMedia: () => ({ matches: mobile }), visualViewport: withViewport ? viewport : undefined, getSelection: () => geometry.selection ? selection : null, scrollBy: value => scrolls.push(value), addEventListener: (type, handler) => windowListeners.set(type, handler) };
   const source = app.slice(app.indexOf('function installPhoneEditingViewport('), app.indexOf('let key ='));
-  vm.runInNewContext(source, { document, window, requestAnimationFrame: fn => { frames.push(fn); return frames.length; }, ResizeObserver: class { constructor(fn) { this.fn = fn; } observe(target) { watched.push(target); } }, MutationObserver: class { observe() {} } });
+  vm.runInNewContext(source, { document, window, getComputedStyle: element => element.computed || {}, performance: { now: () => 1000 }, requestAnimationFrame: fn => { frames.push(fn); return frames.length; }, ResizeObserver: class { constructor(fn) { this.fn = fn; } observe(target) { watched.push(target); } }, MutationObserver: class { observe() {} } });
   const flush = () => { for (let count = 0; frames.length && count < 10; count++) frames.shift()(); assert.equal(frames.length, 0); };
   return { properties, classes, listeners, viewportListeners, windowListeners, viewport, window, document, geometry, selection, originalRange, scroller, scrolls, watched, flush };
 }
@@ -616,7 +617,7 @@ test('successful single-store inline save clears edit state and refreshes the sa
 
 test('SOP1 explicitly separates App daily notes from Google CSV imports and keeps retention undecided', () => {
   assert.equal(SOP1_VERSION, '1.2.16');
-  assert.match(sop, /流程版本：1\.2\.35/);
+  assert.match(sop, /流程版本：1\.2\.36/);
   assert.match(sop, /393 × 852 CSS 像素/);
   assert.match(sop, /固定手機畫布不等於鍵盤開啟時的可見高度/);
   assert.match(sop, /長原文末行游標也須可見/);
