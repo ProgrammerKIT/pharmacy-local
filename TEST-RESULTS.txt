@@ -1,3 +1,21 @@
+v1.5.52 門市提醒本機加密草稿｜2026-10-03
+
+完整 Node 測試：330 項通過，0 失敗／取消／略過。命令 npm test；使用虛構資料及獨立暫存測試服務，包括本機 HTTPS 同步、還原和更新測試，不連正式 App。node --check public/app.js 與 git diff --check 通過。
+
+新增 test/reminder-draft.test.mjs 28 項真函式測試：逐店保存與恢復、快速選項／自訂／舊文字轉換狀態、原始空白換行、完整門市編輯提醒恢復、快速關閉與寫入中再次輸入、取消確認、正式內容及同店草稿移除的單次寫入、失敗重試、過期／刪除／衝突草稿唯讀、明確捨棄與寫入競態。真 AES-GCM 往返驗證草稿在 device payload、正式 bundle／備份排除草稿；原文、Source Snapshot 與既有任務歷史保持相同。加密前後及寫入後的工作階段／CAS 檢查防止舊狀態覆蓋。
+
+門市手動衝突整合使用真 openEditor／editMerge／confirmResolution 驗證：修正 projection 產生新物件後無法用物件索引找到紀錄的問題；預覽或返回保留草稿，最後確認成功只移除該店草稿，等待加密後再次核對編輯與預覽身分，失敗保留原內容。既有測試另補提醒草稿阻擋備份及換庫、確認前後等待寫入鏈、背景保存，以及鎖定時清除自訂 DOM 屬性和表單文字。
+
+本次隔離瀏覽器導航因管理政策無法驗證而被工具拒絕，未繞過、未啟動替代瀏覽器。沒有完成新的手機／桌面視覺或端到端瀏覽器驗收，也沒有真 iPhone／Safari／PWA／Typeless 測試；不得把 Node 模擬的 DOM／生命週期驗證當成真機結果。DEVICE-ACCEPTANCE.md 列出 15 項真機待驗，鍵盤意圖、輸入可見性與拜訪確認三份歷史瀏覽器腳本已適配提醒草稿：真實輸入只允許 device draft 改變，純焦點／捲動仍要求完整加密 slot 不變；本次僅通過腳本語法檢查，未執行瀏覽器腳本。
+
+App1.5.52／SOP1 1.2.38；schema2、同步protocol、CSV引擎1.2.16、21條runtime路徑不變。沒有讀寫正式客戶資料、CSV、Source Snapshot 或備份；本次只修改及發布程式。以下 hashes 對應通過 Node 驗證的 runtime：
+public/app.js SHA256=27cf212d97ebb26afa13753e8ae1abcafc99110056dca71519c662fc94eca28c
+public/index.html SHA256=0e9fbe49ad2afa6eb0d3c70670b0a3ebf136d4eb0cacf40c7c83261f72943b22
+public/core.js SHA256=d2900f3701116396ca4baa1dace5658e4ecd0c76953948eb9c37637cbc2c6407
+public/style.css SHA256=0984b02e56a60175e0617fb589f0ef7216aaee3339b0daf8c51216884c59065e
+
+以下保留歷史測試結果。
+
 v1.5.51 實際拜訪距今天數
 
 既有 test/visit-attendance.test.mjs 與 test/attendance-review-ui.test.mjs 共33/33通過；node --check public/app.js 通過。核心已涵蓋台北曆日、當天0天、跨日、未來日期、保留歷史及明確確認寫入。使用真實storeAttendanceHTML產生隔離的虛構顯示樣本：當天顯示「距離目前 0 天」、較早日期顯示「距離目前 7 天」、未知及未來日期保持既有提示。

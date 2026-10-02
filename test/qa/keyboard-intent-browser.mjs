@@ -78,8 +78,23 @@ async function stored(page, predicate) {
   for (let n = 0; n < 70; n++) { const value = await snapshot(page); if (predicate(value)) return value; await page.waitForTimeout(100); }
   throw new Error('Timed out waiting for encrypted fictional draft/commit');
 }
-async function noAuto(t, label, action, { unchanged = false } = {}) {
-  const { page, width } = t, before = unchanged ? await snapshot(page) : null;
+function assertOnlyReminderDraftChanged(before, after, label) {
+  const withoutDraft = value => { const copy = structuredClone(value.payload); delete copy.reminderDrafts; return copy; };
+  assert.deepEqual(withoutDraft(after), withoutDraft(before), `${label}: only device reminder drafts may change; bundle, dirty, attendance and sync metadata must remain identical`);
+}
+async function savedReminder(page) {
+  const fields = await page.evaluate(() => {
+    const group = document.querySelector('[data-reminder-options-for="store-reminder-next"]');
+    return { next: document.getElementById('store-reminder-next').value, every: document.getElementById('store-reminder-every').value,
+      customText: group.querySelector('[data-reminder-custom-input]').value, customChecked: group.querySelector('[data-reminder-custom-toggle]').checked,
+      customApplied: group.dataset.customApplied || '', convert: !!document.querySelector('#store-reminder-form [data-reminder-convert]')?.checked };
+  });
+  await page.locator('#store-reminder-draft-state[data-state="saved"]').waitFor({ state: 'attached' });
+  const saved = await stored(page, value => { const actual = value?.payload.reminderDrafts?.find(d => d.storeId === 'qa-store-a')?.fields; return actual && Object.entries(fields).every(([key, field]) => actual[key] === field); });
+  assert.equal(saved.payload.reminderDrafts.length, 1); return saved;
+}
+async function noAuto(t, label, action, { unchanged = false, reminderWrite = false } = {}) {
+  const { page, width } = t, before = unchanged || reminderWrite ? await snapshot(page) : null;
   const start = await page.evaluate(() => window.qaFocusEvents.length);
   await action(); await page.waitForTimeout(230);
   const evidence = await page.evaluate(start => ({ events: window.qaFocusEvents.slice(start), active: window.qaFocusDescriptor(document.activeElement) }), start);
@@ -87,6 +102,7 @@ async function noAuto(t, label, action, { unchanged = false } = {}) {
   assert.equal(evidence.events.some(event => event.textEntry), false, `${label}: transient automatic text focus: ${JSON.stringify(evidence)}`);
   assert.equal(evidence.active.textEntry, false, `${label}: text input remains focused`);
   if (unchanged) assert.deepEqual(await snapshot(page), before, `${label}: encrypted slot must stay byte-for-byte unchanged`);
+  if (reminderWrite) assertOnlyReminderDraftChanged(before, await savedReminder(page), label);
 }
 async function explicitText(page, selector) {
   const field = page.locator(selector); await field.click();
@@ -155,10 +171,11 @@ async function readOnlyAcceptance(width) {
     await explicitText(page, '#brief-search');
     await noAuto(t, 'nested-reminder-open-from-focused-search', () => page.locator('#review [data-store-reminder]').first().evaluate(el => el.click()), { unchanged: true });
     if (width === 393) await page.screenshot({ path: path.join(outputDir, 'reminder-initial-393.png') });
-    await noAuto(t, 'preset-checkbox', () => page.locator('#store-reminder-dialog [data-reminder-option][value="HAUD"]').check(), { unchanged: true });
-    await noAuto(t, 'custom-checkbox', () => page.locator('#store-reminder-dialog [data-reminder-custom-toggle]').check(), { unchanged: true });
+    await noAuto(t, 'preset-checkbox', () => page.locator('#store-reminder-dialog [data-reminder-option][value="HAUD"]').check(), { reminderWrite: true });
+    await noAuto(t, 'custom-checkbox', () => page.locator('#store-reminder-dialog [data-reminder-custom-toggle]').check(), { reminderWrite: true });
     const custom = await explicitText(page, '#store-reminder-dialog [data-reminder-custom-input]'); await custom.fill('虛構自訂待辦');
-    await noAuto(t, 'nested-reminder-close', () => page.locator('#store-reminder-dialog [data-close="store-reminder-dialog"]').first().evaluate(el => el.click()), { unchanged: true });
+    await noAuto(t, 'nested-reminder-later-preserves-draft', () => page.locator('#store-reminder-dialog').getByRole('button', { name: '稍後繼續', exact: true }).evaluate(el => el.click()), { reminderWrite: true });
+    const reminderSaved = await snapshot(page);
     assert.equal(await page.locator('#review').isVisible(), true);
     await explicitText(page, '#review [data-inline-edit-text="qa-note"]');
     await noAuto(t, 'nested-reminder-open-from-clean-original', () => page.locator('#review [data-store-reminder]').first().evaluate(el => el.click()), { unchanged: true });
@@ -176,8 +193,10 @@ async function readOnlyAcceptance(width) {
       await page.evaluate(() => { window.qaHidden = false; document.dispatchEvent(new Event('visibilitychange')); });
       await page.locator('#workspace').waitFor({ state: 'visible' });
     }, { unchanged: true });
-    assert.deepEqual(await snapshot(page), baseline, 'All read-only opening/searching/checkbox cancellation must leave encrypted bytes unchanged');
-    await finish(t, 'readonly-focus', ['transient-showModal-focus', 'explicit-field-click', 'search-navigation-clear', 'reminder-checkboxes', 'nested-close-no-keyboard', 'task-cancel', 'encrypted-slot-identical']);
+    const after = await snapshot(page);
+    assert.deepEqual(after, reminderSaved, 'Pure focus, reopening, closing and task cancellation after draft persistence keep encrypted bytes unchanged');
+    assertOnlyReminderDraftChanged(baseline, after, 'Reminder input never commits formal customer data');
+    await finish(t, 'readonly-focus', ['transient-showModal-focus', 'explicit-field-click', 'search-navigation-clear', 'reminder-checkbox-device-draft-only', 'nested-close-no-keyboard', 'task-cancel', 'pure-focus-encrypted-slot-identical']);
   } finally { await context.close(); }
 }
 

@@ -318,6 +318,7 @@ let updateHolding = false, macProgram = null, lastSyncFailure = null, syncWarnin
 let draftTimer = null, draftSaveChain = Promise.resolve(), discardingDraft = false, singleStoreContext = null, quickTextContext = null, inlineTextContext = null, inlineDraftTimer = null, inlineDraftSaveChain = Promise.resolve(), reminderContext = null, transientResumeState = null;
 let versionReview = null, resolutionPreview = null;
 let coordinatePreview = null, enrichmentPreview = null, backupPreview = null;
+let reminderDraftTimer = null, reminderDraftSaveChain = Promise.resolve();
 let attendancePrompt = null, attendanceCache = null;
 function storeAttendance(storeId) {
   const today = attendanceTaipeiDate(Date.now());
@@ -353,7 +354,7 @@ function finishAttendancePrompt(result = null) {
 }
 async function confirmStoreSave(storeId, storeName, changed = true) {
   // Complete draft writes first; no formal data is committed while the prompt is open.
-  await Promise.all([draftSaveChain, inlineDraftSaveChain]);
+  await Promise.all([draftSaveChain, inlineDraftSaveChain, reminderDraftSaveChain]);
   if (!payload || document.hidden || pendingLock) throw new Error('請先回到 App 解鎖後再儲存，原修改仍保留。');
   const sessionKey = key, bundle = payload.bundle;
   const currentStore = project(bundle).find(record => record.type === 'store' && record.id === storeId);
@@ -368,7 +369,7 @@ async function confirmStoreSave(storeId, storeName, changed = true) {
     $('visit-attendance-date').textContent = attendancePrompt.date + '（台北時間）';
     openDialog(dialog);
   });
-  await Promise.all([draftSaveChain, inlineDraftSaveChain]);
+  await Promise.all([draftSaveChain, inlineDraftSaveChain, reminderDraftSaveChain]);
   if (!result) return null;
   if (!payload || key !== sessionKey || payload.bundle !== bundle || document.hidden || pendingLock) throw new Error('確認期間資料或工作階段已變更，本次沒有寫入；請重新檢查後再儲存。');
   return result;
@@ -469,10 +470,12 @@ async function checkConnection() {
   output.textContent = '檢查時間：' + dateText(result.checkedAt) + '\nMac 服務：' + result.service + '\nHTTPS：' + result.tls + '\n裝置配對：' + result.pairing + (result.version !== null ? '\nMac 目前資料版本：' + result.version : '') + '\n' + result.message;
 }
 async function persist(next) {
-  const previous = payload;
+  const previous = payload, sessionKey = key, sessionMeta = meta, expected = localRevision;
   next = withPendingSync(previous, next);
-  const envelope = await seal(next, key, meta, 'device');
-  const rev = await writeLocal(envelope, localRevision, key);
+  const envelope = await seal(next, sessionKey, sessionMeta, 'device');
+  if (key !== sessionKey || meta !== sessionMeta || payload !== previous || localRevision !== expected) throw new Error('儲存期間資料或工作階段已變更，本次沒有覆蓋較新的內容；請重試。');
+  const rev = await writeLocal(envelope, expected, sessionKey);
+  if (key !== sessionKey || meta !== sessionMeta || payload !== previous || localRevision !== expected) throw new Error('本機寫入已完成，但工作階段已變更；請重新開啟核對。');
   localRevision = rev; slot = { envelope, revision: rev, unlockKey: key }; payload = next;
   $('save-state').textContent = '手機已保存：已加密儲存於本機';
 }
@@ -901,13 +904,14 @@ function lockNow(reopen = !document.hidden) {
   if (busy || editorContext || inlineTextContext || reminderContext || payload?.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('store-reminder-dialog')?.open || csvImport.hasPending()) { pendingLock = true; document.body.classList.add('privacy-veil'); return; }
   captureTransientResumeState();
   attendanceCache = null;
-  pendingLock = false; coordinatePreview = null; enrichmentPreview = null; clearNearbyPosition(); versionReview = null; resolutionPreview = null; inlineTextContext = null; reminderContext = null; clearTimeout(inlineDraftTimer); inlineDraftTimer = null; clearInterval(autoTimer); key = null; meta = null; payload = null; records = []; trail = []; editorContext = null; lastError = ''; macProgram = null; lastSyncFailure = null; syncWarning = '';
+  pendingLock = false; coordinatePreview = null; enrichmentPreview = null; clearNearbyPosition(); versionReview = null; resolutionPreview = null; inlineTextContext = null; reminderContext = null; clearTimeout(reminderDraftTimer); reminderDraftTimer = null; clearTimeout(inlineDraftTimer); inlineDraftTimer = null; clearInterval(autoTimer); key = null; meta = null; payload = null; records = []; trail = []; editorContext = null; lastError = ''; macProgram = null; lastSyncFailure = null; syncWarning = '';
   csvImport.reset(); qualityCache = null; qualityReview = null; qualityTab = 'duplicates'; qualityField = ''; qualityPage = 0;
   resetStoreFilters();
   for (const u of objectURLs) URL.revokeObjectURL(u); objectURLs = [];
   document.querySelectorAll('dialog').forEach(d => d.close());
-  for (const id of ['quality-content', 'regional-content', 'focus-header', 'graph', 'graph-pager', 'focus-detail', 'evidence-list', 'store-list', 'visit-list', 'recent-store-list', 'draft-banner-text', 'customer-list', 'entity-list', 'trash-list', 'review-body', 'editor-fields', 'conflict-list', 'connection-detail', 'program-detail', 'local-save-detail', 'mac-ack-detail', 'sync-success-detail', 'sync-failure-detail', 'connection-check', 'device-label', 'sync-result', 'storage-detail', 'sync-health-title', 'sync-health-body', 'pending-sync-detail', 'sync-conflict-count', 'health-audit-title', 'health-audit-time', 'health-audit-list', 'backup-result']) $(id).replaceChildren();
+  for (const id of ['quality-content', 'regional-content', 'focus-header', 'graph', 'graph-pager', 'focus-detail', 'evidence-list', 'store-list', 'visit-list', 'recent-store-list', 'draft-banner-text', 'reminder-draft-list', 'customer-list', 'entity-list', 'trash-list', 'review-body', 'editor-fields', 'conflict-list', 'connection-detail', 'program-detail', 'local-save-detail', 'mac-ack-detail', 'sync-success-detail', 'sync-failure-detail', 'connection-check', 'device-label', 'sync-result', 'storage-detail', 'sync-health-title', 'sync-health-body', 'pending-sync-detail', 'sync-conflict-count', 'health-audit-title', 'health-audit-time', 'health-audit-list', 'backup-result']) $(id).replaceChildren();
   $('connection-check').hidden = true;
+  $('store-reminder-form').reset(); resetReminderOptionGroup('store-reminder-next'); $('store-reminder-existing').replaceChildren(); $('store-reminder-title').textContent = '門市提醒'; $('store-reminder-draft-state').textContent = ''; $('store-reminder-error').textContent = ''; $('reminder-draft-banner').hidden = true; $('reminder-draft-count').textContent = '未完成門市提醒';
   $('editor-form').reset(); $('gate-form').reset(); $('rebuild-connect-form').reset(); $('password').value = ''; $('backup-file').value = '';
   $('workspace').hidden = true; $('gate').hidden = false;
   if (reopen) { document.body.classList.remove('privacy-veil'); showGate(); }
@@ -979,7 +983,7 @@ function status() {
   const conflicts = records.filter(r => r.conflict).length;
   const pending = pendingSyncSummary();
   const lastSuccess = payload.lastSync ? dateText(payload.lastSync) : '尚未成功同步';
-  const unfinished = (payload.draft?.format === 'visit-draft-1' ? 1 : 0) + (payload.inlineTextDraft?.format === 'inline-text-draft-1' ? 1 : 0);
+  const unfinished = (payload.draft?.format === 'visit-draft-1' ? 1 : 0) + (payload.inlineTextDraft?.format === 'inline-text-draft-1' ? 1 : 0) + storedReminderDrafts().length;
   $('save-state').textContent = '手機已保存：本機加密資料可用' + (unfinished ? ` · 有 ${unfinished} 份未完成內容` : '');
   const macAck = !payload.lastSync ? 'Mac 尚未確認收到' : payload.dirty ? `Mac 尚未確認收到這次已完成的變更 · 最近成功同步：${lastSuccess}` : `Mac 已確認收到已完成紀錄 · 資料版本 ${payload.serverVersion || 0} · 最近成功同步：${lastSuccess}`;
   $('sync-state').textContent = lastError ? `Mac 同步未完成：${lastError} · 最近成功同步：${lastSuccess}` : macAck + (unfinished ? '；未完成內容僅存本機裝置' : '');
@@ -1582,7 +1586,7 @@ function renderVisitSearchGroup(group, query) {
   return `<section class="visit-search-group"><div class="visit-search-group-head"><button class="text-button store-link" ${target}>${highlightLiteral(name('store', group.storeId), query)}</button><span class="pill">${group.matches.length} 筆命中 · 共 ${total} 筆</span></div><div class="visit-search-preview">${lead ? visitSearchPreview(lead, query) : ''}</div><details class="visit-search-details"><summary>展開這間藥局全部 ${total} 筆拜訪紀錄</summary><div class="visit-search-expanded">${group.allVisits.map(v => noteHTML(v, query)).join('')}</div></details></section>`;
 }
 function renderVisits() {
-  renderQuickVisit();
+  renderQuickVisit(); renderReminderDrafts();
   const visitDraft = payload?.draft?.format === 'visit-draft-1' ? payload.draft : null;
   const savedInlineDraft = payload?.inlineTextDraft?.format === 'inline-text-draft-1' ? payload.inlineTextDraft : null;
   const liveInlineDraft = inlineTextContext && inlineTextContext.after !== inlineTextContext.before ? inlineTextContext : null;
@@ -1634,6 +1638,7 @@ function openSources(type, id) {
 const input = (id, label, value = '', max = 500, required = false) => `<label>${label}<input id="${id}" maxlength="${max}" value="${esc(value)}" ${required ? 'required' : ''} autocomplete="off"></label>`;
 const textarea = (id, label, value = '') => `<label>${label}<textarea id="${id}" maxlength="20000">${esc(value)}</textarea></label>`;
 function openEditor(type, id = null, restoreDraft = null) {
+  if (type === 'store' && id && reminderDraftFor(id)) { toast('這間門市有未完成提醒，先開啟原草稿；完成或捨棄後再完整編輯。'); return openStoreReminder(id); }
   if (type === 'visit' && !restoreDraft && payload?.draft?.format === 'visit-draft-1') {
     const draft = payload.draft;
     if (id && draft.baseData && id !== draft.id) toast('先開啟尚未完成的草稿，避免覆蓋；完成後再編輯另一筆拜訪。');
@@ -1667,12 +1672,15 @@ function openEditor(type, id = null, restoreDraft = null) {
     $('editor-save').textContent = '儲存';
     $('discard-draft').hidden = true;
     let fields = input('f-name', `${kinds[type]}名稱`, d.name, 200, true);
-    if (type === 'store') fields += `${reminderTasksHTML(old || d, false)}${legacyReminderDraftHTML(d)}${reminderOptionsHTML('f-next-remember')}<label>新增待辦（每行一項）<textarea id="f-next-remember" maxlength="2000" placeholder="自由填寫，換行可新增另一項"></textarea></label><p class="muted">只新增任務，不改動已保存的待辦與完成歷史。勾選完成請回到拜訪頁。</p><label>每次必做、必給<textarea id="f-every-time-must" maxlength="2000">${esc(d.everyTimeMust || '')}</textarea></label>${input('f-contact', '主要窗口', d.contact)}${input('f-attr', '門市特性／客群', d.attr)}<details class="advanced-fields"><summary>地址與系統資料</summary><p class="muted">這些欄位供地理整理與來源核對；不知道時可以留空，不影響拜訪紀錄。</p><div class="field-grid">${input('f-city', '縣市', d.city)}${input('f-district', '地區', d.district)}</div><label>通路<select id="f-channel">${[...new Set(['', '連鎖', '獨立', '加盟', '診所', '其他', ...(d.channel ? [d.channel] : [])])].map(c => `<option value="${esc(c)}" ${c === d.channel ? 'selected' : ''}>${esc(c || '未分類')}</option>`).join('')}</select></label>${input('f-address', '地址', d.address, 2000)}${input('f-map-url', 'Google Maps 網址（只保存，不自動開啟）', d.mapUrl, 2000)}</details>`;
+    if (type === 'store') fields += `${reminderTasksHTML(old || d, false)}${legacyReminderDraftHTML(d)}${reminderOptionsHTML('f-next-remember')}<label>新增待辦（每行一項）<textarea id="f-next-remember" maxlength="2000" placeholder="自由填寫，換行可新增另一項"></textarea></label><p class="muted">只新增任務，不改動已保存的待辦與完成歷史。勾選完成請回到拜訪頁。</p><label>每次必做、必給<textarea id="f-every-time-must" maxlength="2000">${esc(d.everyTimeMust || '')}</textarea></label><p id="editor-reminder-draft-state" class="draft-state" role="status">${old ? '提醒欄位會加密暫存；重新開啟可從門市提醒繼續。其他門市資料仍須按儲存。' : '請先儲存建立門市；之後填寫門市提醒可使用加密草稿。'}</p>${input('f-contact', '主要窗口', d.contact)}${input('f-attr', '門市特性／客群', d.attr)}<details class="advanced-fields"><summary>地址與系統資料</summary><p class="muted">這些欄位供地理整理與來源核對；不知道時可以留空，不影響拜訪紀錄。</p><div class="field-grid">${input('f-city', '縣市', d.city)}${input('f-district', '地區', d.district)}</div><label>通路<select id="f-channel">${[...new Set(['', '連鎖', '獨立', '加盟', '診所', '其他', ...(d.channel ? [d.channel] : [])])].map(c => `<option value="${esc(c)}" ${c === d.channel ? 'selected' : ''}>${esc(c || '未分類')}</option>`).join('')}</select></label>${input('f-address', '地址', d.address, 2000)}${input('f-map-url', 'Google Maps 網址（只保存，不自動開啟）', d.mapUrl, 2000)}</details>`;
     if (type === 'store' && d.csvIdentityPending) fields += '<label class="check"><input type="checkbox" id="f-identity-reviewed">我已核實此門市身分與來源，解除待確認標記並允許關聯分析</label>';
     if (type === 'person') fields += `${input('f-role', '職務／與門市的關係', d.role)}${textarea('f-desc', '身分證據與備註', d.desc)}<label class="check"><input type="checkbox" id="f-confirmed" ${d.confirmed ? 'checked' : ''}> 我已核對此人物的身分</label><label>已確認是同一人時，連到<select id="f-same"><option value="">保持獨立人物</option>${all('person').filter(p => p.id !== id && !p.sameAs).map(p => `<option value="${esc(p.id)}" ${d.sameAs === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label><p class="muted">須先勾選已核對身分。此設定只合併探索路徑，不改寫原始拜訪文字。</p>`;
     if (type === 'topic') fields += textarea('f-desc', '主題定義與備註', d.desc);
     $('editor-fields').innerHTML = fields;
-    if (type === 'store') resetReminderOptionGroup('f-next-remember');
+    if (type === 'store') {
+      resetReminderOptionGroup('f-next-remember');
+      if (old && !old.deleted) editorContext.reminderDraftContext = { editor: editorContext, id: old.id, storeName: old.name, parents: [...editorContext.parents].sort(), baseEvery: d.everyTimeMust || '', baseLegacy: d.nextRemember || '', draftTouched: false, draftGeneration: 0 };
+    }
   }
   openDialog($('editor'));
 }
@@ -1736,34 +1744,159 @@ function blockInlineTextBeforeInput(event) {
   if (!reason) return false;
   event.preventDefault(); element.blur(); toast(reason); return true;
 }
+// Reminder drafts live only in the encrypted device payload, never in bundle.
+function storedReminderDrafts() {
+  const drafts = payload?.reminderDrafts;
+  if (drafts === undefined) return [];
+  const text = (value, limit) => typeof value === 'string' && value.length <= limit;
+  if (!Array.isArray(drafts) || drafts.length > 1000 || new Set(drafts.map(d => d?.storeId)).size !== drafts.length || drafts.some(d =>
+    !d || d.format !== 'store-reminder-draft-1' || !text(d.storeId, 100) || !d.storeId || !text(d.storeName, 2000) ||
+    !Array.isArray(d.parents) || !d.parents.length || d.parents.some(id => !text(id, 100) || !id) ||
+    !text(d.baseEvery, 2000) || !text(d.baseLegacy, 2000) || !Number.isFinite(Date.parse(d.savedAt)) ||
+    !d.fields || !text(d.fields.next, 2000) || !text(d.fields.every, 2000) || !text(d.fields.customText, 120) || !text(d.fields.customApplied, 120) ||
+    typeof d.fields.convert !== 'boolean' || typeof d.fields.customChecked !== 'boolean')) throw new Error('本機提醒草稿格式無法辨識；原資料保留，沒有自動清除。');
+  return drafts;
+}
+function reminderDraftFor(storeId) { return storedReminderDrafts().find(draft => draft.storeId === storeId); }
+function activeReminderDraftContext() { return reminderContext || editorContext?.reminderDraftContext || null; }
+function reminderDraftState(message, state = '', ctx = activeReminderDraftContext()) {
+  const node = $(ctx?.editor ? 'editor-reminder-draft-state' : 'store-reminder-draft-state');
+  node.textContent = message; node.dataset.state = state;
+}
+function reminderDraftProblem(ctx = reminderContext) {
+  const store = ctx && by('store', ctx.id);
+  if (!store || store.deleted || store.conflict) return '門市已不存在、已刪除或有衝突；草稿保留供查看，不會套用。';
+  if (JSON.stringify(store.heads.map(head => head.id).sort()) !== JSON.stringify(ctx.parents)) return '門市已有新版本；草稿保留供查看，不能覆蓋較新的提醒。請先核對新版，再手動重新填寫。';
+  return '';
+}
+function captureReminderDraft(ctx = activeReminderDraftContext()) {
+  if (!ctx) return null;
+  const targetId = ctx.editor ? 'f-next-remember' : 'store-reminder-next';
+  const group = document.querySelector(`[data-reminder-options-for="${targetId}"]`);
+  return { format: 'store-reminder-draft-1', storeId: ctx.id, storeName: ctx.storeName, parents: [...ctx.parents],
+    baseEvery: ctx.baseEvery, baseLegacy: ctx.baseLegacy, savedAt: new Date().toISOString(),
+    fields: { next: $(targetId).value, every: $(ctx.editor ? 'f-every-time-must' : 'store-reminder-every').value,
+      convert: !!$(ctx.editor ? 'editor-form' : 'store-reminder-form').querySelector('[data-reminder-convert]')?.checked,
+      customText: group.querySelector('[data-reminder-custom-input]').value,
+      customChecked: group.querySelector('[data-reminder-custom-toggle]').checked, customApplied: group.dataset.customApplied || '' } };
+}
+function renderReminderDrafts() {
+  const drafts = storedReminderDrafts();
+  $('reminder-draft-banner').hidden = !drafts.length;
+  $('reminder-draft-count').textContent = `未完成門市提醒 · ${drafts.length} 間`;
+  $('reminder-draft-list').innerHTML = drafts.map(d => `<p><button type="button" class="text-button" data-resume-reminder="${esc(d.storeId)}">繼續：${esc(d.storeName)}</button><small> · ${esc(dateText(d.savedAt))}</small></p>`).join('');
+}
+async function persistReminderDraftNow(ctx) {
+  if (!ctx || ctx !== activeReminderDraftContext() || !ctx.draftTouched || !payload) return;
+  const draft = captureReminderDraft(ctx), generation = ctx.draftGeneration;
+  const drafts = storedReminderDrafts(), nextDrafts = [...drafts.filter(item => item.storeId !== ctx.id), draft];
+  if (nextDrafts.length > 1000) throw new Error('未完成門市提醒已達上限；請先完成或明確捨棄既有草稿。');
+  reminderDraftState('正在加密保存提醒草稿…', 'saving');
+  try {
+    await persist({ ...payload, reminderDrafts: nextDrafts });
+    if (ctx === activeReminderDraftContext() && ctx.draftGeneration === generation) {
+      ctx.draftTouched = false;
+      reminderDraftState('提醒草稿已加密保存在這台裝置，尚未寫入正式紀錄。', 'saved');
+    }
+    renderReminderDrafts(); status();
+  } catch (error) {
+    if (ctx === activeReminderDraftContext()) reminderDraftState('草稿儲存失敗：' + error.message + ' 請保留此視窗，按儲存或再次關閉以重試。', 'error');
+    throw error;
+  }
+}
+function scheduleReminderDraftSave() {
+  const ctx = activeReminderDraftContext(); if (!ctx || busy || updateHolding) return;
+  ctx.draftTouched = true; ctx.draftGeneration++;
+  if (!ctx.editor) $('discard-reminder-draft').hidden = false;
+  reminderDraftState('正在加密保存提醒草稿…', 'saving');
+  clearTimeout(reminderDraftTimer);
+  reminderDraftTimer = setTimeout(() => {
+    reminderDraftTimer = null;
+    reminderDraftSaveChain = reminderDraftSaveChain.catch(() => {}).then(() => persistReminderDraftNow(ctx));
+    void reminderDraftSaveChain.catch(() => {});
+  }, 350);
+}
+function flushReminderDraft() {
+  clearTimeout(reminderDraftTimer); reminderDraftTimer = null;
+  const ctx = activeReminderDraftContext();
+  reminderDraftSaveChain = reminderDraftSaveChain.catch(() => {}).then(() => persistReminderDraftNow(ctx));
+  return reminderDraftSaveChain;
+}
+async function closeStoreReminderEditor() {
+  const ctx = editorContext; if (!ctx?.reminderDraftContext) return;
+  await flushReminderDraft();
+  if (editorContext !== ctx) return;
+  editorContext = null; $('editor').close(); renderReminderDrafts(); status();
+}
+async function closeStoreReminder() {
+  const ctx = reminderContext; if (!ctx) return;
+  await flushReminderDraft();
+  if (ctx !== reminderContext) return;
+  reminderContext = null; $('store-reminder-dialog').close(); renderReminderDrafts(); status();
+}
+async function discardReminderDraft() {
+  const ctx = reminderContext; if (!ctx) return;
+  if (!confirm('確認捨棄「' + ctx.storeName + '」的未完成提醒草稿？\n只移除這台裝置上的未送出輸入，不修改正式待辦、完成歷史、拜訪文字或拜訪日期。')) return;
+  clearTimeout(reminderDraftTimer); reminderDraftTimer = null;
+  // Drain an already running write before removing exactly this store's draft.
+  await reminderDraftSaveChain.catch(() => {});
+  if (ctx !== reminderContext || !payload) return;
+  await persist({ ...payload, reminderDrafts: storedReminderDrafts().filter(d => d.storeId !== ctx.id) });
+  reminderDraftSaveChain = Promise.resolve();
+  reminderContext = null; $('store-reminder-dialog').close(); renderReminderDrafts(); status();
+  toast('已捨棄這間門市的本機提醒草稿；正式資料保持原樣。');
+}
 function openStoreReminder(storeId) {
-  const store = by('store', storeId);
-  if (!store || store.deleted || store.conflict) return toast('這間門市目前有衝突或已移到回收桶，請先完成核對。');
+  if (reminderContext) return toast('請先儲存或按「稍後繼續」收起目前的門市提醒。');
+  if (editorContext || singleStoreContext) return toast('請先完成或收起目前的拜訪／完整編輯，再修改門市提醒。');
+  const store = by('store', storeId), saved = reminderDraftFor(storeId);
+  if ((!store || store.deleted || store.conflict) && !saved) return toast('這間門市目前有衝突或已移到回收桶，請先完成核對。');
   if (inlineTextContext && inlineTextContext.after !== inlineTextContext.before) return toast('請先完成或取消目前的拜訪文字修改。');
   inlineTextContext = null;
-  reminderContext = { id: store.id, parents: store.heads.map(head => head.id).sort(), briefStoreId: $('review').open && $('review').classList.contains('visit-brief-dialog') ? $('review').dataset.singleStoreId : '' };
-  $('store-reminder-title').textContent = store.name + ' · 門市提醒';
-  $('store-reminder-existing').innerHTML = reminderTasksHTML(store, false) + legacyReminderDraftHTML(store);
-  $('store-reminder-next').value = '';
-  $('store-reminder-every').value = store.everyTimeMust || '';
-  $('store-reminder-error').textContent = '';
+  reminderContext = { id: storeId, storeName: saved?.storeName || store.name, parents: saved ? [...saved.parents] : store.heads.map(head => head.id).sort(),
+    baseEvery: saved?.baseEvery ?? store.everyTimeMust ?? '', baseLegacy: saved?.baseLegacy ?? store.nextRemember ?? '', draftTouched: false, draftGeneration: 0,
+    briefStoreId: $('review').open && $('review').classList.contains('visit-brief-dialog') ? $('review').dataset.singleStoreId : '' };
+  const ctx = reminderContext;
+  $('store-reminder-title').textContent = ctx.storeName + ' · 門市提醒';
+  $('store-reminder-existing').innerHTML = (store ? reminderTasksHTML(store, false) : '') + legacyReminderDraftHTML({ nextRemember: ctx.baseLegacy });
+  $('store-reminder-next').value = saved?.fields.next || '';
+  $('store-reminder-every').value = saved?.fields.every ?? ctx.baseEvery;
   resetReminderOptionGroup('store-reminder-next');
+  if (saved) {
+    const group = document.querySelector('[data-reminder-options-for="store-reminder-next"]');
+    group.querySelector('[data-reminder-custom-input]').value = saved.fields.customText;
+    group.querySelector('[data-reminder-custom-toggle]').checked = saved.fields.customChecked;
+    group.dataset.customApplied = saved.fields.customApplied;
+    const convert = $('store-reminder-form').querySelector('[data-reminder-convert]'); if (convert) convert.checked = saved.fields.convert;
+  }
+  const problem = reminderDraftProblem();
+  $('store-reminder-error').textContent = problem;
+  $('store-reminder-save').disabled = !!problem;
+  $('store-reminder-form').querySelectorAll('input,textarea').forEach(input => { if (input.type === 'checkbox') input.disabled = !!problem; else input.readOnly = !!problem; });
+  $('discard-reminder-draft').hidden = !saved;
+  reminderDraftState(saved ? '已恢復這台裝置的加密提醒草稿；尚未寫入正式紀錄。' : '輸入會加密保存成本機草稿；正式儲存仍需確認。', saved ? 'saved' : '');
   openDialog($('store-reminder-dialog'));
 }
 async function saveStoreReminder(event) {
   event.preventDefault();
   await run(async () => {
-    const ctx = reminderContext, store = ctx && by('store', ctx.id);
-    if (!ctx || !store || store.deleted || store.conflict || JSON.stringify(store.heads.map(head => head.id).sort()) !== JSON.stringify(ctx.parents)) throw new Error('這間門市已有新版本，本次沒有寫入；請關閉後重新開啟。');
+    const ctx = reminderContext;
+    if (!ctx) return;
+    await flushReminderDraft();
+    const store = by('store', ctx.id), problem = reminderDraftProblem(ctx);
+    if (problem) throw new Error(problem);
     const before = store.heads[0].data, data = reminderFormData(before, 'store-reminder-next');
     data.everyTimeMust = $('store-reminder-every').value.trim();
     const changed = JSON.stringify(data) !== JSON.stringify({ ...before, everyTimeMust: before.everyTimeMust || '' });
     if (!confirmReminderChange(before, data)) return;
     const choice = await confirmStoreSave(store.id, store.name, changed); if (!choice) return;
-    if (reminderContext !== ctx) throw new Error('提醒畫面已變更，本次没有寫入。');
+    if (reminderContext !== ctx) throw new Error('提醒畫面已變更，本次沒有寫入。');
     assertSaveParents('store', store.id, ctx.parents);
-    if (changed || choice.attendance) await commitRevision('store', store.id, changed ? data : before, ctx.parents, false, {}, choice.attendance);
-    $('store-reminder-dialog').close(); reminderContext = null;
+    const bundle = structuredClone(payload.bundle);
+    if (changed || choice.attendance) { bundle.schema = 2; bundle.ops.push(revision('store', store.id, changed ? data : before, ctx.parents, payload.device, false, choice.attendance)); validateBundle(bundle); }
+    // Formal content and draft removal succeed (or fail) in one encrypted write.
+    await persist({ ...payload, bundle, dirty: payload.dirty || changed || !!choice.attendance, reminderDrafts: storedReminderDrafts().filter(d => d.storeId !== ctx.id) });
+    reminderContext = null; $('store-reminder-dialog').close(); render();
     if (ctx.briefStoreId) openVisitBrief(ctx.briefStoreId, { preservePosition: true });
     toast(changed ? '門市提醒已儲存並套用到這間門市的全部拜訪紀錄。' : choice.attendance ? '已記錄今天實際拜訪；門市提醒內容保持原樣。' : '門市提醒沒有變更，未新增任何版本。');
   }, 'store-reminder-error');
@@ -1893,6 +2026,7 @@ async function commitRevision(type, id, data, parents, deleted = false, blobs = 
 async function saveEditor(event) {
   event.preventDefault(); await run(async () => {
     const ctx = editorContext; if (!ctx) return;
+    if (ctx.reminderDraftContext) await flushReminderDraft();
     if (ctx.fillFields) {
       const additions = Object.fromEntries(ctx.fillFields.map(field => [field, $('fill-' + field).value]));
       fillProfile(payload.bundle, ctx.id, additions, payload.device, ctx.parents); // Validate the proposed additions before confirmation.
@@ -1966,7 +2100,13 @@ async function saveEditor(event) {
       await persist({ ...payload, bundle, dirty: true, draft: null }); render(); clearTimeout(draftTimer); draftTimer = null;
       $('editor').close(); editorContext = null; toast(quickStore ? '新門市與拜訪已完成並保存於手機；等待 Mac 確認收到。' : '拜訪已完成並保存於手機；等待 Mac 確認收到。'); return;
     }
-    await commitRevision(ctx.type, ctx.id, d, ctx.parents, false, blobs, choice.attendance); $('editor').close(); editorContext = null; toast('已加密儲存。Mac 可連線時會自動交換。');
+    if (ctx.type === 'store' && ctx.reminderDraftContext) {
+      const bundle = structuredClone(payload.bundle); bundle.schema = 2;
+      bundle.ops.push(revision('store', ctx.id, d, ctx.parents, payload.device, false, choice.attendance)); Object.assign(bundle.blobs, blobs); validateBundle(bundle);
+      await persist({ ...payload, bundle, dirty: true, reminderDrafts: storedReminderDrafts().filter(draft => draft.storeId !== ctx.id) });
+      editorContext = null; render();
+    } else await commitRevision(ctx.type, ctx.id, d, ctx.parents, false, blobs, choice.attendance);
+    editorContext = null; $('editor').close(); toast('已加密儲存。Mac 可連線時會自動交換。');
   }, 'editor-error');
 }
 function describeData(type, data) {
@@ -2095,25 +2235,35 @@ async function useVersion(id) {
 }
 async function confirmResolution() {
   const ctx = resolutionPreview; if (!ctx) throw new Error('請重新預覽處理結果。');
+  if (ctx.fromEditor && ctx.type === 'store') {
+    const editor = editorContext;
+    if (!editor || editor.id !== ctx.id || editor.reminderDraftContext !== ctx.reminderDraftContext) throw new Error('編輯畫面已變更，請重新預覽處理結果。');
+    await flushReminderDraft();
+    if (editorContext !== editor || editor.reminderDraftContext !== ctx.reminderDraftContext || resolutionPreview !== ctx) throw new Error('編輯畫面已變更，請重新預覽處理結果。');
+  }
   checkedReview(ctx);
   if (!ctx.fromEditor && payload.draft?.id === ctx.id) throw new Error('這筆拜訪有未完成草稿，請先處理草稿。');
   const bundle = structuredClone(payload.bundle); bundle.schema = 2;
   bundle.ops.push(revision(ctx.type, ctx.id, ctx.data, ctx.parents, payload.device, ctx.deleted));
   Object.assign(bundle.blobs, ctx.blobs); validateBundle(bundle);
-  await persist({ ...payload, bundle, dirty: true, ...(ctx.fromEditor && ctx.type === 'visit' ? { draft: null } : {}) });
-  if (ctx.fromEditor) { clearTimeout(draftTimer); draftTimer = null; $('editor').close(); editorContext = null; }
+  await persist({ ...payload, bundle, dirty: true, ...(ctx.fromEditor && ctx.type === 'visit' ? { draft: null } : {}), ...(ctx.fromEditor && ctx.type === 'store' ? { reminderDrafts: storedReminderDrafts().filter(draft => draft.storeId !== ctx.id) } : {}) });
+  if (ctx.fromEditor) { clearTimeout(draftTimer); draftTimer = null; editorContext = null; $('editor').close(); }
   resolutionPreview = null; versionReview = null; $('review').close(); render(); toast('已建立處理結果版本，原版本保留在歷史中；等待同步。');
 }
 function editMerge(id) {
   const r = checkedReview(versionReview), o = r.heads.find(o => o.id === id);
   if (!o || o.deleted) throw new Error('請重新選擇可編輯的版本。');
   if (payload.draft) throw new Error('有未完成草稿，請先處理，避免覆蓋。');
-  const temporary = { ...r, ...o.data, conflict: false, heads: [o] }, i = records.indexOf(r); records[i] = temporary;
+  if (r.type === 'store' && reminderDraftFor(r.id)) throw new Error('這間門市有未完成提醒草稿；請先從拜訪頁開啟、核對並保留所需文字，再明確捨棄草稿後處理衝突。');
+  const temporary = { ...r, ...o.data, conflict: false, heads: [o] }, i = records.findIndex(record => record.type === r.type && record.id === r.id);
+  if (i < 0) throw new Error('目前畫面已沒有這筆紀錄，請重新開啟核對。');
+  const original = records[i]; records[i] = temporary;
   try {
     $('review').close(); openEditor(o.type, o.entity); editorContext.parents = reviewHeads(r);
+    if (editorContext.reminderDraftContext) editorContext.reminderDraftContext.parents = [...editorContext.parents].sort();
     $('editor-fields').insertAdjacentHTML('afterbegin', `<details class="conflict-editor-reference"><summary>展開原衝突版本，邊看邊整合</summary><p>以選定版本為起點；其他版本不會自動拼接。請核對附件、人物與來源等差異。</p>${r.heads.map((head, index) => `<section><h3>${esc(reviewVersionLabel(head, index))}</h3><pre>${esc(reviewValue(head.data))}</pre></section>`).join('')}</details>`);
   }
-  finally { records[i] = r; }
+  finally { records[i] = original; }
 }
 async function removeEntity(type, id) {
   const r = by(type, id); if (r.conflict) return openReview(type, id, true);
@@ -2123,7 +2273,7 @@ async function removeEntity(type, id) {
 function download(bytes, filename, type) { const url = URL.createObjectURL(new Blob([bytes], { type })); objectURLs.push(url); const a = document.createElement('a'); a.href = url; a.download = filename; document.body.append(a); a.click(); a.remove(); setTimeout(() => { URL.revokeObjectURL(url); objectURLs = objectURLs.filter(u => u !== url); }, 60000); }
 async function exportBackup() { const envelope = await seal(payload.bundle, key, meta); download(JSON.stringify({ format: 'pharmacy-backup-1', envelope }), `pharmacy-${new Date().toISOString().slice(0, 10)}.pharmabackup`, 'application/octet-stream'); await persist({ ...payload, lastBackupExport: new Date().toISOString() }); renderHealthAudit(); toast('已產生加密備份，請儲存到本機或外接碟。'); }
 function assertBackupIdle() {
-  if (editorContext || singleStoreContext || inlineTextContext || reminderContext || payload?.draft || payload?.inlineTextDraft || csvImport.hasPending() || $('review').open || $('quick-text-dialog').open || $('store-reminder-dialog').open || $('rebuild-dialog').open) throw new Error('請先完成或取消目前的編輯、草稿或核對，再檢查備份；原輸入保持不變。');
+  if (editorContext || singleStoreContext || inlineTextContext || reminderContext || payload?.draft || payload?.inlineTextDraft || storedReminderDrafts().length || csvImport.hasPending() || $('review').open || $('quick-text-dialog').open || $('store-reminder-dialog').open || $('rebuild-dialog').open) throw new Error('請先完成或取消目前的編輯、草稿或核對，再檢查備份；原輸入保持不變。');
   if (pendingLock || document.hidden) throw new Error('App 已離開前景，請返回後重新選取備份。');
 }
 function clearBackupPreview() {
@@ -2253,7 +2403,7 @@ async function applyBackupPreview() {
 async function adoptRebuilt(event) {
   event.preventDefault();
   await run(async () => {
-    if (editorContext || csvImport.hasPending()) throw new Error('請先儲存編輯或取消匯入預覽，再切換資料庫。');
+    if (editorContext || singleStoreContext || reminderContext || inlineTextContext || payload?.draft || payload?.inlineTextDraft || storedReminderDrafts().length || csvImport.hasPending()) throw new Error('請先完成或明確捨棄所有未完成草稿，並取消匯入預覽，再切換資料庫。');
     const code = $('rebuild-code').value.trim(), password = $('rebuild-connect-password').value;
     if (!code || !password || !$('rebuild-understood').checked) throw new Error('請填寫配對碼、密碼並確認隔離本機舊資料。');
     const paired = await api('/api/pair', { method: 'POST', token: null, body: { code, label: payload.deviceName } });
@@ -2302,18 +2452,22 @@ document.addEventListener('click', event => {
   if (!b) return;
   if (b.dataset.close) {
     if (['rebuild-dialog', 'quick-text-dialog', 'store-reminder-dialog', 'review', 'backup-review'].includes(b.dataset.close) && busy) return;
+    if (b.dataset.close === 'store-reminder-dialog') return run(closeStoreReminder, 'store-reminder-error');
     if (b.dataset.close === 'review' && singleStoreContext) return run(closeSingleStoreReview, 'single-store-error');
+    if (b.dataset.close === 'editor' && editorContext?.reminderDraftContext) return run(closeStoreReminderEditor, 'editor-error');
     if (b.dataset.close === 'editor' && editorContext?.type === 'visit') return run(async () => {
       await flushVisitDraft(); $('editor').close(); editorContext = null; render();
     }, 'editor-error');
     $(b.dataset.close).close(); if (b.dataset.close === 'rebuild-dialog') $('rebuild-connect-form').reset(); if (b.dataset.close === 'editor') editorContext = null; if (b.dataset.close === 'store-reminder-dialog') reminderContext = null; return;
   }
   if (updateHolding || busy || !payload) return;
+  if (b.dataset.resumeReminder !== undefined) return openStoreReminder(b.dataset.resumeReminder);
+  if (b.id === 'discard-reminder-draft') return run(discardReminderDraft, 'store-reminder-error');
   if (b.dataset.startSingleStoreCapture !== undefined) return activateSingleStoreCapture();
   if (b.dataset.resumeSingleDraft !== undefined) return resumeSingleDraftFromReview();
   if (b.dataset.collapseSingleStoreCapture !== undefined) return run(collapseSingleStoreCapture, 'single-store-error');
   if (b.dataset.discardSingleStoreDraft !== undefined) return run(discardVisitDraft, 'single-store-error');
-  if (b.id === 'connect-rebuilt') { if (editorContext || csvImport.hasPending()) return toast('請先儲存編輯或取消匯入預覽。'); $('rebuild-connect-form').reset(); $('rebuild-connect-error').textContent = ''; openDialog($('rebuild-dialog')); return; }
+  if (b.id === 'connect-rebuilt') { if (editorContext || singleStoreContext || reminderContext || inlineTextContext || payload?.draft || payload?.inlineTextDraft || storedReminderDrafts().length || csvImport.hasPending()) return toast('請先完成或明確捨棄所有未完成草稿，並取消匯入預覽。'); $('rebuild-connect-form').reset(); $('rebuild-connect-error').textContent = ''; openDialog($('rebuild-dialog')); return; }
   if (b.id === 'view-archives') return run(openArchives);
   if (b.dataset.exportArchive) return run(() => exportArchive(b.dataset.exportArchive));
   if (b.dataset.view) return switchView(b.dataset.view);
@@ -2400,11 +2554,11 @@ document.addEventListener('change', event => {
 });
 document.addEventListener('visibilitychange', () => {
   dismissKeyboard();
-  if (document.hidden) { finishAttendancePrompt(); clearNearbyPosition(); if (editorContext?.type === 'visit' || singleStoreContext) void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); document.body.classList.add('privacy-veil'); if (payload || busy || backupPreview) lockNow(false); }
+  if (document.hidden) { finishAttendancePrompt(); clearNearbyPosition(); if (editorContext?.type === 'visit' || singleStoreContext) void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); if (activeReminderDraftContext()) void flushReminderDraft().catch(() => {}); document.body.classList.add('privacy-veil'); if (payload || busy || backupPreview) lockNow(false); }
   else if (pendingLock || !payload) { pendingLock = false; document.body.classList.remove('privacy-veil'); showGate(); }
   else { document.body.classList.remove('privacy-veil'); requestNearbyPosition(); }
 });
-window.addEventListener('pagehide', () => { finishAttendancePrompt(); dismissKeyboard(); clearNearbyPosition(); if (editorContext?.type === 'visit' || singleStoreContext) void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); if (payload || busy || backupPreview) lockNow(false); });
+window.addEventListener('pagehide', () => { finishAttendancePrompt(); dismissKeyboard(); clearNearbyPosition(); if (editorContext?.type === 'visit' || singleStoreContext) void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); if (activeReminderDraftContext()) void flushReminderDraft().catch(() => {}); if (payload || busy || backupPreview) lockNow(false); });
 window.addEventListener('pageshow', () => { dismissKeyboard(); if (!payload && !document.hidden) { document.body.classList.remove('privacy-veil'); showGate(); } });
 $('visit-attendance-form').addEventListener('submit', event => {
   event.preventDefault(); if (!attendancePrompt) return;
@@ -2443,12 +2597,25 @@ $('brief-search-clear').addEventListener('click', () => {
   forgetBriefSearchQuery(); focusReadingSurface($('review'));
 });
 document.querySelectorAll('dialog').forEach(dialog => dialog.addEventListener('close', () => queueMicrotask(releaseDialogBackground)));
-$('editor').addEventListener('close', () => editorContext = null);
+$('editor').addEventListener('close', () => {
+  if ($('editor').open) return;
+  if (editorContext?.reminderDraftContext) { openDialog($('editor')); if (!busy) void run(closeStoreReminderEditor, 'editor-error'); }
+  else editorContext = null;
+});
+$('editor').addEventListener('cancel', event => { if (editorContext?.reminderDraftContext) { event.preventDefault(); if (!busy) void run(closeStoreReminderEditor, 'editor-error'); } });
 $('review').addEventListener('close', () => { if (!$('review').open) { setReviewMode(''); if ($('repair-pair-code')) $('repair-pair-code').value = ''; } });
 $('quick-text-dialog').addEventListener('close', () => { quickTextContext = null; $('quick-text-error').textContent = ''; });
 $('quick-text-dialog').addEventListener('cancel', event => { if (busy) event.preventDefault(); });
-$('store-reminder-dialog').addEventListener('close', () => { reminderContext = null; $('store-reminder-error').textContent = ''; });
-$('store-reminder-dialog').addEventListener('cancel', event => { if (busy) event.preventDefault(); });
+$('store-reminder-dialog').addEventListener('cancel', event => { event.preventDefault(); if (!busy) void run(closeStoreReminder, 'store-reminder-error'); });
+$('store-reminder-dialog').addEventListener('close', () => {
+  if ($('store-reminder-dialog').open) return;
+  if (reminderContext) { openDialog($('store-reminder-dialog')); if (!busy) void run(closeStoreReminder, 'store-reminder-error'); }
+  else $('store-reminder-error').textContent = '';
+});
+for (const event of ['input', 'change']) $('store-reminder-form').addEventListener(event, scheduleReminderDraftSave);
+for (const type of ['input', 'change']) $('editor-fields').addEventListener(type, event => {
+  if (editorContext?.reminderDraftContext && (['f-next-remember', 'f-every-time-must'].includes(event.target.id) || event.target.closest?.('[data-reminder-options-for], [data-reminder-convert]'))) scheduleReminderDraftSave();
+});
 $('editor-fields').addEventListener('input', event => {
   if (event.target.id === 'f-store-search') { refreshVisitStoreOptions(event.target.value); return; }
   if (editorContext?.type === 'visit' && event.target.id !== 'f-files') scheduleVisitDraftSave();
