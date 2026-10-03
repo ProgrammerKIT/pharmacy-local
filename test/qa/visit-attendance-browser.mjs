@@ -206,7 +206,7 @@ async function confirm(t, checked, before) {
 async function summary(page) {
   await openStore(page);
   const text = await page.locator('#review .store-attendance').innerText();
-  assert.match(text, /最近實際拜訪/); assert.match(text, /今天|0\s*天/);
+  assert.match(text, /最近拜訪：/); assert.match(text, /今天|0\s*天/);
   const history = page.locator('#review .attendance-history'); await history.locator(':scope > summary').click();
   return { text, dates: await history.locator('[data-attendance-date]').evaluateAll(items => items.map(el => el.dataset.attendanceDate)) };
 }
