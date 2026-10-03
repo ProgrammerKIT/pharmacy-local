@@ -250,7 +250,7 @@ test('mobile-first runtime files are valid JavaScript and expose the daily captu
   assert.match(app, /function lockDialogBackground\(/);
   assert.match(app, /function releaseDialogBackground\(/);
   assert.match(app, /function resetDialogScroll\(/);
-  assert.match(app, /document\.querySelectorAll\('dialog'\).*queueMicrotask\(releaseDialogBackground\)/);
+  assert.match(app, /document\.querySelectorAll\('dialog'\).*queueMicrotask\(\(\) => \{ releaseDialogBackground\(\); syncScheduler\.wake\(\);/);
   assert.match(style, /body\.dialog-scroll-locked\{position:fixed/);
   assert.match(style, /#review-body\{[^}]*overflow-y:auto[^}]*overscroll-behavior-y:contain/);
   assert.match(style, /#review\.visit-brief-dialog\{[^}]*height:100dvh/);
@@ -322,7 +322,9 @@ test('reused dialogs reset their own scroll and restore the unchanged page posit
   const body = { classList: classes(), style: { top: '3px' } };
   const document = { body, documentElement: { classList: classes() }, scrollingElement: { scrollTop: 438 }, querySelector: () => review.open ? review : null, querySelectorAll: () => review.open ? [review] : [] };
   const window = { scrollY: 438, scrollTo: (x, y) => { restored = [x, y]; } };
-  const context = vm.createContext({ document, window, requestAnimationFrame: fn => fn(), $: id => nodes.get(id) });
+  const context = vm.createContext({ syncInProgress: false, autoFetching: false, syncEpoch: 0, localSaveState: 'saved', renderDataSafetyEntry() {},
+    syncScheduler: { request() {}, wake() {}, pause() {}, reset() {}, confirmed() {}, failed() {} },
+     document, window, requestAnimationFrame: fn => fn(), $: id => nodes.get(id) });
   vm.runInContext(app.slice(app.indexOf('let dialogScrollLock = null;'), app.indexOf('function buttons(')), context);
   context.openDialog(review, { reviewMode: 'visit-brief' });
   assert.equal(review.scrollTop, 0); assert.equal(reviewBody.scrollTop, 0);
@@ -336,7 +338,9 @@ test('a queued close from the previous review cannot clear an immediately reopen
   let closedHandler, cleared = 0, replaced = 0;
   const review = { open: false, dataset: { singleStoreId: 'previous-store' }, classList: { toggle() {} }, addEventListener(event, handler) { assert.equal(event, 'close'); closedHandler = handler; } };
   const actions = { hidden: false, replaceChildren() { replaced++; } };
-  const context = vm.createContext({ $: id => id === 'review' ? review : id === 'review-persistent-actions' ? actions : null, singleStoreContext: null, clearBriefSearch() { cleared++; } });
+  const context = vm.createContext({ syncInProgress: false, autoFetching: false, syncEpoch: 0, localSaveState: 'saved', renderDataSafetyEntry() {},
+    syncScheduler: { request() {}, wake() {}, pause() {}, reset() {}, confirmed() {}, failed() {} },
+     $: id => id === 'review' ? review : id === 'review-persistent-actions' ? actions : null, singleStoreContext: null, clearBriefSearch() { cleared++; } });
   const listener = app.split('\n').find(line => line.startsWith("$('review').addEventListener('close',") && line.includes('setReviewMode'));
   assert.ok(listener, 'Exercise the actual registered review lifecycle listener');
   vm.runInContext(app.slice(app.indexOf('function setReviewMode('), app.indexOf('function openDialog(')) + listener, context);
@@ -408,7 +412,9 @@ test('single-store quick capture creates exactly one formal visit only on submit
   ]);
   const stores = project(bundle).filter(record=>record.type==='store');
   let persisted = null, reopened = '', message = '';
-  const context = vm.createContext({
+  const context = vm.createContext({ syncInProgress: false, autoFetching: false, syncEpoch: 0, localSaveState: 'saved', renderDataSafetyEntry() {},
+    syncScheduler: { request() {}, wake() {}, pause() {}, reset() {}, confirmed() {}, failed() {} },
+
     singleStoreContext:{storeId:'store-one',id:'visit-one',parents:[],draftTouched:true}, payload:{bundle,device:'phone',draft:{format:'visit-draft-1'}}, draftTimer:null,
     $:id=>nodes.get(id), document:{querySelectorAll:selector=>selector.includes('single-topic')?[{value:'topic-one'}]:selector.includes('single-person')?[{value:'person-one'}]:[]},
     by:(type,id)=>type==='store'?stores.find(store=>store.id===id):null, storeIdentityPending, flushVisitDraft:async()=>{},
@@ -452,7 +458,9 @@ test('quick text confirmation highlights only changed portions without changing 
 test('single-store history renders each formal visit as the same safe inline editor', () => {
   const visit = { id: 'visit-brief', text: '既有正式原文', conflict: false };
   const original = structuredClone(visit);
-  const context = vm.createContext({
+  const context = vm.createContext({ syncInProgress: false, autoFetching: false, syncEpoch: 0, localSaveState: 'saved', renderDataSafetyEntry() {},
+    syncScheduler: { request() {}, wake() {}, pause() {}, reset() {}, confirmed() {}, failed() {} },
+
     payload: { draft: null, inlineTextDraft: null }, inlineTextContext: null,
     inlineTextBlockReason: () => '', pendingInlineTextId: () => '',
     esc: value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;'),
@@ -503,7 +511,9 @@ test('blocked inline editing cannot create unsavable visible text and can return
     closest(selector) { return selector === '[data-inline-edit-text]' ? this : null; },
     blur() { blurred = true; }, scrollIntoView() { scrolled = true; }, focus() { focused = true; }
   };
-  const context = vm.createContext({
+  const context = vm.createContext({ syncInProgress: false, autoFetching: false, syncEpoch: 0, localSaveState: 'saved', renderDataSafetyEntry() {},
+    syncScheduler: { request() {}, wake() {}, pause() {}, reset() {}, confirmed() {}, failed() {} },
+
     inlineTextContext: null, inlineDraftTimer: null, inlineDraftSaveChain: Promise.resolve(), activeView: 'visits', singleStoreContext: null,
     payload: { draft: { format: 'visit-draft-1' }, inlineTextDraft: null },
     by: (type, id) => type === 'visit' ? visits.get(id) : null,
@@ -588,7 +598,9 @@ test('successful single-store inline save clears edit state and refreshes the sa
   const original = revision('visit', 'visit-1', { store: 'store-1', date: '2026-09-30', source: '現場觀察', text: '修改前原文', next: '', topics: [], people: [], attachments: [] }, [], 'phone');
   bundle.ops.push(original);
   let closed = false, rendered = false, message = '', refreshed = null;
-  const context = vm.createContext({
+  const context = vm.createContext({ syncInProgress: false, autoFetching: false, syncEpoch: 0, localSaveState: 'saved', renderDataSafetyEntry() {},
+    syncScheduler: { request() {}, wake() {}, pause() {}, reset() {}, confirmed() {}, failed() {} },
+
     payload: { schema: 1, device: 'phone', bundle, dirty: false, inlineTextDraft: { format: 'inline-text-draft-1', id: 'visit-1', before: '修改前原文', after: '修改後原文', parents: [original.id] } },
     quickTextContext: { id: 'visit-1', before: '修改前原文', after: '修改後原文', parents: [original.id], step: 'confirm', briefStoreId: 'store-1' },
     inlineTextContext: { id: 'visit-1', before: '修改前原文', after: '修改後原文', parents: [original.id], briefStoreId: 'store-1' },
@@ -620,7 +632,7 @@ test('successful single-store inline save clears edit state and refreshes the sa
 
 test('SOP1 explicitly separates App daily notes from Google CSV imports and keeps retention undecided', () => {
   assert.equal(SOP1_VERSION, '1.2.16');
-  assert.match(sop, /流程版本：1\.2\.38/);
+  assert.match(sop, /流程版本：1\.2\.39/);
   assert.match(sop, /393 × 852 CSS 像素/);
   assert.match(sop, /固定手機畫布不等於鍵盤開啟時的可見高度/);
   assert.match(sop, /長原文末行游標也須可見/);

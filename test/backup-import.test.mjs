@@ -37,7 +37,9 @@ async function harness({restore = false} = {}) {
   };
   const payload = restore ? null : {schema:1,device:'synthetic-device',deviceName:'Synthetic',token:'synthetic-token',bundle:structuredClone(fixture.bundle),dirty:false,serverVersion:4,lastSync:'2026-10-01T03:00:00.000Z'};
   const state = {disk:restore ? null : {revision:7},writes:[],reads:0,decrypts:0,opens:0,renders:0,notices:[],failWrite:false,pendingCSV:false,readHook:null,sealHook:null,writeHook:null};
-  const c = vm.createContext({$,structuredClone,JSON,Set,Date,uuid,derive,checkEnvelope,validateBundle,planBackupImport,project,
+  const c = vm.createContext({ syncInProgress: false, autoFetching: false, syncEpoch: 0, localSaveState: 'saved', renderDataSafetyEntry() {},
+    syncScheduler: { request() {}, wake() {}, pause() {}, reset() {}, confirmed() {}, failed() {} },
+    $,structuredClone,JSON,Set,Date,uuid,derive,checkEnvelope,validateBundle,planBackupImport,project,
     key:restore ? null : fixture.key,meta:restore ? null : meta,payload,localRevision:restore ? 0 : 7,slot:restore ? null : state.disk,
     backupPreview:null,editorContext:null,singleStoreContext:null,inlineTextContext:null,reminderContext:null,pendingLock:false,busy:false,updateHolding:false,
     document:{hidden:false,querySelectorAll:()=>[...nodes.values()]},csvImport:{hasPending:()=>state.pendingCSV},

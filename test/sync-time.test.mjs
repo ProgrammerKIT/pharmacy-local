@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import { newMeta, derive, seal, unseal, emptyBundle, revision, merge, validateBundle, project } from '../public/core.js';
+import { newMeta, derive, seal, unseal, emptyBundle, revision, merge, validateBundle, project, dataSafetySummary } from '../public/core.js';
 
 // Run the actual application functions, with a local in-memory transport and real encryption.
 const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
@@ -12,7 +12,7 @@ const functions = app.slice(app.indexOf('function storedReminderDrafts('), app.i
   app.slice(app.indexOf('function programDetail()'), app.indexOf('async function api(')) +
   app.slice(app.indexOf('function withPendingSync('), app.indexOf('function draftState(')) +
   app.slice(app.indexOf('async function checkConnection()'), app.indexOf('async function persist(')) +
-  app.slice(app.indexOf('async function autoSync()'), app.indexOf('function lockNow(')) +
+  app.slice(app.indexOf('function canAutoSync('), app.indexOf('function lockNow(')) +
   app.slice(app.indexOf('async function recordUnchangedSync()'), app.indexOf('function switchView('));
 const OLD = '2026-09-12T03:55:35.000Z', NOW = '2026-09-13T15:10:20.000Z';
 async function fixture() {
@@ -25,6 +25,10 @@ async function client(f, device = 'phone') {
   const elements = new Map(), calls = [], local = { envelope: null };
   const $ = id => { if (!elements.has(id)) elements.set(id, { textContent: '', hidden: false, open: false, dataset: {} }); return elements.get(id); };
   const c = vm.createContext({
+    localSaveState: 'saved', syncInProgress: false, syncEpoch: 0, pendingLock: false, gateOpening: false,
+    singleStoreContext: null, attendancePrompt: null, navigator: { onLine: true }, dataSafetySummary,
+    currentHealthAudit: () => ({ checks: [] }),
+
     ...f, payload: { schema: 1, device, deviceName: device, token: `fictional-${device}`, bundle: structuredClone(f.bundle), dirty: false, serverVersion: 1, lastSync: OLD },
     records: [], lastError: '', lastSyncFailure: null, syncWarning: '', macProgram: null, APP_VERSION, diagnoseConnection, clock: NOW, failure: null, updateHolding: false, autoFetching: false, busy: false, backupPreview: null, editorContext: null,
     document: { hidden: false }, csvImport: { hasPending: () => false }, location: { hostname: 'fictional.local' },
