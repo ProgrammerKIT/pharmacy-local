@@ -1,3 +1,17 @@
+v1.5.54 門市概要只顯示實際拜訪日期｜2026-10-03
+
+完整 npm test：373 項通過，0 失敗／取消／略過。node --check public/app.js 與 git diff --check 通過。public 中「最近筆記日期」顯示已無命中；程式差異只移除單店頁、候選詳情、跨店覆盤及區域證據個別門市卡上的四處摘要日期片段，保留最近實際拜訪、距今天數、確認歷史及逐筆原文／證據日期，共用程式不依門市 ID 或建立時間分支，因此既有與未來門市一律適用。
+
+本輪首次測試 372/373 通過，既有同步測試因以固定 1000 次 setImmediate 等待真 WebCrypto，在負載下先用完迴圈而誤判逾時；改以 5 秒實際時間上限及 1ms 讓出執行緒等待，保持成功條件與資料斷言不變，完整重跑 373/373 通過。只調整測試等待，不修改正式 App 的保存、同步或加密邏輯。
+
+使用虛構資料及隔離暫存 HTTPS 服務，未操作正式門市、拜訪、CSV、Source Snapshot 或備份，未呼叫外部 AI。這次沒有新增瀏覽器或 iPhone 真機驗收，不把自動測試當成實機結果。App1.5.54／SOP1 1.2.40；schema2、protocol1、CSV引擎1.2.16及21條runtime路徑不變。
+public/app.js SHA256=d2bf8bf70f5405283df7befcd152fa9760f7247f07dbc9e3a0904bc187738cc8
+public/index.html SHA256=e290d59657297b6646da691d2bfecbec84106c6c491f67e35cb321e0c03cccbe
+public/sw.js SHA256=94deb5fd102b71cfce42cf018ebb72ac80a83ff932ec188e10ae73bdef141951
+public/version.js SHA256=cc69b7efd3bc71d0c4928df8f8abfd2d4fe8fcad1930af54e4caa461bc47eaf2
+
+以下保留歷史測試結果。
+
 v1.5.53 同步時機與資料安全入口｜2026-10-03
 
 完整 Node 測試：373 項通過，0 失敗／取消／略過。命令 npm test；包含隔離暫存 HTTPS 服務的配對、雙向加密同步、CAS、備份、還原與程式更新回歸。首次 sandbox 執行的 3 個 localhost listen EPERM 已在允許 localhost 的隔離環境全套重跑通過，沒有遺留斷言失敗。node --check public/app.js、HTML 標籤平衡／ID 唯一性及 git diff --check 通過。
