@@ -269,7 +269,7 @@ test('mobile-first runtime files are valid JavaScript and expose the daily captu
   assert.match(app, /function briefTraceHTML\(/);
   assert.match(app, /展開完整拜訪原文/);
   assert.match(visitBriefSource, /相同內容/);
-  assert.match(visitBriefSource, /點選每個候選可核對命中的原句、日期、來源與原文狀態/);
+  assert.match(visitBriefSource, /點選每個候選可核對命中的原句、來源與原文狀態/);
   assert.match(visitBriefSource, /完整歷史永遠保留每一筆/);
   assert.match(visitBriefSource, /這裡不去重，每筆原文、下次跟進與歷史都保留/);
   assert.doesNotMatch(visitBriefSource, /persist\(|commitRevision\(|\brevision\(/);
@@ -632,7 +632,7 @@ test('successful single-store inline save clears edit state and refreshes the sa
 
 test('SOP1 explicitly separates App daily notes from Google CSV imports and keeps retention undecided', () => {
   assert.equal(SOP1_VERSION, '1.2.16');
-  assert.match(sop, /流程版本：1\.2\.40/);
+  assert.match(sop, /流程版本：1\.2\.41/);
   assert.match(sop, /393 × 852 CSS 像素/);
   assert.match(sop, /固定手機畫布不等於鍵盤開啟時的可見高度/);
   assert.match(sop, /長原文末行游標也須可見/);
@@ -653,7 +653,7 @@ test('SOP1 explicitly separates App daily notes from Google CSV imports and keep
   assert.match(sop, /不得刪除或修改任何既有門市、正式拜訪、revision/);
   assert.match(sop, /拜訪前的記憶提示/);
   assert.match(sop, /候選不能冒充已確認需求/);
-  assert.match(sop, /時間比較只使用明確的拜訪日期欄位/);
+  assert.match(sop, /時間比較只使用明確的筆記日期欄位/);
   assert.match(sop, /可直接定位游標的行內編輯區/);
   assert.match(sop, /單純點擊或移動游標不寫入資料/);
   assert.match(sop, /同一時間只允許一筆行內文字草稿/);

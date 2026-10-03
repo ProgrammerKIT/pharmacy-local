@@ -1,3 +1,22 @@
+v1.5.55 筆記閱讀卡片隱藏筆記日期｜2026-10-03
+
+完整 npm test：373 項通過，0 失敗／取消／略過；node --check public/app.js 及 git diff --check 通過。使用虛構資料與隔離 localhost HTTPS，未讀寫正式 App 資料庫、門市、拜訪、CSV、Source Snapshot 或備份。
+
+補齊 v1.5.54 遺漏的逐筆卡片顯示：共用 noteHTML（清單、搜尋單筆／多筆展開、遞迴來源與探索）、單店既有／最近原文及跟進、原文 trace、搜尋命中預覽、候選／區域證據、最近日期統計及快速編輯識別列不顯示筆記日期。無來源標籤時不留空白日期列；區域統計移除日期後桌面改為三欄，手機維持兩欄換行。未改動實際拜訪 renderer、日期計算、資料模型、儲存、草稿、同步、備份或還原邏輯。
+
+另以 Node VM 執行 main 與本版實際 noteHTML 函式，在有／無日期、有／無來源四種虛構組合及 evidenceMembers 遞迴來源卡中，確認舊版日期顯示存在、本版移除，原文中自行填寫的日期、輸入物件、完整編輯與歷史入口保留。這是渲染函式驗證，不是瀏覽器或真 iPhone 驗收。獨立唯讀程式審查未發現模板、共用入口或資料層變更問題。
+
+原始日期欄位仍可在完整編輯、版本歷史、差異及備份核對查閱；分析時間比較及有日期筆數仍依原有筆記日期運算，新增清楚的依據文案，不能當成實際拜訪確認。只有顯示通則，無資料轉換，適用既有與未來門市。
+
+本次未執行瀏覽器或真 iPhone／Safari／PWA／Typeless 視覺操作，不以 Node 渲染或程式測試冒充真機通過；待驗項目見 DEVICE-ACCEPTANCE.md。App1.5.55／SOP1 1.2.41；schema2、protocol1、CSV引擎1.2.16與21條runtime路徑不變，沒有外部 AI 或分析服務。
+public/app.js SHA256=a148b97ee8d0c41b2aa52f169087c568e2f56a16d8eecda024f387881dc25046
+public/style.css SHA256=19ed7a304b0c603b56451a9025af9951e551f7a1f726b40c42d2f9d82341ac22
+public/index.html SHA256=df01c55b23ee1eceef8ff22d71cabb8df8fddb941ec6947056bded6693bd14ab
+public/sw.js SHA256=fce4e9e9882f0dc458bd29104863100dc75dcb4aef7b074e5122c92fafbdfd86
+public/version.js SHA256=4259bc9cfb5386b2e6d38d205270be167896c8226b8174e573055cbe6559ab19
+
+以下保留歷史測試結果。
+
 v1.5.54 門市概要只顯示實際拜訪日期｜2026-10-03
 
 完整 npm test：373 項通過，0 失敗／取消／略過。node --check public/app.js 與 git diff --check 通過。public 中「最近筆記日期」顯示已無命中；程式差異只移除單店頁、候選詳情、跨店覆盤及區域證據個別門市卡上的四處摘要日期片段，保留最近實際拜訪、距今天數、確認歷史及逐筆原文／證據日期，共用程式不依門市 ID 或建立時間分支，因此既有與未來門市一律適用。
