@@ -161,10 +161,13 @@ const appSyncFunctions = section('async function persist(', 'function pendingSyn
   section('function createSyncScheduler(', 'function lockNow(') +
   section('async function recordUnchangedSync(', 'function renderDataSafetyEntry(') +
   section('async function run(', 'function programDetail(');
-const tick = () => new Promise(resolve => setImmediate(resolve));
 async function waitUntil(predicate, message = 'asynchronous synthetic operation settled') {
-  for (let n = 0; n < 1000; n++) { if (predicate()) return; await tick(); }
-  assert.fail(message);
+  // Real WebCrypto completion depends on worker scheduling, not an event-loop turn count.
+  const deadline = Date.now() + 5000;
+  while (!predicate()) {
+    if (Date.now() >= deadline) assert.fail(message);
+    await new Promise(resolve => setTimeout(resolve, 1));
+  }
 }
 function latch() {
   let resolve, entered;
