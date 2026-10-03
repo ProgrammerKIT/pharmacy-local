@@ -1,3 +1,23 @@
+v1.5.53 同步時機與資料安全入口｜2026-10-03
+
+完整 Node 測試：373 項通過，0 失敗／取消／略過。命令 npm test；包含隔離暫存 HTTPS 服務的配對、雙向加密同步、CAS、備份、還原與程式更新回歸。首次 sandbox 執行的 3 個 localhost listen EPERM 已在允許 localhost 的隔離環境全套重跑通過，沒有遺留斷言失敗。node --check public/app.js、HTML 標籤平衡／ID 唯一性及 git diff --check 通過。
+
+新增 43 項測試：test/sync-scheduler.test.mjs 30 項；test/sync-health.test.mjs 13 項。實際排程函式搭配假時鐘驗證 500ms 合併、poll、15/30/60/120/300 秒退避、單一交換、暫停／喚醒、reset 舊工作階段隔離及 flight 收尾前的喚醒不遺失。實際 persist／autoSync／synchronize 搭配真 AES-GCM 與記憶體 Mac 傳輸，驗證正式保存成功才排程、草稿與健檢不觸發正式交換、離線後恢復、編輯／核對等阻擋、lost ACK 安全重試、409 並行版本保留、舊回覆不清 pending 或假報成功、裝置草稿不上傳及保存 CAS 失敗保留原 payload。
+
+新增同步中的行內文字保護：輕量版本探測期間仍可開始編輯，回覆後暫停交换；實際交換期間拒絕開始新行內輸入並提示稍候，交換完成解除。異常新編輯 context 也會在後續 await 檢查中阻擋合併、上傳或確認；單純點文字但沒有修改，離開後清除記憶體中的閒置編輯狀態，使安全入口和同步不永久等待。狀態摘要純函式涵蓋未配對、未知保存、未確認、待同步、同步中、失敗、衝突、備份提醒及僅本機草稿，不從舊成功時間冒充新變更已到 Mac。
+
+本次 CUA 瀏覽器工具 getState 兩次連線逾時，未取得可操作的瀏覽器；未執行手機／桌面視覺或端到端瀏覽器驗收，也沒有真 iPhone／Safari／PWA／Typeless 驗收。不使用 CLI 瀏覽器繞過工具限制，不以 Node DOM／生命週期或 393px CSS 規則冒充真機通過。DEVICE-ACCEPTANCE.md 已列出本版隔離真機待驗流程。
+
+App1.5.53／SOP1 1.2.39；schema2、同步protocol、CSV引擎1.2.16、21條runtime路徑不變。沒有讀寫正式客戶紀錄、CSV、Source Snapshot 或備份；沒有呼叫外部 AI 或分析服務。只發布程式碼與虛構測試，不包含客戶內容。以下 hashes 對應本次通過 Node 驗證的 runtime：
+public/app.js SHA256=898005b65b732208fb7cc526dec25080ce68f81c2e60a977bb7c1c2b3613c1f3
+public/index.html SHA256=a8626541e3bc35b55ddd8b7711a90831b44625da81829b0004eb708b73ff6e45
+public/core.js SHA256=6b8ffe259a99ab3f42285e2b6b6d97d57e37db83b97cb697a0b98c661324bf65
+public/style.css SHA256=915cbd25a019603e5d7cf5c19428106ce80573176c89efb145d5fe4ac0f20671
+public/sw.js SHA256=810e9fac1c524fb688850f2949fa375526b6ab7b5b5bc944cb99c0410621c6f7
+public/version.js SHA256=99788cc813896becee8103225942aaffa16fe67038a88aa9b6e79c66caa24c6f
+
+以下保留歷史測試結果。
+
 v1.5.52 門市提醒本機加密草稿｜2026-10-03
 
 完整 Node 測試：330 項通過，0 失敗／取消／略過。命令 npm test；使用虛構資料及獨立暫存測試服務，包括本機 HTTPS 同步、還原和更新測試，不連正式 App。node --check public/app.js 與 git diff --check 通過。

@@ -1,4 +1,4 @@
-import { newMeta, checkEnvelope, derive, seal, unseal, planBackupImport, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates, buildStoreEnrichmentRequest, planStoreEnrichment, applyStoreEnrichment, readonlyHealthAudit, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, addReminderTasks, convertReminderTasks, completeReminderTask, reminderTaskHistory, searchStoreVisitText } from './core.js';
+import { newMeta, checkEnvelope, derive, seal, unseal, planBackupImport, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates, buildStoreEnrichmentRequest, planStoreEnrichment, applyStoreEnrichment, readonlyHealthAudit, dataSafetySummary, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, addReminderTasks, convertReminderTasks, completeReminderTask, reminderTaskHistory, searchStoreVisitText } from './core.js';
 import { readLocal, writeLocal, archiveAndReplaceLocal, listLocalArchives, readLocalArchive } from './db.js';
 import { createCSVImport } from './csv-ui.js';
 import { PROFILE_FIELDS, FILL_FIELDS, scanQuality, setDistinctReview, sourceSuggestions, fillProfile } from './csv.js';
@@ -320,6 +320,8 @@ let versionReview = null, resolutionPreview = null;
 let coordinatePreview = null, enrichmentPreview = null, backupPreview = null;
 let reminderDraftTimer = null, reminderDraftSaveChain = Promise.resolve();
 let attendancePrompt = null, attendanceCache = null;
+let localSaveState = 'unknown', syncInProgress = false, syncEpoch = 0;
+const syncScheduler = createSyncScheduler({ ready: canAutoSync, attempt: autoSync, onChange: renderDataSafetyEntry });
 function storeAttendance(storeId) {
   const today = attendanceTaipeiDate(Date.now());
   if (attendanceCache?.bundle !== payload.bundle || attendanceCache.today !== today) {
@@ -452,13 +454,15 @@ async function run(fn, errorTarget) {
   busy = true; buttons(true);
   try { if (errorTarget) $(errorTarget).textContent = ''; await fn(); }
   catch (e) { if (errorTarget) $(errorTarget).textContent = e.message; else toast(e.message); }
-  finally { busy = false; buttons(false); if (pendingLock) lockNow(!document.hidden); }
+  finally { busy = false; buttons(false); if (pendingLock) lockNow(!document.hidden); syncScheduler.wake(); }
 }
 function programDetail() {
   return '本機 App v' + APP_VERSION + ' · ' + (macProgram ? 'Mac 程式 v' + macProgram.version + '（確認於 ' + dateText(macProgram.at) + '）' : 'Mac 程式版本尚待連線確認');
 }
 async function api(path, options = {}) {
+  const session = syncSession();
   return requestLocal(path, { token: payload?.token, ...options }, version => {
+    if (key !== session.key || meta !== session.meta || payload?.token !== session.token || syncEpoch !== session.epoch) return;
     macProgram = { version, at: new Date().toISOString() };
     if (payload) { $('program-detail').textContent = programDetail(); renderHealthAudit(); }
   });
@@ -471,13 +475,27 @@ async function checkConnection() {
 }
 async function persist(next) {
   const previous = payload, sessionKey = key, sessionMeta = meta, expected = localRevision;
+  const formalChange = hasNewFormalChanges(previous, next) && !syncInProgress;
   next = withPendingSync(previous, next);
-  const envelope = await seal(next, sessionKey, sessionMeta, 'device');
-  if (key !== sessionKey || meta !== sessionMeta || payload !== previous || localRevision !== expected) throw new Error('儲存期間資料或工作階段已變更，本次沒有覆蓋較新的內容；請重試。');
-  const rev = await writeLocal(envelope, expected, sessionKey);
-  if (key !== sessionKey || meta !== sessionMeta || payload !== previous || localRevision !== expected) throw new Error('本機寫入已完成，但工作階段已變更；請重新開啟核對。');
-  localRevision = rev; slot = { envelope, revision: rev, unlockKey: key }; payload = next;
-  $('save-state').textContent = '手機已保存：已加密儲存於本機';
+  localSaveState = 'saving'; renderDataSafetyEntry();
+  try {
+    const envelope = await seal(next, sessionKey, sessionMeta, 'device');
+    if (key !== sessionKey || meta !== sessionMeta || payload !== previous || localRevision !== expected) throw new Error('儲存期間資料或工作階段已變更，本次沒有覆蓋較新的內容；請重試。');
+    const rev = await writeLocal(envelope, expected, sessionKey);
+    if (key !== sessionKey || meta !== sessionMeta || payload !== previous || localRevision !== expected) throw new Error('本機寫入已完成，但工作階段已變更；請重新開啟核對。');
+    localRevision = rev; slot = { envelope, revision: rev, unlockKey: key }; payload = next;
+    localSaveState = 'saved';
+    $('save-state').textContent = '手機已保存：已加密儲存於本機';
+    if (formalChange) syncScheduler.request('saved');
+  } catch (error) {
+    if (key === sessionKey && meta === sessionMeta) localSaveState = 'failed';
+    throw error;
+  } finally { renderDataSafetyEntry(); }
+}
+function hasNewFormalChanges(previous, next) {
+  if (!previous || !next?.dirty || previous.bundle?.vaultId !== next.bundle?.vaultId) return false;
+  const before = new Set(previous.bundle.ops.map(op => op.id));
+  return next.bundle.ops.some(op => !before.has(op.id));
 }
 function withPendingSync(previous, next) {
   if (!next.dirty) return { ...next, pendingSync: { entities: [], unknown: false } };
@@ -815,7 +833,7 @@ async function initializeOrUnlock(event) {
     }
     $('password').value = ''; $('password-again').value = ''; $('pair-code').value = '';
     await openWorkspace();
-    setTimeout(autoSync, 0);
+    syncScheduler.request('foreground');
   }, 'gate-error');
 }
 function captureTransientResumeState() {
@@ -856,11 +874,13 @@ function restoreTransientResumeState() {
 }
 async function openWorkspace() {
   pendingLock = document.hidden; lastError = ''; lastSyncFailure = null; syncWarning = '';
+  localSaveState = 'saved'; syncEpoch++; syncScheduler.reset();
   $('gate').hidden = true; $('workspace').hidden = false;
   document.body.classList.toggle('privacy-veil', pendingLock);
   try { storagePersistent = await navigator.storage?.persist?.() || false; } catch {}
   restoreTransientResumeState(); renderBackupResult(); await runPeriodicHealthAudit(); clearInterval(autoTimer);
-  autoTimer = setInterval(autoSync, 15000);
+  autoTimer = setInterval(() => syncScheduler.request('poll'), 15000);
+  syncScheduler.request('foreground');
   requestNearbyPosition();
 }
 function currentHealthAudit() {
@@ -881,35 +901,103 @@ async function runPeriodicHealthAudit(force = false) {
   if (force || due) await persist({ ...payload, lastHealthAudit: new Date().toISOString() });
   renderHealthAudit();
 }
+// One queue serves saves, foreground/online events and the existing lightweight poll.
+// Timers never carry customer content; only the guarded attempt can exchange snapshots.
+function createSyncScheduler({ ready, attempt, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout, onChange = () => {} }) {
+  let timer = null, pending = false, inFlight = false, failures = 0, retryAt = 0, dueAt = 0, generation = 0, wakeVersion = 0;
+  const clear = () => { if (timer !== null) clearTimer(timer); timer = null; };
+  const state = () => ({ pending, inFlight, failures, retryAt });
+  const notify = () => onChange(state());
+  const arm = () => {
+    clear();
+    if (pending && !inFlight && ready()) timer = setTimer(drain, Math.max(0, dueAt - now(), retryAt - now()));
+  };
+  const failure = () => {
+    failures++;
+    retryAt = now() + [15000, 30000, 60000, 120000, 300000][Math.min(failures - 1, 4)];
+    pending = true; dueAt = retryAt;
+  };
+  async function drain() {
+    timer = null;
+    if (!pending || inFlight || !ready()) return;
+    const epoch = generation, wakeAtStart = wakeVersion;
+    pending = false; inFlight = true; notify();
+    let result;
+    try { result = await attempt(); } catch { result = 'failure'; }
+    inFlight = false;
+    if (epoch !== generation) { arm(); notify(); return; }
+    if (result === 'failure') failure();
+    else if (result === 'deferred') {
+      pending = true; dueAt = now() + 500;
+      // A close/foreground event may arrive before the old probe settles. Keep that wake.
+      if (wakeVersion !== wakeAtStart) arm();
+      notify(); return;
+    } else { failures = 0; retryAt = 0; }
+    arm(); notify();
+  }
+  return {
+    request(reason = 'poll') {
+      wakeVersion++;
+      const due = now() + (reason === 'poll' ? 0 : 500);
+      dueAt = pending ? Math.min(dueAt, due) : due; pending = true; arm(); notify();
+    },
+    wake() { wakeVersion++; arm(); notify(); },
+    pause() { clear(); notify(); },
+    reset() { generation++; clear(); pending = false; failures = 0; retryAt = 0; dueAt = 0; notify(); },
+    confirmed() { clear(); pending = false; failures = 0; retryAt = 0; notify(); },
+    failed() { failure(); arm(); notify(); },
+    state
+  };
+}
+function canAutoSync(ignoreFetching = false) {
+  return !!(key && payload?.token) && navigator.onLine !== false && !document.hidden && !pendingLock && !updateHolding && !busy && !gateOpening &&
+    (ignoreFetching || !autoFetching) && !syncInProgress && !backupPreview && !editorContext && !singleStoreContext && !inlineTextContext && !reminderContext && !attendancePrompt && !payload.inlineTextDraft &&
+    !['review', 'editor', 'quick-text-dialog', 'store-reminder-dialog', 'rebuild-dialog', 'backup-review', 'visit-attendance-dialog'].some(id => $(id)?.open) && !csvImport.hasPending();
+}
+function syncSession() { return { key, meta, token: payload?.token, device: payload?.device, epoch: syncEpoch, inline: inlineTextContext, editor: editorContext, reminder: reminderContext, single: singleStoreContext, attendance: attendancePrompt }; }
+function assertSyncSession(session, bundle) {
+  if (!payload || key !== session.key || meta !== session.meta || payload.token !== session.token || payload.device !== session.device || syncEpoch !== session.epoch || inlineTextContext !== session.inline || editorContext !== session.editor || reminderContext !== session.reminder || singleStoreContext !== session.single || attendancePrompt !== session.attendance || document.hidden || pendingLock || updateHolding || (bundle && payload.bundle !== bundle)) {
+    const error = new Error('同步已暫停；本機內容保留，回到前景並完成編輯後會再確認。'); error.code = 'sync-paused'; throw error;
+  }
+}
 async function autoSync() {
-  if (updateHolding || autoFetching || !payload?.token || document.hidden || busy || backupPreview || editorContext || inlineTextContext || reminderContext || payload.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('store-reminder-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending()) return;
-  const sessionKey = key;
-  autoFetching = true;
+  if (!canAutoSync()) return 'deferred';
+  const session = syncSession();
+  autoFetching = true; renderDataSafetyEntry();
+  let result = 'deferred';
   try {
     // Offline probes never block editing or take the write lock, and carry no customer content.
     const remote = await api('/api/version');
-    if (updateHolding || !payload || key !== sessionKey || document.hidden || busy || backupPreview || editorContext || inlineTextContext || reminderContext || payload.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('store-reminder-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending()) return;
+    assertSyncSession(session);
+    if (!canAutoSync(true)) return 'deferred';
     await run(async () => {
       try {
-        if (payload.dirty || remote.version !== payload.serverVersion) await synchronize();
-        else await recordUnchangedSync();
-      } catch (e) { recordSyncFailure(e); }
+        if (payload.dirty || remote.version !== payload.serverVersion) await synchronize({ fromAuto: true });
+        else { await recordUnchangedSync(); assertSyncSession(session); }
+        result = 'success';
+      } catch (e) {
+        if (e.code !== 'sync-paused' && payload && key === session.key && meta === session.meta && payload.token === session.token && syncEpoch === session.epoch) { recordSyncFailure(e); result = 'failure'; }
+      }
     });
-  } catch (e) { if (payload && key === sessionKey) { recordSyncFailure(e); } }
-  finally { autoFetching = false; }
+  } catch (e) {
+    if (e.code !== 'sync-paused' && payload && key === session.key && meta === session.meta && payload.token === session.token && syncEpoch === session.epoch) { recordSyncFailure(e); result = 'failure'; }
+  } finally { autoFetching = false; renderDataSafetyEntry(); }
+  return result;
 }
 function lockNow(reopen = !document.hidden) {
+  syncScheduler.pause();
   forgetBriefSearchQuery();
   if (!busy && backupPreview) { clearBackupPreview(); $('backup-review').close(); }
   if (busy || editorContext || inlineTextContext || reminderContext || payload?.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('store-reminder-dialog')?.open || csvImport.hasPending()) { pendingLock = true; document.body.classList.add('privacy-veil'); return; }
   captureTransientResumeState();
+  syncEpoch++; syncScheduler.reset(); localSaveState = 'unknown';
   attendanceCache = null;
   pendingLock = false; coordinatePreview = null; enrichmentPreview = null; clearNearbyPosition(); versionReview = null; resolutionPreview = null; inlineTextContext = null; reminderContext = null; clearTimeout(reminderDraftTimer); reminderDraftTimer = null; clearTimeout(inlineDraftTimer); inlineDraftTimer = null; clearInterval(autoTimer); key = null; meta = null; payload = null; records = []; trail = []; editorContext = null; lastError = ''; macProgram = null; lastSyncFailure = null; syncWarning = '';
   csvImport.reset(); qualityCache = null; qualityReview = null; qualityTab = 'duplicates'; qualityField = ''; qualityPage = 0;
   resetStoreFilters();
   for (const u of objectURLs) URL.revokeObjectURL(u); objectURLs = [];
   document.querySelectorAll('dialog').forEach(d => d.close());
-  for (const id of ['quality-content', 'regional-content', 'focus-header', 'graph', 'graph-pager', 'focus-detail', 'evidence-list', 'store-list', 'visit-list', 'recent-store-list', 'draft-banner-text', 'reminder-draft-list', 'customer-list', 'entity-list', 'trash-list', 'review-body', 'editor-fields', 'conflict-list', 'connection-detail', 'program-detail', 'local-save-detail', 'mac-ack-detail', 'sync-success-detail', 'sync-failure-detail', 'connection-check', 'device-label', 'sync-result', 'storage-detail', 'sync-health-title', 'sync-health-body', 'pending-sync-detail', 'sync-conflict-count', 'health-audit-title', 'health-audit-time', 'health-audit-list', 'backup-result']) $(id).replaceChildren();
+  for (const id of ['quality-content', 'regional-content', 'focus-header', 'graph', 'graph-pager', 'focus-detail', 'evidence-list', 'store-list', 'visit-list', 'recent-store-list', 'draft-banner-text', 'reminder-draft-list', 'customer-list', 'entity-list', 'trash-list', 'review-body', 'editor-fields', 'conflict-list', 'connection-detail', 'program-detail', 'local-save-detail', 'mac-ack-detail', 'sync-success-detail', 'sync-failure-detail', 'connection-check', 'device-label', 'sync-result', 'storage-detail', 'sync-health-title', 'sync-health-body', 'pending-sync-detail', 'sync-conflict-count', 'health-audit-title', 'health-audit-time', 'health-audit-list', 'backup-result', 'data-safety-title', 'data-safety-detail']) $(id).replaceChildren();
   $('connection-check').hidden = true;
   $('store-reminder-form').reset(); resetReminderOptionGroup('store-reminder-next'); $('store-reminder-existing').replaceChildren(); $('store-reminder-title').textContent = '門市提醒'; $('store-reminder-draft-state').textContent = ''; $('store-reminder-error').textContent = ''; $('reminder-draft-banner').hidden = true; $('reminder-draft-count').textContent = '未完成門市提醒';
   $('editor-form').reset(); $('gate-form').reset(); $('rebuild-connect-form').reset(); $('password').value = ''; $('backup-file').value = '';
@@ -927,7 +1015,7 @@ async function showGate() {
       try {
         meta = slot.envelope; key = slot.unlockKey; const decrypted = await unseal(slot.envelope, key, 'device'); validateBundle(decrypted.bundle);
         if (decrypted.bundle.vaultId !== meta.vaultId) throw new Error('資料庫身分不符。');
-        payload = decrypted; await openWorkspace(); setTimeout(autoSync, 0); return;
+        payload = decrypted; await openWorkspace(); syncScheduler.request('foreground'); return;
       } catch { key = null; meta = null; payload = null; $('gate-error').textContent = '裝置保存的金鑰無法使用。請輸入一次原資料庫密碼，重新建立自動開啟金鑰。'; }
     }
     $('gate-form').hidden = false;
@@ -937,46 +1025,78 @@ async function showGate() {
     $('gate-submit').textContent = slot ? '驗證並啟用自動開啟' : '配對並開啟';
     $('device-name').value = /iPhone|iPad/.test(navigator.userAgent) ? '我的 iPhone' : '我的 Mac';
   } catch (e) { $('gate-error').textContent = `無法使用本機儲存：${e.message}`; }
-  finally { gateOpening = false; }
+  finally { gateOpening = false; syncScheduler.wake(); }
 }
 async function recordUnchangedSync() {
-  // A successful confirmation is still a sync, even when no customer revisions change.
-  // Save only after the Mac responds; persist() must succeed before showing a new time.
+  const session = syncSession(), bundle = payload.bundle;
+  assertSyncSession(session, bundle);
+  // A confirmation is saved only after a Mac response and successful local commit.
   await persist({ ...payload, lastSync: new Date().toISOString() });
+  assertSyncSession(session, bundle);
   lastError = ''; status();
   $('sync-result').textContent = `最近成功同步：${dateText(payload.lastSync)}\n已確認與 Mac 的資料版本一致，沒有新變更。`;
 }
-async function synchronize() {
+async function synchronize({ fromAuto = false } = {}) {
   if (!payload?.token) throw new Error('請先在「同步與備份」重新配對；本機資料仍保留。');
-  $('sync-state').textContent = '正在與 Mac 交換…';
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const remote = await api('/api/snapshot');
-    if (remote.version < (payload.serverVersion || 0)) throw new Error('Mac 資料版本比上次舊，可能已回復備份。請先匯出本機備份，再重新配對確認。');
-    if (remote.envelope && !payload.dirty && remote.version === payload.serverVersion) { await recordUnchangedSync(); return; }
-    let combined = payload.bundle, other = null;
-    if (remote.envelope) {
-      if (remote.envelope.vaultId !== meta.vaultId || remote.envelope.salt !== meta.salt) throw new Error('Mac 是另一個資料庫，已停止同步以保護本機資料。');
-      other = validateBundle(await unseal(remote.envelope, key)); combined = merge(combined, other);
+  if (syncInProgress || (autoFetching && !fromAuto)) { const error = new Error('正在確認同步，請稍候。'); error.code = 'sync-paused'; throw error; }
+  const session = syncSession();
+  assertSyncSession(session);
+  syncInProgress = true; renderDataSafetyEntry();
+  try {
+    $('sync-state').textContent = '正在與 Mac 交換…';
+    for (let attempt = 0; attempt < 5; attempt++) {
+      assertSyncSession(session);
+      const remote = await api('/api/snapshot');
+      assertSyncSession(session);
+      if (remote.version < (payload.serverVersion || 0)) throw new Error('Mac 資料版本比上次舊，可能已回復備份。請先匯出本機備份，再重新配對確認。');
+      if (remote.envelope && !payload.dirty && remote.version === payload.serverVersion) { await recordUnchangedSync(); return; }
+      let combined = payload.bundle, other = null;
+      if (remote.envelope) {
+        if (remote.envelope.vaultId !== session.meta.vaultId || remote.envelope.salt !== session.meta.salt) throw new Error('Mac 是另一個資料庫，已停止同步以保護本機資料。');
+        other = validateBundle(await unseal(remote.envelope, session.key));
+        assertSyncSession(session, combined); combined = merge(combined, other);
+      }
+      // Received revisions remain encrypted locally even if the following upload is interrupted.
+      await persist({ ...payload, bundle: combined, dirty: true });
+      assertSyncSession(session, combined);
+      const same = other && combined.ops.length === other.ops.length;
+      let version = remote.version, backupOK = true;
+      if (!same) {
+        const envelope = await seal(combined, session.key, session.meta);
+        assertSyncSession(session, combined);
+        try {
+          const result = await api('/api/snapshot', { method: 'PUT', body: { expectedVersion: remote.version, envelope } });
+          assertSyncSession(session, combined); version = result.version; backupOK = result.backupOK;
+        } catch (e) { assertSyncSession(session, combined); if (e.status === 409) continue; throw e; }
+      }
+      assertSyncSession(session, combined);
+      // Clear only the acknowledged bundle; retain all current device-only drafts.
+      await persist({ ...payload, dirty: false, serverVersion: version, lastSync: new Date().toISOString() });
+      assertSyncSession(session, combined);
+      lastError = ''; syncWarning = backupOK ? '' : 'Mac 自動快照失敗。請檢查磁碟空間並手動匯出加密備份。';
+      render(); $('sync-result').textContent = `最近成功同步：${dateText(payload.lastSync)}\n已與 Mac 交換至資料版本 ${version}。${records.some(r => r.conflict) ? '有衝突需確認。' : '目前沒有內容衝突。'}${syncWarning ? '\n同步提醒：' + syncWarning : ''}`;
+      return;
     }
-    // Persist received revisions before sending: interrupted transfers never erase local edits.
-    await persist({ ...payload, bundle: combined, dirty: true });
-    const same = other && combined.ops.length === other.ops.length;
-    let version = remote.version, backupOK = true;
-    if (!same) {
-      try { const result = await api('/api/snapshot', { method: 'PUT', body: { expectedVersion: remote.version, envelope: await seal(combined, key, meta) } }); version = result.version; backupOK = result.backupOK; }
-      catch (e) { if (e.status === 409) continue; throw e; }
-    }
-    await persist({ ...payload, dirty: false, serverVersion: version, lastSync: new Date().toISOString() });
-    lastError = ''; syncWarning = backupOK ? '' : 'Mac 自動快照失敗。請檢查磁碟空間並手動匯出加密備份。';
-    render(); $('sync-result').textContent = `最近成功同步：${dateText(payload.lastSync)}\n已與 Mac 交換至資料版本 ${version}。${records.some(r => r.conflict) ? '有衝突需確認。' : '目前沒有內容衝突。'}${syncWarning ? '\n同步提醒：' + syncWarning : ''}`;
-    return;
-  }
-  throw new Error('其他裝置持續更新，尚未完成同步。請稍後再按一次。');
+    throw new Error('其他裝置持續更新，尚未完成同步。請稍後再按一次。');
+  } catch (error) { assertSyncSession(session); throw error; }
+  finally { syncInProgress = false; renderDataSafetyEntry(); }
 }
 function recordSyncFailure(error) {
   lastError = error.message;
   lastSyncFailure = { at: new Date().toISOString(), message: error.message };
   status();
+}
+function renderDataSafetyEntry() {
+  const entry = $('data-safety-open');
+  if (!entry || !payload) return;
+  const reminders = storedReminderDrafts().length;
+  const drafts = (payload.draft?.format === 'visit-draft-1' ? 1 : 0) + (payload.inlineTextDraft?.format === 'inline-text-draft-1' ? 1 : 0) + reminders;
+  const summary = dataSafetySummary({ localState: localSaveState, paired: !!payload.token, syncing: autoFetching || syncInProgress,
+    dirty: payload.dirty, pending: pendingSyncSummary(), lastSync: payload.lastSync, conflicts: records.filter(r => r.conflict).length,
+    syncError: lastError, backupWarning: syncWarning || currentHealthAudit().checks.some(check => check.code === 'backup-age' && check.level === 'warning'), drafts, reminderDrafts: reminders });
+  entry.dataset.state = summary.state;
+  $('data-safety-title').textContent = summary.title;
+  $('data-safety-detail').textContent = summary.detail;
 }
 function status() {
   if (!payload) return;
@@ -999,6 +1119,7 @@ function status() {
   if (!payload.token) { healthState = 'action'; healthTitle = '需要重新配對 Mac'; healthBody = '本機資料仍保留；重新配對並成功同步後，Mac 才會收到變更。'; }
   else if (lastError) { healthState = 'warning'; healthTitle = '同步尚未完成'; healthBody = '本機資料已加密保存。處理下方失敗原因後可沿用原版本重試，不會因此新增重複拜訪。'; }
   else if (payload.dirty) { healthState = 'pending'; healthTitle = '有資料等待 Mac 確認'; healthBody = '本機保存成功；App 保持前景且 Mac 可連線時會自動重試。'; }
+  else if (!payload.lastSync) { healthState = 'pending'; healthTitle = '尚待 Mac 確認'; healthBody = '本機已有加密資料；完成一次同步後才能確認 Mac 收到。'; }
   else if (conflicts) { healthState = 'action'; healthTitle = '同步完成，有衝突待核對'; healthBody = '兩台內容都已保留；衝突尚未自動選邊或改寫。'; }
   else if (syncWarning) { healthState = 'warning'; healthTitle = '資料已同步，Mac 快照需要檢查'; healthBody = syncWarning; }
   $('sync-health-card').dataset.state = healthState;
@@ -1006,7 +1127,7 @@ function status() {
   $('sync-health-body').textContent = healthBody;
   $('pending-sync-detail').textContent = pendingSyncText(pending);
   $('sync-conflict-count').textContent = conflicts + ' 筆';
-  renderHealthAudit();
+  renderHealthAudit(); renderDataSafetyEntry();
   $('storage-detail').textContent = `離線介面：${offlineReady ? '已備妥' : '尚待確認，請先保持連線'}。持久儲存：${storagePersistent ? '已獲允許' : '瀏覽器尚未允許，請定期同步及備份'}。資料 ${(new TextEncoder().encode(JSON.stringify(payload.bundle)).length / 1048576).toFixed(2)} / 24 MB（包含歷史與附件）。`;
 }
 function switchView(view) {
@@ -1740,7 +1861,7 @@ function resumeInlineTextDraft() {
 function blockInlineTextBeforeInput(event) {
   const element = event.target.closest?.('[data-inline-edit-text]');
   if (!element) return false;
-  const reason = inlineTextBlockReason(element.dataset.inlineEditText);
+  const reason = syncInProgress ? '正在完成同步交換，請稍候再點文字輸入。' : inlineTextBlockReason(element.dataset.inlineEditText);
   if (!reason) return false;
   event.preventDefault(); element.blur(); toast(reason); return true;
 }
@@ -1901,7 +2022,13 @@ async function saveStoreReminder(event) {
     toast(changed ? '門市提醒已儲存並套用到這間門市的全部拜訪紀錄。' : choice.attendance ? '已記錄今天實際拜訪；門市提醒內容保持原樣。' : '門市提醒沒有變更，未新增任何版本。');
   }, 'store-reminder-error');
 }
+function releaseIdleInlineEdit() {
+  if (!inlineTextContext || inlineTextContext.after !== inlineTextContext.before || payload?.inlineTextDraft || quickTextContext || document.activeElement?.closest?.('[data-inline-edit-text]')) return false;
+  // A tap without changes has no save/cancel controls; it must not block sync forever.
+  inlineTextContext = null; syncScheduler.wake(); return true;
+}
 function beginInlineTextEdit(id, element) {
+  if (syncInProgress) { toast('正在完成同步交換，請稍候再點文字輸入。'); element.blur(); return false; }
   const visit = by('visit', id), blocked = inlineTextBlockReason(id);
   if (blocked) { toast(blocked); element.blur(); return false; }
   const saved = payload?.inlineTextDraft?.format === 'inline-text-draft-1' ? payload.inlineTextDraft : null;
@@ -1917,6 +2044,7 @@ async function persistInlineTextDraft() {
   const draft = ctx.after === ctx.before ? null : { format: 'inline-text-draft-1', id: ctx.id, before: ctx.before, after: ctx.after, parents: [...ctx.parents], updatedAt: new Date().toISOString() };
   await persist({ ...payload, inlineTextDraft: draft });
   if (state) state.textContent = draft ? '修改草稿已加密保存在這台裝置，尚未寫入正式紀錄。' : '文字沒有變更。';
+  if (!draft) releaseIdleInlineEdit();
 }
 function scheduleInlineTextDraft() {
   clearTimeout(inlineDraftTimer); const ctx = inlineTextContext;
@@ -2393,7 +2521,8 @@ async function applyBackupPreview() {
   // Memory adopts the candidate only after the one IndexedDB transaction succeeds.
   const rev = await writeLocal(encrypted, ctx.currentPayload ? ctx.expected : 0, ctx.restoredKey);
   key = ctx.restoredKey; meta = nextMeta; payload = next; localRevision = rev;
-  slot = { envelope: encrypted, revision: rev, unlockKey: key };
+  slot = { envelope: encrypted, revision: rev, unlockKey: key }; localSaveState = 'saved';
+  syncScheduler.request('saved');
   clearBackupPreview(); $('backup-review').close(); $('password').value = '';
   $('save-state').textContent = '手機已保存：已加密儲存於本機';
   if (!ctx.currentPayload) await openWorkspace();
@@ -2441,9 +2570,10 @@ function openRepairPair() {
 }
 async function repairPair(code) {
   if (!code?.trim()) return;
+  if (autoFetching || syncInProgress) { const error = new Error('正在確認同步，請稍候再送出配對碼。'); error.code = 'sync-paused'; throw error; }
   const paired = await api('/api/pair', { method: 'POST', token: null, body: { code: code.trim(), label: payload.deviceName } });
   if (paired.snapshot.envelope && (paired.snapshot.envelope.vaultId !== meta.vaultId || paired.snapshot.envelope.salt !== meta.salt)) throw new Error('此 Mac 是另一個資料庫，本機資料未修改。');
-  await persist({ ...payload, device: paired.id, token: paired.token, serverVersion: 0, dirty: true }); await synchronize(); toast('重新配對完成。');
+  await persist({ ...payload, device: paired.id, token: paired.token, serverVersion: 0, dirty: true }); await synchronize(); syncScheduler.confirmed(); toast('重新配對完成。');
 }
 document.addEventListener('click', event => {
   const b = event.target.closest('button');
@@ -2525,8 +2655,20 @@ document.addEventListener('click', event => {
   if (b.id === 'back-node') { const previous = trail.pop(); if (previous) navigate(previous.type, previous.id, false); return; }
   if (b.id === 'candidate-overview') return openCandidateOverview();
   if (b.dataset.candidateStore) { if (singleStoreContext) return toast('請先完成或收起這次拜訪紀錄，再切換門市。'); $('review').close(); return navigate('store', b.dataset.candidateStore); }
+  if (b.id === 'data-safety-open') {
+    if (inlineTextContext || editorContext || singleStoreContext || reminderContext) return toast('請先完成或收起目前編輯，再查看資料安全狀態。');
+    switchView('sync'); focusReadingSurface($('sync-health-card')); $('sync-health-card').scrollIntoView({ block: 'start' }); return;
+  }
   if (b.id === 'conflict-link') return switchView('sync');
-  if (['sync-button', 'sync-now'].includes(b.id)) return run(async () => { try { await synchronize(); toast(`同步成功：${dateText(payload.lastSync)}。另一台裝置連線同步後會接收更新。`); } catch (e) { recordSyncFailure(e); throw e; } });
+  if (['sync-button', 'sync-now'].includes(b.id)) {
+    if (!payload.token) return toast('請先在「資料與安全」重新配對 Mac；本機資料仍保留。');
+    if (navigator.onLine === false) { syncScheduler.request('manual'); return toast('目前離線；已排入同步，恢復連線且完成編輯後會再確認。'); }
+    if (!canAutoSync()) { syncScheduler.request('manual'); return toast(autoFetching || syncInProgress ? '正在確認同步，請稍候。' : '已排入同步；請保持連線，完成或收起目前編輯後會再確認。'); }
+    return run(async () => {
+      try { await synchronize(); syncScheduler.confirmed(); toast(`同步成功：${dateText(payload.lastSync)}。另一台裝置連線同步後會接收更新。`); }
+      catch (e) { if (e.code === 'sync-paused') syncScheduler.request('foreground'); else { recordSyncFailure(e); syncScheduler.failed(); } throw e; }
+    });
+  }
   if (b.id === 'check-connection') return run(checkConnection);
   if (b.id === 'run-health-audit') return run(async () => { await runPeriodicHealthAudit(true); toast('唯讀健檢已重新完成；沒有修改任何客戶紀錄。'); });
   if (b.id === 'export-backup') return run(exportBackup);
@@ -2538,7 +2680,7 @@ document.addEventListener('focusin', event => { const editor = event.target.clos
 document.addEventListener('beforeinput', blockInlineTextBeforeInput);
 document.addEventListener('invalid', showValidationWithoutKeyboard, true);
 document.addEventListener('focusin', event => { if (event.target.closest?.('#review [data-inline-edit-text]')) refreshBriefSearch(); });
-document.addEventListener('focusout', event => { if (event.target.closest?.('#review [data-inline-edit-text]')) queueMicrotask(() => refreshBriefSearch()); });
+document.addEventListener('focusout', event => { if (event.target.closest?.('[data-inline-edit-text]')) queueMicrotask(() => { releaseIdleInlineEdit(); refreshBriefSearch(); }); });
 document.addEventListener('beforeinput', event => { if (event.target.closest?.('#review [data-inline-edit-text]')) { clearTimeout(briefSearchTimer); clearBriefSearchHighlights(); } });
 document.addEventListener('compositionstart', event => { if (event.target.closest?.('#review [data-inline-edit-text]')) clearBriefSearchHighlights(); });
 document.addEventListener('input', event => {
@@ -2554,12 +2696,15 @@ document.addEventListener('change', event => {
 });
 document.addEventListener('visibilitychange', () => {
   dismissKeyboard();
-  if (document.hidden) { finishAttendancePrompt(); clearNearbyPosition(); if (editorContext?.type === 'visit' || singleStoreContext) void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); if (activeReminderDraftContext()) void flushReminderDraft().catch(() => {}); document.body.classList.add('privacy-veil'); if (payload || busy || backupPreview) lockNow(false); }
+  if (document.hidden) { syncEpoch++; syncScheduler.pause(); finishAttendancePrompt(); clearNearbyPosition(); if (editorContext?.type === 'visit' || singleStoreContext) void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); if (activeReminderDraftContext()) void flushReminderDraft().catch(() => {}); document.body.classList.add('privacy-veil'); if (payload || busy || backupPreview) lockNow(false); }
   else if (pendingLock || !payload) { pendingLock = false; document.body.classList.remove('privacy-veil'); showGate(); }
   else { document.body.classList.remove('privacy-veil'); requestNearbyPosition(); }
+  if (!document.hidden) syncScheduler.request('foreground');
 });
-window.addEventListener('pagehide', () => { finishAttendancePrompt(); dismissKeyboard(); clearNearbyPosition(); if (editorContext?.type === 'visit' || singleStoreContext) void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); if (activeReminderDraftContext()) void flushReminderDraft().catch(() => {}); if (payload || busy || backupPreview) lockNow(false); });
-window.addEventListener('pageshow', () => { dismissKeyboard(); if (!payload && !document.hidden) { document.body.classList.remove('privacy-veil'); showGate(); } });
+window.addEventListener('pagehide', () => { syncEpoch++; syncScheduler.pause(); finishAttendancePrompt(); dismissKeyboard(); clearNearbyPosition(); if (editorContext?.type === 'visit' || singleStoreContext) void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); if (activeReminderDraftContext()) void flushReminderDraft().catch(() => {}); if (payload || busy || backupPreview) lockNow(false); });
+window.addEventListener('pageshow', () => { dismissKeyboard(); if (!payload && !document.hidden) { document.body.classList.remove('privacy-veil'); showGate(); } if (!document.hidden) syncScheduler.request('foreground'); });
+window.addEventListener('online', () => syncScheduler.request('online'));
+window.addEventListener('offline', () => syncScheduler.pause());
 $('visit-attendance-form').addEventListener('submit', event => {
   event.preventDefault(); if (!attendancePrompt) return;
   const at = new Date().toISOString(), date = attendanceTaipeiDate(at);
@@ -2579,7 +2724,7 @@ $('review').addEventListener('submit', event => {
   if (event.target.id === 'repair-pair-form') {
     event.preventDefault(); void run(async () => {
       try { await repairPair($('repair-pair-code').value); $('review').close(); }
-      catch (error) { recordSyncFailure(error); throw error; }
+      catch (error) { if (error.code !== 'sync-paused') { recordSyncFailure(error); syncScheduler.failed(); } throw error; }
     }, 'repair-pair-error');
   }
 });
@@ -2596,7 +2741,7 @@ $('brief-search-clear').addEventListener('click', () => {
   if (busy || updateHolding || briefSearchBlocked()) return;
   forgetBriefSearchQuery(); focusReadingSurface($('review'));
 });
-document.querySelectorAll('dialog').forEach(dialog => dialog.addEventListener('close', () => queueMicrotask(releaseDialogBackground)));
+document.querySelectorAll('dialog').forEach(dialog => dialog.addEventListener('close', () => queueMicrotask(() => { releaseDialogBackground(); syncScheduler.wake(); })));
 $('editor').addEventListener('close', () => {
   if ($('editor').open) return;
   if (editorContext?.reminderDraftContext) { openDialog($('editor')); if (!busy) void run(closeStoreReminderEditor, 'editor-error'); }
@@ -2654,7 +2799,7 @@ else {
   showGate();
   const draftBusy = () => busy || gateOpening || !!backupPreview || !!editorContext || !!inlineTextContext || !!reminderContext || !!payload?.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('store-reminder-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending() || (!$('gate').hidden && [...$('gate-form').querySelectorAll('input')].some(el => el.value && !['device-name'].includes(el.id)));
   for (const name of ['click', 'submit', 'keydown', 'beforeinput']) document.addEventListener(name, event => { if (updateHolding && event.target.closest('button,input,select,textarea,form,a')) { event.preventDefault(); event.stopImmediatePropagation(); } }, true);
-  startUpdates({ api, hasToken: () => !!payload?.token, isBusy: draftBusy, setHold: held => { updateHolding = held; document.body.classList.toggle('update-holding', held); }, notify: toast, onOfflineReady: () => { offlineReady = true; $('secure-state').textContent = '離線介面已備妥。iPhone 請先加入主畫面，再從主畫面進行配對。'; status(); } });
+  startUpdates({ api, hasToken: () => !!payload?.token, isBusy: draftBusy, setHold: held => { updateHolding = held; if (held) { syncEpoch++; syncScheduler.pause(); } else syncScheduler.wake(); document.body.classList.toggle('update-holding', held); }, notify: toast, onOfflineReady: () => { offlineReady = true; $('secure-state').textContent = '離線介面已備妥。iPhone 請先加入主畫面，再從主畫面進行配對。'; status(); } });
   if (location.hostname === 'localhost') $('secure-state').textContent = '請使用 Mac 顯示的 .local 網址開啟 App，管理頁才使用 localhost。';
 }
 

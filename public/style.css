@@ -244,3 +244,23 @@ dialog:focus{outline:none}
 .attendance-history small { display: block; font-size: .75rem; }
 #visit-attendance-dialog { max-width: 560px; }
 .attendance-check { padding: 1rem; border: 1px solid #bddcd7; border-radius: .75rem; background: #edf7f5; font-weight: 700; }
+
+/* A compact route to existing safety details; no overlay or input focus. */
+.data-safety-bar{padding:8px 30px;border-block:1px solid var(--line);background:#fbfcfd}
+.data-safety-open{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:2px 12px;align-items:center;text-align:left;width:100%;min-width:0;min-height:44px;padding:8px 12px;border-radius:10px;border-left:4px solid #8998a5;background:#fff}
+.data-safety-label{font-size:.8rem;font-weight:650;color:var(--muted)}
+#data-safety-title{font-size:.88rem;font-weight:700;min-width:0;overflow-wrap:anywhere}
+#data-safety-detail{grid-column:1/-1;font-size:.76rem;line-height:1.45;color:var(--muted);min-width:0;overflow-wrap:anywhere}
+.data-safety-arrow{font-size:1.2rem;color:var(--muted)}
+.data-safety-open[data-state="healthy"]{border-left-color:#39877c}
+.data-safety-open[data-state="pending"],.data-safety-open[data-state="syncing"]{border-left-color:#b58536}
+.data-safety-open[data-state="warning"]{border-left-color:#b75c51}
+.data-safety-open[data-state="action"]{border-left-color:#6f6aaa}
+.safety-details{margin:14px 0;min-width:0;overflow-wrap:anywhere}
+.safety-details>summary{min-height:44px;padding:10px 0;cursor:pointer;font-weight:650}
+.safety-details>p{margin:8px 0;font-size:.86rem;color:var(--muted)}
+.safety-details>p:first-of-type{color:var(--teal)}
+.safety-details .text-button{min-height:44px;text-align:left;white-space:normal}
+#sync-health-card:focus-visible{outline:3px solid #58a8ea;outline-offset:3px}
+#sync-view>.management-hub{margin-top:20px}
+@media(max-width:760px){.data-safety-bar{padding:6px 16px}.data-safety-open{gap:2px 8px;padding:7px 10px}.data-safety-label{font-size:.75rem}#data-safety-title{font-size:.82rem}#data-safety-detail{font-size:.74rem}.safety-details .sync-details{min-width:0}.safety-details .sync-details dd{overflow-wrap:anywhere}}

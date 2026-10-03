@@ -38,7 +38,9 @@ function fixture() {
     dialogs.push(node); nodes.set(id, node); return node;
   }
   nodes.set('workspace', { hidden: false }); neutral('gate-title'); neutral('page-title');
-  const context = vm.createContext({ document, $: id => nodes.get(id), queueMicrotask: fn => tasks.push(fn),
+  const context = vm.createContext({ syncInProgress: false, autoFetching: false, syncEpoch: 0, localSaveState: 'saved', renderDataSafetyEntry() {},
+    syncScheduler: { request() {}, wake() {}, pause() {}, reset() {}, confirmed() {}, failed() {} },
+     document, $: id => nodes.get(id), queueMicrotask: fn => tasks.push(fn),
     window: { scrollY: 144, scrollTo() {} }, requestAnimationFrame: fn => tasks.push(fn) });
   vm.runInContext(helpers, context);
   return { context, document, nodes, dialogs, events, tasks, neutral, editable, dialog, flush() { while (tasks.length) tasks.shift()(); } };
@@ -134,7 +136,9 @@ test('Mac administration invalid and lifecycle handlers only manage focus/error,
   const field = { form, required: true, value: '', validationMessage: '測試必填', matches: () => true,
     blur() { blurred++; }, scrollIntoView() { scrolled++; }, focus() { assert.fail('validation must not focus the field'); } };
   const document = { activeElement: field, addEventListener: (type, fn, capture) => docListeners.set(type, { fn, capture }) };
-  const context = vm.createContext({ document, window: { addEventListener: (type, fn) => winListeners.set(type, fn) },
+  const context = vm.createContext({ syncInProgress: false, autoFetching: false, syncEpoch: 0, localSaveState: 'saved', renderDataSafetyEntry() {},
+    syncScheduler: { request() {}, wake() {}, pause() {}, reset() {}, confirmed() {}, failed() {} },
+     document, window: { addEventListener: (type, fn) => winListeners.set(type, fn) },
     $: id => { assert.equal(id, 'admin-error'); return error; }, queueMicrotask: fn => tasks.push(fn) });
   vm.runInContext(source.slice(source.indexOf('function dismissAdminKeyboard('), source.indexOf('history.replaceState(')), context);
   const invalid = docListeners.get('invalid'); assert.equal(invalid.capture, true);

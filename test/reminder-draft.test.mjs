@@ -54,7 +54,9 @@ function harness() {
     querySelectorAll: selector => selector === '[data-reminder-option]' ? options : [], closest: () => $('store-reminder-dialog') };
   $('store-reminder-form').querySelector = selector => selector === '[data-reminder-convert]' ? convert : null;
   $('store-reminder-form').querySelectorAll = () => [$('store-reminder-next'), $('store-reminder-every'), customText, customToggle, convert, ...options];
-  c = vm.createContext({ $, esc, structuredClone, Date, Event, Set, JSON, CSS: { escape: x => x },
+  c = vm.createContext({ syncInProgress: false, autoFetching: false, syncEpoch: 0, localSaveState: 'saved', renderDataSafetyEntry() {},
+    syncScheduler: { request() {}, wake() {}, pause() {}, reset() {}, confirmed() {}, failed() {} },
+     $, esc, structuredClone, Date, Event, Set, JSON, CSS: { escape: x => x },
     project, revision, validateBundle, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, addReminderTasks, convertReminderTasks, reminderTaskHistory,
     payload: { bundle: f.bundle, device: 'synthetic-device', dirty: false, pendingSync: { entities: [], unknown: false }, reminderDrafts: [] },
     reminderContext: null, editorContext: null, singleStoreContext: null, inlineTextContext: null, reminderDraftTimer: null, reminderDraftSaveChain: Promise.resolve(), busy: false, updateHolding: false,

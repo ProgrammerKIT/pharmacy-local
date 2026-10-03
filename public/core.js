@@ -338,6 +338,37 @@ export function revision(type, entity, data, parents, device, deleted = false, a
   }
   return op;
 }
+// Display-only device safety summary. No timestamps, writes, or inferred Mac receipts.
+// drafts includes reminderDrafts; all drafts are device-only, outside the shared bundle.
+export function dataSafetySummary(input = {}) {
+  const count = value => Number.isSafeInteger(value) && value > 0 ? value : 0;
+  const localState = ['saved', 'saving', 'failed'].includes(input.localState) ? input.localState : 'unknown';
+  const local = { saved: '本機已保存', saving: '本機保存中', failed: '本機保存失敗', unknown: '本機保存尚待確認' }[localState];
+  const pending = count(input.pending?.count), unknownPending = input.pending?.unknown === true;
+  const waiting = input.dirty === true || pending > 0 || unknownPending;
+  const acknowledged = typeof input.lastSync === 'string' && Number.isFinite(Date.parse(input.lastSync));
+  const conflicts = count(input.conflicts), reminderDrafts = count(input.reminderDrafts), drafts = Math.max(count(input.drafts), reminderDrafts);
+  const issues = [];
+  const mac = input.syncing ? '正在與 Mac 交換' : !input.paired ? '尚未配對 Mac' : input.syncError ? '本次同步未完成' : waiting
+    ? unknownPending ? '等待 Mac，數量待確認' : pending ? `${pending} 項等待 Mac` : '等待 Mac 確認'
+    : acknowledged ? 'Mac 已確認收到正式紀錄' : 'Mac 尚無成功確認';
+  let state = 'healthy', title = 'Mac 已確認收到';
+  if (localState === 'failed') { state = 'warning'; title = '本機保存失敗'; }
+  else if (localState === 'unknown') { state = 'unknown'; title = '保存狀態待確認'; }
+  else if (localState === 'saving') { state = 'pending'; title = '正在保存本機'; }
+  else if (conflicts) { state = 'action'; title = `${conflicts} 筆衝突待核對`; }
+  else if (input.syncError && !input.syncing) { state = 'warning'; title = '同步尚未完成'; }
+  else if (input.backupWarning) { state = 'warning'; title = '備份需要檢查'; }
+  else if (input.syncing) { state = 'syncing'; title = '正在同步'; }
+  else if (!input.paired) { state = 'action'; title = '需要配對 Mac'; }
+  else if (waiting) { state = 'pending'; title = '等待 Mac 確認'; }
+  else if (!acknowledged) { state = 'pending'; title = '尚無成功同步確認'; }
+  if (conflicts && !title.includes('衝突')) issues.push(`${conflicts} 筆衝突待核對`);
+  if (input.backupWarning && title !== '備份需要檢查') issues.push('備份需檢查');
+  if (input.syncError && input.syncing) issues.push('上次同步未完成');
+  if (drafts) issues.push(drafts === reminderDrafts ? `提醒草稿 ${drafts} 份僅本機` : `草稿 ${drafts} 份僅本機${reminderDrafts ? `（提醒 ${reminderDrafts} 份）` : ''}`);
+  return { state, title, detail: [local, mac, ...issues].join(' · ') };
+}
 export function readonlyHealthAudit(input) {
   const now = Number.isFinite(input.now) ? input.now : Date.now(), week = 7 * 24 * 60 * 60 * 1000;
   const age = value => { const time = Date.parse(value || ''); return Number.isFinite(time) ? now - time : null; };
