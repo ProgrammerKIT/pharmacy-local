@@ -41,7 +41,7 @@ async function harness({restore = false} = {}) {
     syncScheduler: { request() {}, wake() {}, pause() {}, reset() {}, confirmed() {}, failed() {} },
     $,structuredClone,JSON,Set,Date,uuid,derive,checkEnvelope,validateBundle,planBackupImport,project,
     key:restore ? null : fixture.key,meta:restore ? null : meta,payload,localRevision:restore ? 0 : 7,slot:restore ? null : state.disk,
-    backupPreview:null,editorContext:null,singleStoreContext:null,inlineTextContext:null,reminderContext:null,pendingLock:false,busy:false,updateHolding:false,
+    backupPreview:null,insightsPreview:null,editorContext:null,singleStoreContext:null,inlineTextContext:null,reminderContext:null,pendingLock:false,busy:false,updateHolding:false,
     document:{hidden:false,querySelectorAll:()=>[...nodes.values()]},csvImport:{hasPending:()=>state.pendingCSV},
     esc,dateText:x=>x,reviewValue:value=>JSON.stringify(value,null,2),reviewFields:(before,after)=>`<pre>${esc(JSON.stringify(before))}</pre><pre>${esc(JSON.stringify(after))}</pre>`,
     openDialog:node=>node.open=true,openWorkspace:async()=>state.opens++,render:()=>state.renders++,switchView:view=>state.view=view,toast:message=>state.notices.push(message),lockNow:()=>{},
