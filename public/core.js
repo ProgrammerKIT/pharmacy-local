@@ -238,6 +238,7 @@ export function reminderTaskHistory(record) {
 }
 export function validData(type, d) {
   if (!plain(d)) return false;
+  if (d.preVisitInsights !== undefined && (type !== 'store' || !validStoreInsights(d.preVisitInsights))) return false;
   if ((d.nextRememberTasks !== undefined || d.nextRememberImports !== undefined) && (type !== 'store' || !validReminderTasks(d))) return false;
   if (d.csvIdentityPending !== undefined && (type !== 'store' || typeof d.csvIdentityPending !== 'boolean')) return false;
   if (d.mergedInto !== undefined && (type !== 'store' || !str(d.mergedInto, 100) || !d.mergedInto)) return false;
@@ -396,11 +397,20 @@ function backupCounts(bundle, records) {
   return { entities, active, deleted, conflicts: records.filter(record => record.conflict).length, revisions: bundle?.ops.length || 0, blobs: Object.keys(bundle?.blobs || {}).length };
 }
 function backupReferenceWarnings(bundle) {
-  const known = new Set(bundle.ops.map(op => JSON.stringify([op.type, op.entity]))), missing = new Map();
+  const known = new Set(bundle.ops.map(op => JSON.stringify([op.type, op.entity]))), revisions = new Map(bundle.ops.map(op => [op.id, op])), missing = new Map();
   for (const op of bundle.ops) {
     const references = op.type === 'visit' ? [['store', op.data.store], ...op.data.people.map(id => ['person', id]), ...op.data.topics.map(id => ['topic', id])]
       : op.type === 'person' && op.data.sameAs ? [['person', op.data.sameAs]]
       : op.type === 'store' && op.data.mergedInto ? [['store', op.data.mergedInto]] : [];
+    if (op.type === 'store') for (const entry of op.data.preVisitInsights?.entries || []) for (const source of entry.evidence) {
+      references.push(['store', source.storeId], ['visit', source.visitId]);
+      const revision = revisions.get(source.revisionId);
+      if (!revision || revision.type !== 'visit' || revision.entity !== source.visitId || revision.data.store !== source.storeId) {
+        const id = JSON.stringify(['insight-revision', op.entity, source.storeId, source.visitId, source.revisionId]);
+        if (!missing.has(id)) missing.set(id, { code: 'missing-insight-source-revision', type: 'store', entity: op.entity, targetType: 'visit', targetId: source.visitId, sourceRevisionId: source.revisionId, revisionIds: [] });
+        if (!missing.get(id).revisionIds.includes(op.id)) missing.get(id).revisionIds.push(op.id);
+      }
+    }
     for (const [targetType, targetId] of references) {
       if (known.has(JSON.stringify([targetType, targetId]))) continue;
       const id = JSON.stringify([op.type, op.entity, targetType, targetId]);
@@ -689,6 +699,134 @@ export function applyStoreEnrichment(bundle, input, expected, device) {
     const store = stores.get(change.id), prior = store.heads[0].data.enrichmentSources || [];
     const data = { ...store.heads[0].data, ...change.additions, enrichmentSources: [...prior.slice(-49), change.source] };
     next.ops.push(revision('store', store.id, data, change.parents, device));
+  }
+  return validateBundle(next);
+}
+
+// Private, reviewed analysis is an optional store field. It never changes visit
+// text or creates attendance; older schema-2 clients preserve the unknown field.
+const insightKeys = (value, keys) => plain(value) && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
+const insightId = value => str(value, 100) && !!value.trim() && value === value.trim();
+const insightText = (value, max) => str(value, max) && !!value.trim();
+function insightInstant(value) {
+  if (!taskTime(value)) return false;
+  return new Date(value).toISOString() === value;
+}
+function insightDate(value) {
+  return str(value, 10) && /^\d{4}-\d\d-\d\d$/.test(value) && Number.isFinite(Date.parse(value + 'T00:00:00.000Z')) && new Date(value + 'T00:00:00.000Z').toISOString().slice(0, 10) === value;
+}
+export function storeInsightsIdentityKey(store) {
+  return JSON.stringify({ name: store.name, address: store.address ?? '', mapUrl: store.mapUrl ?? '', city: store.city ?? '', district: store.district ?? '', csvIdentityPending: store.csvIdentityPending === true, mergedInto: store.mergedInto ?? '', mergeDecision: store.mergeDecision ?? '' });
+}
+function validInsightIdentityKey(value) {
+  if (!str(value, 12000)) return false;
+  let data; try { data = JSON.parse(value); } catch { return false; }
+  return insightKeys(data, ['name', 'address', 'mapUrl', 'city', 'district', 'csvIdentityPending', 'mergedInto', 'mergeDecision'])
+    && insightText(data.name, 200) && ['address', 'mapUrl'].every(key => str(data[key], 2000)) && ['city', 'district'].every(key => str(data[key], 500))
+    && typeof data.csvIdentityPending === 'boolean' && str(data.mergedInto, 100) && str(data.mergeDecision, 200) && storeInsightsIdentityKey(data) === value;
+}
+function validInsightEvidence(source) {
+  return insightKeys(source, ['storeId', 'storeIdentityKey', 'visitId', 'revisionId', 'quote', 'role'])
+    && ['storeId', 'visitId', 'revisionId'].every(key => insightId(source[key])) && validInsightIdentityKey(source.storeIdentityKey)
+    && insightText(source.quote, 2000) && ['support', 'counter'].includes(source.role);
+}
+function validInsightEntry(entry) {
+  return insightKeys(entry, ['id', 'kind', 'level', 'headline', 'question', 'caution', 'limitations', 'evidence'])
+    && insightId(entry.id) && ['relationship', 'customer'].includes(entry.kind) && ['source', 'inference', 'counter'].includes(entry.level)
+    && insightText(entry.headline, 500) && insightText(entry.question, 2000) && str(entry.caution, 2000)
+    && Array.isArray(entry.limitations) && entry.limitations.length <= 20 && entry.limitations.every(value => insightText(value, 1000))
+    && Array.isArray(entry.evidence) && entry.evidence.length > 0 && entry.evidence.length <= 40 && entry.evidence.every(validInsightEvidence)
+    && new Set(entry.evidence.map(source => JSON.stringify([source.storeId, source.visitId, source.revisionId, source.quote]))).size === entry.evidence.length;
+}
+function validStoreInsights(value) {
+  return insightKeys(value, ['format', 'batchId', 'generatedAt', 'sourceAsOf', 'entries']) && value.format === 'pharmacy-store-insights-1'
+    && insightId(value.batchId) && insightInstant(value.generatedAt) && insightDate(value.sourceAsOf)
+    && Array.isArray(value.entries) && value.entries.length <= 20 && value.entries.every(validInsightEntry)
+    && new Set(value.entries.map(entry => entry.id)).size === value.entries.length && enc.encode(JSON.stringify(value)).length <= 256 * 1024;
+}
+export function validateStoreInsightsImport(input) {
+  if (!insightKeys(input, ['format', 'vaultId', 'generatedAt', 'sourceAsOf', 'stores']) || input.format !== 'pharmacy-store-insights-import-1'
+    || !insightId(input.vaultId) || !insightInstant(input.generatedAt) || !insightDate(input.sourceAsOf)
+    || !Array.isArray(input.stores) || !input.stores.length || input.stores.length > 500
+    || !input.stores.every(item => insightKeys(item, ['storeId', 'expectedStoreHead', 'insights']) && insightId(item.storeId) && insightId(item.expectedStoreHead)
+      && validStoreInsights(item.insights) && item.insights.generatedAt === input.generatedAt && item.insights.sourceAsOf === input.sourceAsOf)
+    || new Set(input.stores.map(item => item.storeId)).size !== input.stores.length
+    || enc.encode(JSON.stringify(input)).length > 2 * 1024 * 1024) throw new Error('單店分析資料格式、來源欄位或大小不符；尚未寫入任何資料。');
+  return input;
+}
+function insightRecordIndex(bundle) { return new Map(project(bundle).map(record => [record.type + ':' + record.id, record])); }
+function safeInsightStore(store) { return !!store && !store.deleted && !store.conflict && !store.csvIdentityPending && !store.mergedInto && !store.sourceMissing && !store.googleUpdatePending && store.heads.length === 1; }
+function safeInsightVisit(visit, index) { return !!visit && !visit.deleted && !visit.conflict && !visit.sourceMissing && !visit.googleUpdatePending && visit.heads.length === 1 && safeInsightStore(index.get('store:' + visit.store)); }
+function resolveInsightEntry(entry, storeId, index) {
+  if (!entry.evidence.some(source => source.storeId === storeId)) return null;
+  const evidence = [];
+  for (const source of entry.evidence) {
+    const store = index.get('store:' + source.storeId), visit = index.get('visit:' + source.visitId);
+    if (!safeInsightStore(store) || storeInsightsIdentityKey(store) !== source.storeIdentityKey
+      || !safeInsightVisit(visit, index) || visit.heads[0].id !== source.revisionId
+      || visit.store !== source.storeId || !visit.text.includes(source.quote)) return null;
+    evidence.push({ ...source, storeName: store.name, rawText: visit.text, sourceLabel: visit.source || '現行拜訪原文' });
+  }
+  return { ...structuredClone(entry), evidence };
+}
+export function storeInsightsForStore(bundle, storeId) {
+  return resolveStoreInsights(insightRecordIndex(bundle), storeId);
+}
+function resolveStoreInsights(index, storeId) {
+  const store = index.get('store:' + storeId), saved = store?.preVisitInsights;
+  if (!saved) return { entries: [], staleCount: 0 };
+  if (!validStoreInsights(saved)) return { entries: [], staleCount: Array.isArray(saved.entries) ? saved.entries.length : 0 };
+  if (!safeInsightStore(store)) return { entries: [], staleCount: saved.entries.length };
+  const entries = saved.entries.map(entry => resolveInsightEntry(entry, storeId, index)).filter(Boolean);
+  return { entries, staleCount: saved.entries.length - entries.length };
+}
+// Explicitly downloaded private analysis source: current heads only, with a
+// fixed field allowlist. Never include CSV, snapshots, blobs or full history.
+export function buildStoreInsightsSource(bundle, at = new Date().toISOString()) {
+  validateBundle(bundle);
+  if (!insightInstant(at)) throw new Error('分析來源匯出時間不正確。');
+  const index = insightRecordIndex(bundle), stores = [], visits = [];
+  for (const record of index.values()) {
+    if (record.type === 'store') {
+      const current = resolveStoreInsights(index, record.id), validIds = new Set(current.entries.map(entry => entry.id));
+      const availableInsights = current.entries.length ? { ...record.preVisitInsights, entries: record.preVisitInsights.entries.filter(entry => validIds.has(entry.id)) } : null;
+      stores.push({ storeId: record.id, name: record.name, eligible: safeInsightStore(record), deleted: record.deleted, conflict: record.conflict,
+        csvIdentityPending: record.csvIdentityPending === true, mergedInto: record.mergedInto ?? '', sourceMissing: record.sourceMissing === true, googleUpdatePending: record.googleUpdatePending === true,
+        heads: record.heads.map(head => ({ id: head.id, deleted: head.deleted, data: JSON.parse(storeInsightsIdentityKey(head.data)) })),
+        availableInsights: structuredClone(availableInsights), staleInsightCount: current.staleCount });
+    } else if (record.type === 'visit') {
+      visits.push({ visitId: record.id, eligible: safeInsightVisit(record, index), deleted: record.deleted, conflict: record.conflict,
+        heads: record.heads.map(head => ({ id: head.id, deleted: head.deleted, data: { store: head.data.store, text: head.data.text, source: head.data.source, sourceMissing: head.data.sourceMissing === true, googleUpdatePending: head.data.googleUpdatePending === true } })) });
+    }
+  }
+  return { format: 'pharmacy-store-insights-source-1', vaultId: bundle.vaultId, generatedAt: at, sourceAsOf: attendanceTaipeiDate(at), stores, visits,
+    coverage: { stores: stores.length, visits: visits.length, eligibleStores: stores.filter(store => store.eligible).length, eligibleVisits: visits.filter(visit => visit.eligible).length,
+      unlinkedVisits: visits.filter(visit => visit.heads.some(head => !index.has('store:' + head.data.store))).length } };
+}
+export function planStoreInsights(bundle, input) {
+  validateBundle(bundle); validateStoreInsightsImport(input);
+  if (bundle.vaultId !== input.vaultId) throw new Error('分析資料屬於另一個資料庫；尚未寫入任何資料。');
+  const index = insightRecordIndex(bundle), ready = [], excluded = [], unchanged = [];
+  for (const item of input.stores) {
+    const store = index.get('store:' + item.storeId), reject = reason => excluded.push({ storeId: item.storeId, reason });
+    if (!safeInsightStore(store)) { reject('門市不存在，或已刪除、衝突、身分待確認／已整併。'); continue; }
+    if (!item.insights.entries.every(entry => resolveInsightEntry(entry, item.storeId, index))) { reject('至少一筆來源已更新、無法核實，或缺少本店直接證據；整間分析不套用。'); continue; }
+    const before = store.heads[0].data.preVisitInsights ?? null;
+    if (JSON.stringify(before) === JSON.stringify(item.insights)) { unchanged.push({ storeId: store.id, storeName: store.name }); continue; }
+    if (store.heads[0].id !== item.expectedStoreHead) { reject('門市已產生新版本，請依最新資料重新核對。'); continue; }
+    ready.push({ storeId: store.id, storeName: store.name, before: structuredClone(before), after: structuredClone(item.insights), expectedHead: store.heads[0].id });
+  }
+  return { ready, excluded, unchanged };
+}
+export function applyStoreInsights(bundle, input, expected, device) {
+  const current = planStoreInsights(bundle, input);
+  if (JSON.stringify(current) !== JSON.stringify(expected)) throw new Error('分析預覽後資料已改變；請重新核對，尚未寫入任何資料。');
+  if (!current.ready.length) return bundle;
+  if (!insightId(device)) throw new Error('裝置識別不完整；尚未寫入任何資料。');
+  const next = structuredClone(bundle), index = insightRecordIndex(bundle); next.schema = Math.max(2, next.schema);
+  for (const item of current.ready) {
+    const store = index.get('store:' + item.storeId);
+    next.ops.push(revision('store', store.id, { ...store.heads[0].data, preVisitInsights: item.after }, [item.expectedHead], device));
   }
   return validateBundle(next);
 }
