@@ -239,6 +239,7 @@ export function reminderTaskHistory(record) {
 export function validData(type, d) {
   if (!plain(d)) return false;
   if (d.preVisitInsights !== undefined && (type !== 'store' || !validStoreInsights(d.preVisitInsights))) return false;
+  if (d.preVisitInsightReviews !== undefined && (type !== 'store' || !validInsightReviews(d.preVisitInsightReviews))) return false;
   if ((d.nextRememberTasks !== undefined || d.nextRememberImports !== undefined) && (type !== 'store' || !validReminderTasks(d))) return false;
   if (d.csvIdentityPending !== undefined && (type !== 'store' || typeof d.csvIdentityPending !== 'boolean')) return false;
   if (d.mergedInto !== undefined && (type !== 'store' || !str(d.mergedInto, 100) || !d.mergedInto)) return false;
@@ -263,12 +264,17 @@ export function validData(type, d) {
 }
 export function validateBundle(b) {
   if (!plain(b) || ![1, 2].includes(b.schema) || !str(b.vaultId, 100) || !Array.isArray(b.ops) || b.ops.length > 30000 || !plain(b.blobs)) throw new Error('資料庫格式不符，或需要更新至支援此資料的程式版本。');
-  const seen = new Map(), sourceEntities = new Map(), storeEntities = new Set();
+  const seen = new Map(), sourceEntities = new Map(), storeEntities = new Set(), reviewEvents = new Map();
   for (const o of b.ops) {
     if (!plain(o) || !str(o.id, 100) || !o.id || seen.has(o.id) || !types.includes(o.type) || !str(o.entity, 100) || !ids(o.parents) || new Set(o.parents).size !== o.parents.length || !str(o.device, 100) || !str(o.at, 40) || typeof o.deleted !== 'boolean' || !validData(o.type, o.data)) throw new Error('紀錄或版本資訊不完整。');
     if (o.type === 'source' && (o.deleted || o.parents.length || sourceEntities.has(o.entity))) throw new Error('原始來源快照只能新增一次，不能修改或刪除。');
     if (o.type === 'source') sourceEntities.set(o.entity, o);
     if (o.type === 'store') storeEntities.add(o.entity);
+    for (const event of o.data.preVisitInsightReviews || []) {
+      const fingerprint = JSON.stringify([o.entity, canonicalInsightReview(event)]);
+      if (!event.entry.evidence.some(source => source.storeId === o.entity) || reviewEvents.has(event.id) && reviewEvents.get(event.id) !== fingerprint) throw new Error('分析審核歷史識別或內容不一致；尚未寫入任何資料。');
+      reviewEvents.set(event.id, fingerprint);
+    }
     if (Object.hasOwn(o, 'visitAttendance') && !validVisitAttendance(o)) throw new Error('拜訪確認資料不完整或與紀錄不符。');
     seen.set(o.id, o);
   }
@@ -402,7 +408,7 @@ function backupReferenceWarnings(bundle) {
     const references = op.type === 'visit' ? [['store', op.data.store], ...op.data.people.map(id => ['person', id]), ...op.data.topics.map(id => ['topic', id])]
       : op.type === 'person' && op.data.sameAs ? [['person', op.data.sameAs]]
       : op.type === 'store' && op.data.mergedInto ? [['store', op.data.mergedInto]] : [];
-    if (op.type === 'store') for (const entry of op.data.preVisitInsights?.entries || []) for (const source of entry.evidence) {
+    if (op.type === 'store') for (const entry of [...(op.data.preVisitInsights?.entries || []), ...(op.data.preVisitInsightReviews || []).map(event => event.entry)]) for (const source of entry.evidence) {
       references.push(['store', source.storeId], ['visit', source.visitId]);
       const revision = revisions.get(source.revisionId);
       if (!revision || revision.type !== 'visit' || revision.entity !== source.visitId || revision.data.store !== source.storeId) {
@@ -743,6 +749,75 @@ function validStoreInsights(value) {
     && insightId(value.batchId) && insightInstant(value.generatedAt) && insightDate(value.sourceAsOf)
     && Array.isArray(value.entries) && value.entries.length <= 20 && value.entries.every(validInsightEntry)
     && new Set(value.entries.map(entry => entry.id)).size === value.entries.length && enc.encode(JSON.stringify(value)).length <= 256 * 1024;
+}
+// Kit's review is separate from the evidence classification. It is an explicit
+// append-only decision about one exact card, not an identity adjudication or a
+// statement that similarly named people/other stores have been confirmed.
+function canonicalInsightEntry(entry) {
+  if (!plain(entry) || !Array.isArray(entry.evidence)) return null;
+  return { id: entry.id, kind: entry.kind, level: entry.level, headline: entry.headline, question: entry.question,
+    caution: entry.caution, limitations: entry.limitations,
+    evidence: entry.evidence.map(source => ({ storeId: source?.storeId, storeIdentityKey: source?.storeIdentityKey,
+      visitId: source?.visitId, revisionId: source?.revisionId, quote: source?.quote, role: source?.role })) };
+}
+function insightEntryKey(entry) {
+  const exact = canonicalInsightEntry(entry);
+  return validInsightEntry(exact) ? JSON.stringify(exact) : '';
+}
+function canonicalInsightReview(event) {
+  return { id: event.id, status: event.status, reviewedBy: event.reviewedBy, reviewedAt: event.reviewedAt,
+    sourceAsOf: event.sourceAsOf, entry: canonicalInsightEntry(event.entry) };
+}
+function validInsightReview(event) {
+  return insightKeys(event, ['id', 'status', 'reviewedBy', 'reviewedAt', 'sourceAsOf', 'entry'])
+    && insightId(event.id) && ['confirmed', 'pending', 'rejected'].includes(event.status)
+    && event.reviewedBy === 'Kit' && insightInstant(event.reviewedAt) && insightDate(event.sourceAsOf) && validInsightEntry(event.entry);
+}
+function validInsightReviews(events) {
+  return Array.isArray(events) && events.length <= 1000 && events.every(validInsightReview)
+    && new Set(events.map(event => event.id)).size === events.length && enc.encode(JSON.stringify(events)).length <= 2 * 1024 * 1024;
+}
+export function storeInsightReviewHistory(store) {
+  const current = validInsightReviews(store?.preVisitInsightReviews) ? store.preVisitInsightReviews : [], activeIds = new Set(current.map(event => event.id)), history = new Map();
+  for (const data of [...(store?.versions || []).map(version => version.data), store]) {
+    if (!validInsightReviews(data?.preVisitInsightReviews)) continue;
+    for (const event of data.preVisitInsightReviews) if (!history.has(event.id)) history.set(event.id, { ...structuredClone(event), historical: !activeIds.has(event.id) });
+  }
+  return [...history.values()].sort((a, b) => b.reviewedAt.localeCompare(a.reviewedAt) || b.id.localeCompare(a.id));
+}
+export function insightReviewForEntry(store, entry) {
+  const key = insightEntryKey(entry), history = key ? storeInsightReviewHistory(store).filter(event => insightEntryKey(event.entry) === key) : [];
+  // Reading an old card, upgrading the App, or seeing a source-level card never
+  // manufactures a Kit decision. A conflict never picks one branch's approval.
+  const current = key && !store?.conflict && validInsightReviews(store?.preVisitInsightReviews)
+    ? [...store.preVisitInsightReviews].reverse().find(event => insightEntryKey(event.entry) === key) : null;
+  return current ? { status: current.status, reviewedAt: current.reviewedAt, reviewedBy: current.reviewedBy, history } : { status: 'pending', history };
+}
+export function planInsightReview(bundle, storeId, entryId, status, expectedHead) {
+  validateBundle(bundle);
+  if (![storeId, entryId, expectedHead].every(insightId) || !['confirmed', 'pending', 'rejected'].includes(status)) throw new Error('分析審核選項或識別不完整；尚未寫入任何資料。');
+  const index = insightRecordIndex(bundle), store = index.get('store:' + storeId);
+  if (!safeInsightStore(store) || store.heads[0].id !== expectedHead) throw new Error('門市版本已改變或需要先核對衝突／身分；尚未寫入任何資料。');
+  const profile = store.preVisitInsights, entry = profile?.entries.find(item => item.id === entryId);
+  if (!entry || !resolveInsightEntry(entry, storeId, index)) throw new Error('這張分析的原文來源已變更或不再有效；請重新核對，尚未寫入任何資料。');
+  const beforeStatus = insightReviewForEntry(store, entry).status;
+  return { vaultId: bundle.vaultId, storeId, storeName: store.name, entryId, status, beforeStatus, expectedHead,
+    sourceAsOf: profile.sourceAsOf, entry: structuredClone(entry), changed: beforeStatus !== status };
+}
+export function applyInsightReview(bundle, plan, device) {
+  if (!plain(plan)) throw new Error('分析審核預覽不完整；尚未寫入任何資料。');
+  const current = planInsightReview(bundle, plan.storeId, plan.entryId, plan.status, plan.expectedHead);
+  if (JSON.stringify(current) !== JSON.stringify(plan)) throw new Error('分析審核預覽後資料已改變；請重新核對，尚未寫入任何資料。');
+  if (!current.changed) return bundle;
+  if (!insightId(device)) throw new Error('裝置識別不完整；尚未寫入任何資料。');
+  const store = insightRecordIndex(bundle).get('store:' + current.storeId), reviewedAt = new Date().toISOString();
+  const event = { id: uuid(), status: current.status, reviewedBy: 'Kit', reviewedAt, sourceAsOf: current.sourceAsOf, entry: structuredClone(current.entry) };
+  const events = [...(store.preVisitInsightReviews || []), event];
+  if (!validInsightReviews(events)) throw new Error('分析審核歷史已達上限，既有歷史完整保留；本次尚未寫入。');
+  const next = structuredClone(bundle), op = revision('store', store.id, { ...store.heads[0].data, preVisitInsightReviews: events }, [current.expectedHead], device);
+  op.at = reviewedAt; next.schema = Math.max(2, next.schema); next.ops.push(op);
+  if (enc.encode(JSON.stringify(next)).length > MAX_BYTES) throw new Error('資料已達此版 24 MB 上限，既有歷史完整保留；本次尚未寫入。');
+  return validateBundle(next);
 }
 export function validateStoreInsightsImport(input) {
   if (!insightKeys(input, ['format', 'vaultId', 'generatedAt', 'sourceAsOf', 'stores']) || input.format !== 'pharmacy-store-insights-import-1'

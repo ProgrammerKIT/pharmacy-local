@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import { newMeta, derive, seal, unseal, emptyBundle, revision, project, storeInsightsIdentityKey, storeInsightsForStore, planStoreInsights, applyStoreInsights, buildStoreInsightsSource } from '../public/core.js';
+import { newMeta, derive, seal, unseal, emptyBundle, revision, project, storeInsightsIdentityKey, storeInsightsForStore, planStoreInsights, applyStoreInsights, buildStoreInsightsSource, insightReviewForEntry, storeInsightReviewHistory, planInsightReview, applyInsightReview } from '../public/core.js';
 
 // Exercise the real UI functions against synthetic fixtures and an in-memory
 // encrypted disk. No browser, network, client database or customer text is used.
@@ -42,7 +42,7 @@ async function harness() {
     }
     return nodes.get(id);
   };
-  c = vm.createContext({ $, structuredClone, JSON, Set, Date, storeInsightsForStore, planStoreInsights, applyStoreInsights, buildStoreInsightsSource,
+  c = vm.createContext({ $, structuredClone, JSON, Set, Date, storeInsightsForStore, planStoreInsights, applyStoreInsights, buildStoreInsightsSource, insightReviewForEntry, storeInsightReviewHistory, planInsightReview, applyInsightReview,
     key: fixture.key, meta: structuredClone(fixture.meta), payload: { device: 'synthetic-ui-device', token: 'synthetic-token', bundle: structuredClone(fixture.bundle), dirty: false },
     localRevision: 7, slot: state.disk, localSaveState: 'saved', syncInProgress: false, pendingLock: false, busy: false, updateHolding: false,
     insightsPreview: null, backupPreview: null, versionReview: null, resolutionPreview: null, editorContext: null, singleStoreContext: null, inlineTextContext: null, reminderContext: null, attendancePrompt: null,
