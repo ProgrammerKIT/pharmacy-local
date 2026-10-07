@@ -267,3 +267,17 @@ dialog:focus{outline:none}
 
 /* Single-store, source-backed insights stay separate from editable originals. */
 .store-insights{margin:18px 0;min-width:0}.store-insights>h2{font-size:1.05rem;margin:0 0 12px}.store-insight-card{border:1px solid #cbdcd7;border-left:3px solid #288577;border-radius:10px;background:#f5faf8;padding:14px;margin:10px 0;min-width:0;overflow-wrap:anywhere}.store-insight-labels{display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:.8rem;color:var(--teal)}.store-insight-card h3{font-size:1rem;line-height:1.6;margin:8px 0}.store-insight-question{margin:8px 0;font-size:.94rem}.store-insight-question strong{display:block;color:var(--teal);font-size:.8rem}.store-insight-caution{font-size:.82rem;color:#756043;margin:8px 0}.store-insight-card summary{font-size:.86rem;cursor:pointer;padding:8px 0;color:var(--teal)}.store-insight-evidence{padding:12px 0;border-top:1px solid var(--line);font-size:.9rem}.store-insight-evidence blockquote{margin:10px 0;padding-left:12px;border-left:2px solid #9fbbb2;white-space:pre-wrap}.store-insight-card pre,.store-insight-import pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit}.store-insight-import{margin:14px 0;padding:12px;border:1px solid var(--line);border-radius:10px}.store-insight-import>summary{font-weight:650;cursor:pointer}.store-insight-card ul{padding-left:22px;font-size:.86rem}.store-insight-card .muted{font-size:.8rem}
+
+/* Human review stays inside each store; the archive is collapsed by default. */
+.insight-human-review { border-top: 1px solid var(--line); margin-top: 14px; padding-top: 12px; }
+.insight-human-review p { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
+.insight-human-review small { color: var(--muted); }
+.insight-review-status[data-status="confirmed"] { color: var(--teal); }
+.insight-review-status[data-status="pending"] { color: #835b16; }
+.insight-review-status[data-status="rejected"] { color: #76516f; }
+.insight-review-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.insight-review-options button { min-width: 0; min-height: 44px; padding: 9px 4px; font-size: .9rem; white-space: normal; overflow-wrap: anywhere; }
+.insight-review-options button[aria-pressed="true"] { opacity: 1; background: #e5f1ee; border-color: var(--teal); color: #203447; cursor: default; }
+.insight-review-archive { border-top: 1px solid var(--line); padding-top: 14px; margin-top: 16px; }
+.insight-review-event { margin-top: 12px; overflow-wrap: anywhere; }
+.insight-review-event > summary { font-size: .9rem; font-weight: 500; }
