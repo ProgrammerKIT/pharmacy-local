@@ -2,7 +2,7 @@ import { newMeta, checkEnvelope, derive, seal, unseal, planBackupImport, uuid, e
 import { readLocal, writeLocal, archiveAndReplaceLocal, listLocalArchives, readLocalArchive } from './db.js';
 import { createCSVImport } from './csv-ui.js';
 import { PROFILE_FIELDS, FILL_FIELDS, scanQuality, setDistinctReview, sourceSuggestions, fillProfile } from './csv.js';
-import { entityRule, evidenceKind, sourceTags, groupCSVNotes, storeIdentityPending, relationVisitAllowed, retailChannel, filterStoreDirectory, candidateRelationsForStore, candidateOverview, candidateTrend, visitBriefForStore, regionalOptions, regionalInsights } from './relations.js';
+import { entityRule, evidenceKind, sourceTags, groupCSVNotes, storeIdentityPending, relationVisitAllowed, retailChannel, originalStoreNames, filterStoreDirectory, candidateRelationsForStore, candidateOverview, candidateTrend, visitBriefForStore, regionalOptions, regionalInsights } from './relations.js';
 import { APP_VERSION } from './version.js';
 import { makeVisitAttendance, visitAttendanceForStore, attendanceTaipeiDate } from './core.js';
 import { startUpdates, requestLocal, diagnoseConnection } from './update-client.js';
@@ -639,7 +639,7 @@ async function commitStoreEnrichment() {
   toast(`已補全 ${count} 間門市；來源與舊版本已保留，等待加密同步。`);
 }
 function visitStoreSearchText(store) {
-  return [store.name, ...(store.csvAliases || []), store.city, store.district, store.address, store.channel]
+  return [visitStoreNameText(store.name), ...visitStoreSourceNames(store).map(visitStoreNameText), store.city, store.district, store.address, store.channel]
     .filter(Boolean).join(' ').toLocaleLowerCase('zh-Hant');
 }
 function orderedVisitStores() {
@@ -1525,7 +1525,7 @@ function noteHTML(v, query = '') {
   const textBlock = inlineVisitTextHTML(v, query);
   const storeButton = store && !store.conflict && !storeIdentityPending(store) ? `data-visit-brief="${esc(v.store)}"` : `data-node-type="store" data-node-id="${esc(v.store)}"`;
   const advanced = `${sourceButton(v)}<button class="text-button" data-edit="visit:${esc(v.id)}">完整編輯</button><button class="text-button" data-history="visit:${esc(v.id)}">歷史 ${v.versions.length}</button><button class="text-button danger" data-delete="visit:${esc(v.id)}">移到回收桶</button>`;
-  return `<article class="note">${v.source ? `<div class="note-head"><span class="pill">${esc(v.source)}</span></div>` : ''}<button class="text-button store-link" ${storeButton}>${highlightLiteral(name('store', v.store), query)}</button>${visitStoreAliasMatchHTML(store, query)}${storeAttendanceHTML(v.store)}${storeNotes}${v.conflict ? `<div class="conflict-card">這筆有 ${v.heads.length} 個版本。以下僅顯示其中一個，請先核對。 <button class="text-button" data-review="visit:${esc(v.id)}">處理衝突</button></div>` : ''}${sourceState}${hint}${textBlock}<div class="chips">${v.topics.map(id => chip('topic', id, query)).join('')}${v.people.map(id => chip('person', id, query)).join('')}</div>${v.next ? `<p class="next"><strong>下次跟進</strong>${highlightLiteral(v.next, query)}</p>` : ''}<div class="attachments">${(v.attachments || []).map((a, i) => `<button data-attachment="${esc(v.id)}" data-index="${i}">↧ ${esc(a.name)}</button>`).join('')}</div><div class="note-actions">${!v.conflict && store && !storeIdentityPending(store) ? `<button class="primary" data-new-visit-store="${esc(v.store)}">＋ 記錄這次拜訪</button>` : ''}<details class="more-actions"><summary>更多操作</summary><div>${advanced}</div></details></div></article>`;
+  return `<article class="note">${v.source ? `<div class="note-head"><span class="pill">${esc(v.source)}</span></div>` : ''}<button class="text-button store-link" ${storeButton}>${visitStoreNameHTML(name('store', v.store), query)}</button>${visitStoreAliasMatchHTML(store, query)}${storeAttendanceHTML(v.store)}${storeNotes}${v.conflict ? `<div class="conflict-card">這筆有 ${v.heads.length} 個版本。以下僅顯示其中一個，請先核對。 <button class="text-button" data-review="visit:${esc(v.id)}">處理衝突</button></div>` : ''}${sourceState}${hint}${textBlock}<div class="chips">${v.topics.map(id => chip('topic', id, query)).join('')}${v.people.map(id => chip('person', id, query)).join('')}</div>${v.next ? `<p class="next"><strong>下次跟進</strong>${highlightLiteral(v.next, query)}</p>` : ''}<div class="attachments">${(v.attachments || []).map((a, i) => `<button data-attachment="${esc(v.id)}" data-index="${i}">↧ ${esc(a.name)}</button>`).join('')}</div><div class="note-actions">${!v.conflict && store && !store.deleted && !store.conflict ? `<button class="primary" data-new-visit-store="${esc(v.store)}">＋ 記錄這次拜訪</button>` : ''}<details class="more-actions"><summary>更多操作</summary><div>${advanced}</div></details></div></article>`;
 }
 function render() {
   if (!payload) return;
@@ -1748,32 +1748,61 @@ function drawGraph() {
 }
 function storeVisitSearchRank(store, needle) {
   if (!needle) return 0;
-  const lower = value => String(value ?? '').toLocaleLowerCase('zh-Hant');
+  const lower = value => visitStoreNameText(value).toLocaleLowerCase('zh-Hant');
   const storeName = lower(store?.name), q = lower(needle);
   if (storeName === q) return 0;
   if (storeName.includes(q)) return 1;
-  if (store?.csvAliases?.some(alias => lower(alias).includes(q))) return 1;
+  if (visitStoreSourceNames(store).some(alias => lower(alias).includes(q))) return 1;
   return Infinity;
+}
+function visitStoreNameText(value) {
+  return String(value ?? '').replace(/[\r\n]/g, '');
+}
+function visitStoreNameHTML(value, query = '') {
+  const text = String(value ?? ''), needle = visitStoreNameText(query).trim();
+  if (!needle || !/[\r\n]/.test(text)) return highlightLiteral(text, needle);
+  // Single-line inputs remove CR/LF. Map each remaining UTF-16 position back to
+  // the untouched name so a match crossing a line break highlights literal parts.
+  const offsets = [];
+  for (let index = 0; index < text.length; index++) if (text[index] !== '\r' && text[index] !== '\n') offsets.push(index);
+  const pattern = new RegExp(regexEscape(needle), 'giu'), singleLine = visitStoreNameText(text);
+  let html = '', last = 0, ignoredLineBreak = false, match;
+  while ((match = pattern.exec(singleLine))) {
+    const start = offsets[match.index], end = offsets[match.index + match[0].length - 1] + 1;
+    const original = text.slice(start, end);
+    ignoredLineBreak ||= /[\r\n]/.test(original);
+    html += esc(text.slice(last, start)) + original.split(/([\r\n]+)/).map(part => /[\r\n]/.test(part) ? esc(part) : part ? '<mark class="search-match">' + esc(part) + '</mark>' : '').join('');
+    last = end;
+  }
+  if (!ignoredLineBreak) return highlightLiteral(text, needle);
+  return `<span style="white-space:pre-wrap">${html + esc(text.slice(last))}</span><span class="muted">（名稱換行已忽略）</span>`;
+}
+function visitStoreSourceNames(store) {
+  if (!store) return [];
+  return [...new Set([...(store.csvAliases || []), ...originalStoreNames(store)])]
+    .filter(value => value.trim() && value !== store.name);
 }
 function visitStoreAliasMatchHTML(store, query = '') {
   if (!query) return '';
-  const q = query.toLocaleLowerCase('zh-Hant');
-  const matches = (store?.csvAliases || []).filter(alias => alias.toLocaleLowerCase('zh-Hant').includes(q));
-  return matches.length ? `<p class="muted">來源名稱：${matches.map(alias => highlightLiteral(alias, query)).join('／')}</p>` : '';
+  const q = visitStoreNameText(query).toLocaleLowerCase('zh-Hant');
+  const matches = visitStoreSourceNames(store).filter(alias => visitStoreNameText(alias).toLocaleLowerCase('zh-Hant').includes(q));
+  return matches.length ? `<p class="muted">來源名稱：${matches.map(alias => visitStoreNameHTML(alias, query)).join('／')}</p>` : '';
 }
-function visitStoreCardHTML(store, query = '') {
-  const pending = storeIdentityPending(store);
-  const target = store.conflict ? `data-review="store:${esc(store.id)}"` : pending ? `data-edit="store:${esc(store.id)}"` : `data-visit-brief="${esc(store.id)}"`;
+function visitStoreCardHTML(store, query = '', unresolvedVisits = []) {
+  const pending = storeIdentityPending(store), associationPending = unresolvedVisits.length > 0;
+  const target = store.conflict ? `data-review="store:${esc(store.id)}"` : associationPending ? `data-review="visit:${esc(unresolvedVisits[0].id)}"` : pending ? `data-edit="store:${esc(store.id)}"` : `data-visit-brief="${esc(store.id)}"`;
   const hasStoreNotes = !!(store.nextRemember || store.everyTimeMust || store.nextRememberTasks?.some(task => !task.completedAt));
-  const reminders = store.conflict ? '' : `<div class="store-memory ${hasStoreNotes ? '' : 'empty'}">${reminderTasksHTML(store, true, false)}${store.nextRemember ? `<p><strong>下次記得（尚未轉成任務）：</strong>${esc(store.nextRemember)}</p>` : ''}${store.everyTimeMust ? `<p><strong>每次必做、必給：</strong>${esc(store.everyTimeMust)}</p>` : ''}<button type="button" class="text-button store-reminder-edit" data-store-reminder="${esc(store.id)}">${hasStoreNotes ? '修改門市提醒' : '＋ 填寫門市提醒'}</button></div>`;
-  const notice = store.conflict ? '<p class="conflict-card">門市資料有衝突，請先核對版本。</p>' : pending ? '<p class="muted">門市身分待確認；可先記錄拜訪，不會自動合併門市。</p>' : '';
-  const actions = store.conflict ? `<button type="button" class="secondary" data-review="store:${esc(store.id)}">比較並處理衝突</button>` : `${!pending ? `<button type="button" class="secondary" data-visit-brief="${esc(store.id)}">單店拜訪</button>` : ''}<button type="button" class="primary" data-new-visit-store="${esc(store.id)}">＋ 記錄這次拜訪</button>`;
-  return `<article class="note" data-visit-empty-store="${esc(store.id)}"><button type="button" class="text-button store-link" ${target}>${highlightLiteral(store.name, query)}</button>${visitStoreAliasMatchHTML(store, query)}${storeAttendanceHTML(store.id)}${reminders}<p class="muted">尚無拜訪紀錄。</p>${notice}<div class="note-actions">${actions}</div></article>`;
+  const reminders = store.conflict || associationPending ? '' : `<div class="store-memory ${hasStoreNotes ? '' : 'empty'}">${reminderTasksHTML(store, true, false)}${store.nextRemember ? `<p><strong>下次記得（尚未轉成任務）：</strong>${esc(store.nextRemember)}</p>` : ''}${store.everyTimeMust ? `<p><strong>每次必做、必給：</strong>${esc(store.everyTimeMust)}</p>` : ''}<button type="button" class="text-button store-reminder-edit" data-store-reminder="${esc(store.id)}">${hasStoreNotes ? '修改門市提醒' : '＋ 填寫門市提醒'}</button></div>`;
+  const notice = store.conflict ? '<p class="conflict-card">門市資料有衝突，請先核對版本。</p>' : pending ? `<p class="muted">${associationPending ? '門市身分待確認，仍須人工核對。' : '門市身分待確認；可先記錄拜訪，不會自動合併門市。'}</p>` : '';
+  const actions = store.conflict ? `<button type="button" class="secondary" data-review="store:${esc(store.id)}">比較並處理衝突</button>` : associationPending ? '' : `${!pending ? `<button type="button" class="secondary" data-visit-brief="${esc(store.id)}">單店拜訪</button>` : ''}<button type="button" class="primary" data-new-visit-store="${esc(store.id)}">＋ 記錄這次拜訪</button>`;
+  const associationActions = unresolvedVisits.map((visit, index) => `<button type="button" class="secondary" data-review="visit:${esc(visit.id)}">核對拜訪衝突${unresolvedVisits.length > 1 ? ' ' + (index + 1) : ''}</button>`).join('');
+  const noteStatus = associationPending ? '<p class="conflict-card">有拜訪紀錄的門市歸屬待核對</p><p class="muted">未決版本提到此門市，不代表拜訪已歸屬此店；請先核對衝突版本。</p>' : '<p class="muted">尚無拜訪紀錄。</p>';
+  return `<article class="note" data-visit-empty-store="${esc(store.id)}"${associationPending ? ' data-visit-association-pending="true"' : ''}><button type="button" class="text-button store-link" ${target}>${visitStoreNameHTML(store.name, query)}</button>${visitStoreAliasMatchHTML(store, query)}${storeAttendanceHTML(store.id)}${reminders}${noteStatus}${notice}<div class="note-actions">${actions}${associationActions}</div></article>`;
 }
 function visitSearchRank(v, needle) {
   if (!needle) return 0;
   const lower = value => String(value ?? '').toLocaleLowerCase('zh-Hant'), q = lower(needle);
-  const storeRank = storeVisitSearchRank(by('store', v.store), needle);
+  const storeRank = storeVisitSearchRank(by('store', v.store) || { name: name('store', v.store) }, needle);
   if (Number.isFinite(storeRank)) return storeRank;
   if (lower(v.text).includes(q)) return 2;
   if (lower(v.next).includes(q)) return 3;
@@ -1791,7 +1820,8 @@ function visitSearchSnippet(value, query, before = 38, after = 70) {
 }
 function visitSearchPreview(v, query) {
   const lower = value => String(value ?? '').toLocaleLowerCase('zh-Hant'), q = query.toLocaleLowerCase('zh-Hant');
-  if (lower(name('store', v.store)).includes(q)) return '<span class="muted">門市名稱符合搜尋字詞</span>';
+  const storeName = name('store', v.store);
+  if (lower(visitStoreNameText(storeName)).includes(lower(visitStoreNameText(query)))) return `<span class="muted">${lower(storeName).includes(q) ? '門市名稱符合搜尋字詞' : '門市名稱符合搜尋字詞（名稱換行已忽略）'}</span>`;
   const aliases = visitStoreAliasMatchHTML(by('store', v.store), query);
   if (aliases) return aliases;
   const fields = [
@@ -1807,7 +1837,7 @@ function renderVisitSearchGroup(group, query) {
   const matches = group.matches.slice().sort((a, b) => a.rank - b.rank || b.v.date.localeCompare(a.v.date));
   const lead = matches[0]?.v, total = group.allVisits.length, store = by('store', group.storeId);
   const target = store && !store.conflict && !storeIdentityPending(store) ? `data-visit-brief="${esc(group.storeId)}"` : `data-node-type="store" data-node-id="${esc(group.storeId)}"`;
-  return `<section class="visit-search-group"><div class="visit-search-group-head"><button class="text-button store-link" ${target}>${highlightLiteral(name('store', group.storeId), query)}</button><span class="pill">${group.matches.length} 筆命中 · 共 ${total} 筆</span></div>${storeAttendanceHTML(group.storeId)}<div class="visit-search-preview">${lead ? visitSearchPreview(lead, query) : ''}</div><details class="visit-search-details"><summary>展開這間藥局全部 ${total} 筆拜訪紀錄</summary><div class="visit-search-expanded">${group.allVisits.map(v => noteHTML(v, query)).join('')}</div></details></section>`;
+  return `<section class="visit-search-group"><div class="visit-search-group-head"><button class="text-button store-link" ${target}>${visitStoreNameHTML(name('store', group.storeId), query)}</button><span class="pill">${group.matches.length} 筆命中 · 共 ${total} 筆</span></div>${storeAttendanceHTML(group.storeId)}<div class="visit-search-preview">${lead ? visitSearchPreview(lead, query) : ''}</div><details class="visit-search-details"><summary>展開這間藥局全部 ${total} 筆拜訪紀錄</summary><div class="visit-search-expanded">${group.allVisits.map(v => noteHTML(v, query)).join('')}</div></details></section>`;
 }
 function renderVisits() {
   renderQuickVisit(); renderReminderDrafts();
@@ -1823,10 +1853,19 @@ function renderVisits() {
   else if (liveInlineDraft) $('draft-banner-text').textContent = '有一筆拜訪文字正在加密保存，尚未建立正式版本。';
   const query = $('visit-search').value.trim(), visits = all('visit').slice().sort((a, b) => b.date.localeCompare(a.date));
   const storesWithVisits = new Set(visits.map(visit => visit.store));
+  const unresolvedVisitsByStore = new Map();
+  for (const visit of visits.filter(visit => visit.conflict)) {
+    const otherStores = new Set(visit.heads.filter(head => !head.deleted).map(head => head.data.store));
+    otherStores.delete(visit.store);
+    for (const storeId of otherStores) {
+      if (!unresolvedVisitsByStore.has(storeId)) unresolvedVisitsByStore.set(storeId, []);
+      unresolvedVisitsByStore.get(storeId).push(visit);
+    }
+  }
   const emptyStores = all('store').filter(store => !store.deleted && !storesWithVisits.has(store.id))
     .sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
   if (!query) {
-    $('visit-list').innerHTML = visits.map(v => noteHTML(v)).join('') + emptyStores.map(store => visitStoreCardHTML(store)).join('') || '<p class="empty">目前沒有門市或拜訪紀錄。</p>';
+    $('visit-list').innerHTML = visits.map(v => noteHTML(v)).join('') + emptyStores.map(store => visitStoreCardHTML(store, '', unresolvedVisitsByStore.get(store.id))).join('') || '<p class="empty">目前沒有門市或拜訪紀錄。</p>';
     return;
   }
   const allByStore = new Map();
@@ -1853,10 +1892,10 @@ function renderVisits() {
   }
   for (const store of emptyStores) {
     const rank = storeVisitSearchRank(store, query);
-    if (Number.isFinite(rank)) grouped.set(store.id, { storeId: store.id, emptyStore: store, bestRank: rank, bestRankDate: '', matches: [], allVisits: [] });
+    if (Number.isFinite(rank)) grouped.set(store.id, { storeId: store.id, emptyStore: store, unresolvedVisits: unresolvedVisitsByStore.get(store.id), bestRank: rank, bestRankDate: '', matches: [], allVisits: [] });
   }
   const groups = [...grouped.values()].sort((a, b) => a.bestRank - b.bestRank || b.bestRankDate.localeCompare(a.bestRankDate) || name('store', a.storeId).localeCompare(name('store', b.storeId), 'zh-Hant'));
-  $('visit-list').innerHTML = groups.map(group => group.emptyStore ? visitStoreCardHTML(group.emptyStore, query) : group.matches.length > 1 ? renderVisitSearchGroup(group, query) : noteHTML(group.matches[0].v, query)).join('') || '<p class="empty">沒有符合的門市或拜訪紀錄。</p>';
+  $('visit-list').innerHTML = groups.map(group => group.emptyStore ? visitStoreCardHTML(group.emptyStore, query, group.unresolvedVisits) : group.matches.length > 1 ? renderVisitSearchGroup(group, query) : noteHTML(group.matches[0].v, query)).join('') || '<p class="empty">沒有符合的門市或拜訪紀錄。</p>';
 }
 function sourceButton(r) { return (r.csvSources?.length || r.versions?.some(v => v.data.csvSources?.length)) ? `<button class="text-button" data-csv-source="${r.type}:${esc(r.id)}">查看匯入原始來源</button>` : ''; }
 function openSources(type, id) {
