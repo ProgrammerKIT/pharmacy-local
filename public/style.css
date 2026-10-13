@@ -268,6 +268,17 @@ dialog:focus{outline:none}
 /* Single-store, source-backed insights stay separate from editable originals. */
 .store-insights{margin:18px 0;min-width:0}.store-insights>h2{font-size:1.05rem;margin:0 0 12px}.store-insight-card{border:1px solid #cbdcd7;border-left:3px solid #288577;border-radius:10px;background:#f5faf8;padding:14px;margin:10px 0;min-width:0;overflow-wrap:anywhere}.store-insight-labels{display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:.8rem;color:var(--teal)}.store-insight-card h3{font-size:1rem;line-height:1.6;margin:8px 0}.store-insight-question{margin:8px 0;font-size:.94rem}.store-insight-question strong{display:block;color:var(--teal);font-size:.8rem}.store-insight-caution{font-size:.82rem;color:#756043;margin:8px 0}.store-insight-card summary{font-size:.86rem;cursor:pointer;padding:8px 0;color:var(--teal)}.store-insight-evidence{padding:12px 0;border-top:1px solid var(--line);font-size:.9rem}.store-insight-evidence blockquote{margin:10px 0;padding-left:12px;border-left:2px solid #9fbbb2;white-space:pre-wrap}.store-insight-card pre,.store-insight-import pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit}.store-insight-import{margin:14px 0;padding:12px;border:1px solid var(--line);border-radius:10px}.store-insight-import>summary{font-weight:650;cursor:pointer}.store-insight-card ul{padding-left:22px;font-size:.86rem}.store-insight-card .muted{font-size:.8rem}
 
+/* Confirmed insights show only their existing headline until explicitly opened. */
+.store-insight-confirmed{padding:0 12px}
+.store-insight-card .insight-confirmed-details>summary{display:flex;align-items:flex-start;gap:8px;min-height:44px;padding:12px 0;color:inherit;list-style:none}
+.insight-confirmed-details>summary::-webkit-details-marker{display:none}
+.insight-confirmed-details>summary::before{content:'▸';flex:none;color:var(--teal);line-height:1.55}
+.insight-confirmed-details[open]>summary::before{content:'▾'}
+.insight-confirmed-headline{flex:1;min-width:0;font-size:.94rem;font-weight:650;line-height:1.55;overflow-wrap:anywhere}
+.insight-confirmed-badge{flex:none;color:var(--teal);background:#e5f1ee;border-radius:5px;padding:3px 5px;font-size:.68rem;line-height:1.5;white-space:nowrap}
+.insight-confirmed-content{border-top:1px solid var(--line);padding:12px 0}
+.insight-confirmed-details>summary:focus-visible{outline:2px solid var(--teal);outline-offset:3px;border-radius:6px}
+
 /* Human review stays inside each store; the archive is collapsed by default. */
 .insight-human-review { border-top: 1px solid var(--line); margin-top: 14px; padding-top: 12px; }
 .insight-human-review p { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
