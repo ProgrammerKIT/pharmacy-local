@@ -1,3 +1,13 @@
+v1.5.65 定位說明預設收合｜2026-10-13
+
+完整 Node 回歸 530／530 通過，0 失敗／取消／略過；node --check public/app.js 及 git diff --check 通過。未新增測試檔；沿用既有 GPS、四間排序、desktop no-GPS、前背景定位失效及更新簽章測試。
+
+另於 loopback 隔離預覽使用實際 quick-visit HTML、CSS、renderQuickVisit 與 requestNearbyPosition 函式，搭配虛構門市和模擬 GPS。Chrome 393×852 及 1280×900 實際操作並檢視截圖，均無水平溢出。確認預設收合、點擊展開完整資訊與座標補查入口、重新定位後維持展開狀態、正常定位回復四卡且隱藏外部說明；定位中禁用重試，未授權、逾時、缺座標、誤差過大皆在收合區外顯示提示。桌面重試隱藏，模擬 GPS 呼叫次數不增加。
+
+本次瀏覽器驗收不讀寫正式資料，不呼叫真正 GPS 或外部服務；不宣稱真 iPhone／Safari／PWA 已驗收。App1.5.65／SOP1 1.2.49；schema2、protocol1及21條runtime路徑不變。
+
+以下保留歷史測試結果。
+
 v1.5.64 附近門市卡片精簡｜2026-10-13
 
 完整 Node 回歸 530／530 通過，0 失敗／取消／略過；node --check public/app.js 及 git diff --check 通過。runtime 行為只改 renderQuickVisit 的卡片模板，移除拜訪日期與正常門市操作說明，保留身分待確認警示及原點擊屬性；共用 storeAttendanceHTML、GPS、資料操作及其他卡片不變。

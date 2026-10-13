@@ -563,6 +563,9 @@ function renderQuickVisit() {
     ? `依直線距離排序（不是行車距離）。${coverage}／${available.length} 間有可用座標${coverage < available.length ? '；缺少座標的門市未參與排序，可能另有更近門市' : ''}。定位誤差約 ${Math.round(nearbyState.position.accuracy)} 公尺${nearbyState.position.accuracy > 1000 ? '，目前誤差較大，請重新定位' : ''}。`
     : '已取得定位，但門市缺少可靠座標，尚無法計算附近門市。';
   status.textContent = message || '開啟後會請求定位；只在本機計算距離。';
+  const feedback = $('nearby-feedback'), imprecise = ready && located.length > 0 && nearbyState.position.accuracy > 1000;
+  feedback.hidden = !mobile || (ready && located.length > 0 && !imprecise);
+  feedback.textContent = feedback.hidden ? '' : imprecise ? '定位誤差較大，請重新定位；詳細資訊可展開「定位說明」。' : status.textContent;
   const entries = located.length ? located : recentStores(3).map(store => ({ store }));
   const fallback = mobile && !located.length ? '<p class="nearby-fallback-label">先顯示最近使用的門市（不是距離排序）</p>' : '';
   $('recent-store-list').innerHTML = fallback + entries.map(({ store, distance }) => {
