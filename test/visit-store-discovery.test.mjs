@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import { emptyBundle, revision, project, validateBundle, makeVisitAttendance, visitAttendanceForStore, reminderTaskHistory } from '../public/core.js';
+import { emptyBundle, revision, project, validateBundle, makeVisitAttendance, visitAttendanceForStore, reminderTaskHistory, dayPlanDate, shiftDayPlanDate, dayPlanForStore } from '../public/core.js';
 import { storeIdentityPending, originalStoreNames } from '../public/relations.js';
 
 const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
@@ -39,7 +39,7 @@ function fixture(records, payloadFields = {}) {
   const rejectWrite = () => assert.fail('Searching or opening an existing store must not persist a revision');
   const ctx = vm.createContext({
     records: freeze(records), payload, inlineTextContext: null, focus: { type: 'store', id: '' },
-    $: node, storeIdentityPending, originalStoreNames, reminderTaskHistory, activeView: 'visits',
+    $: node, storeIdentityPending, originalStoreNames, reminderTaskHistory, dayPlanDate, shiftDayPlanDate, dayPlanForStore, activeView: 'visits',
     storeAttendance: id => visitAttendanceForStore(payload.bundle, id),
     dateText: value => value || '',
     renderQuickVisit() {}, renderReminderDrafts() {},

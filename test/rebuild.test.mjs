@@ -155,7 +155,7 @@ test('actual device-switch UI keeps the active vault on failure, then clears old
   $('rebuild-code').value='fixture-code';$('rebuild-understood').checked=true;
   let failWrite=true,writes=0,locationClears=0,pairCalls=0;
   const ctx=vm.createContext({$,meta:old.meta,key:old.key,payload:{bundle:old.bundle,deviceName:'Mac'},localRevision:1,slot:{},openRebuiltSnapshot,seal,editorContext:null,csvImport:{hasPending:()=>false,reset(){}},qualityCache:{},qualityReview:{},records:project(old.bundle),trail:['old'],focus:{type:'store',id:'old-store'},graphPage:1,objectURLs:[],lastError:'old',lastSyncFailure:{},syncWarning:'',
-    singleStoreContext:null,reminderContext:null,inlineTextContext:null,
+    singleStoreContext:null,reminderContext:null,inlineTextContext:null,dayPlanContext:null,
     clearNearbyPosition:()=>{locationClears++;},api:async()=>{pairCalls++;return paired;},archiveAndReplaceLocal:async()=>{if(failWrite)throw new Error('quota');writes++;return 2;},openWorkspace:async()=>{},switchView:view=>ctx.view=view,toast:message=>ctx.notice=message,
     run:async(fn,errorTarget)=>{try{await fn();}catch(e){$(errorTarget).textContent=e.message;}},
   });

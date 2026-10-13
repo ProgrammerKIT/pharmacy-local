@@ -157,7 +157,7 @@ test('background and bfcache lifecycle dismiss focus synchronously without remov
   Object.assign(f.context, {
     payload: { draft: { text: '保留中的虛構草稿' } }, editorContext: { type: 'visit' }, singleStoreContext: null,
     inlineTextContext: { after: '保留的直接修改' }, reminderContext: { id: 'fictional-store', draftTouched: true }, busy: false, backupPreview: null, pendingLock: false,
-    clearNearbyPosition() {}, requestNearbyPosition() {}, showGate() {}, lockNow() {}, finishAttendancePrompt() {},
+    clearNearbyPosition() {}, requestNearbyPosition() {}, showGate() {}, lockNow() {}, finishAttendancePrompt() {}, resumeDayPlanContext() { f.events.push(['resume-day-plan']); },
     flushVisitDraft() { f.events.push(['flush-visit']); }, flushInlineTextDraft() { f.events.push(['flush-inline']); },
     async flushReminderDraft() { f.events.push(['flush-reminder']); }
   });
@@ -173,6 +173,7 @@ test('background and bfcache lifecycle dismiss focus synchronously without remov
   assert.equal(f.context.inlineTextContext.after, '保留的直接修改');
   assert.equal(f.context.reminderContext.draftTouched, true);
   assert.equal(f.events.filter(([event]) => event === 'flush-reminder').length, 2, 'background and pagehide flush reminders before deferring lock');
+  assert.equal(f.events.filter(([event]) => event === 'resume-day-plan').length, 2, 'foreground and pageshow recheck the separately retained day-plan context');
   assert.equal(f.tasks.length, 0, 'no delayed blur may steal a subsequent intentional tap');
   field.focus(); f.flush(); assert.equal(f.document.activeElement, field);
 });

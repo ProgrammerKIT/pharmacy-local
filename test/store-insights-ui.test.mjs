@@ -45,7 +45,7 @@ async function harness() {
   c = vm.createContext({ $, structuredClone, JSON, Set, Date, storeInsightsForStore, planStoreInsights, applyStoreInsights, buildStoreInsightsSource, insightReviewForEntry, storeInsightReviewHistory, planInsightReview, applyInsightReview,
     key: fixture.key, meta: structuredClone(fixture.meta), payload: { device: 'synthetic-ui-device', token: 'synthetic-token', bundle: structuredClone(fixture.bundle), dirty: false },
     localRevision: 7, slot: state.disk, localSaveState: 'saved', syncInProgress: false, pendingLock: false, busy: false, updateHolding: false,
-    insightsPreview: null, storeMergePreview: null, storeMergeSetup: null, backupPreview: null, versionReview: null, resolutionPreview: null, editorContext: null, singleStoreContext: null, inlineTextContext: null, reminderContext: null, attendancePrompt: null,
+    insightsPreview: null, storeMergePreview: null, storeMergeSetup: null, backupPreview: null, versionReview: null, resolutionPreview: null, editorContext: null, singleStoreContext: null, inlineTextContext: null, reminderContext: null, dayPlanContext: null, attendancePrompt: null,
     document: { hidden: false, querySelectorAll: () => [...nodes.values()], body: { classList: { add() {}, remove() {} } } },
     csvImport: { hasPending: () => state.pendingCSV, reset() {} }, syncScheduler: { request: reason => state.requests.push(reason), pause() {}, reset() {} },
     openDialog: dialog => { dialog.open = true; }, render: () => state.renders++, renderDataSafetyEntry() {}, toast: message => state.notices.push(message),
@@ -69,7 +69,7 @@ function installLock(h) {
 }
 
 test('insight actions reject open editors, unfinished encrypted drafts, competing reviews and background state without writing', async () => {
-  const blockers = [h => h.c.payload = null, h => h.c.editorContext = {}, h => h.c.singleStoreContext = {}, h => h.c.inlineTextContext = {}, h => h.c.reminderContext = {}, h => h.c.payload.draft = {}, h => h.c.payload.inlineTextDraft = {}, h => h.c.backupPreview = {}, h => h.c.attendancePrompt = {}, h => h.state.pendingCSV = true,
+  const blockers = [h => h.c.payload = null, h => h.c.editorContext = {}, h => h.c.singleStoreContext = {}, h => h.c.inlineTextContext = {}, h => h.c.reminderContext = {}, h => h.c.dayPlanContext = {}, h => h.c.payload.draft = {}, h => h.c.payload.inlineTextDraft = {}, h => h.c.backupPreview = {}, h => h.c.attendancePrompt = {}, h => h.state.pendingCSV = true,
     ...['review', 'quick-text-dialog', 'store-reminder-dialog', 'rebuild-dialog'].map(id => h => h.$(id).open = true), h => h.c.pendingLock = true, h => h.c.document.hidden = true,
     h => h.c.payload.reminderDrafts = [{ format: 'store-reminder-draft-1', storeId: 's', storeName: 'Synthetic', parents: [h.fixture.store.id], baseEvery: '', baseLegacy: '', savedAt: generatedAt, fields: { next: 'Synthetic draft', every: '', customText: '', customApplied: '', convert: false, customChecked: false } }]
   ];

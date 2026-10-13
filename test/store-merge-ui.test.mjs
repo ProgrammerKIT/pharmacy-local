@@ -39,7 +39,7 @@ async function harness() {
     payload: { device: 'synthetic-device', bundle: structuredClone(fixture.bundle), token: 'synthetic-pair', dirty: false }, key: fixture.key, meta: structuredClone(fixture.meta), localRevision: 8, syncEpoch: 1,
     slot: state.disk, localSaveState: 'saved', busy: false, pendingLock: false, updateHolding: false, syncInProgress: false, autoFetching: false,
     storeMergePreview: null, storeMergeSetup: null, qualityReview: { a: 'keeper', b: 'donor' }, versionReview: null, resolutionPreview: null,
-    editorContext: null, singleStoreContext: null, inlineTextContext: null, reminderContext: null, quickTextContext: null, backupPreview: null, insightsPreview: null, coordinatePreview: null, enrichmentPreview: null, attendancePrompt: null,
+    editorContext: null, singleStoreContext: null, inlineTextContext: null, reminderContext: null, dayPlanContext: null, quickTextContext: null, backupPreview: null, insightsPreview: null, coordinatePreview: null, enrichmentPreview: null, attendancePrompt: null,
     document: { hidden: false }, csvImport: { hasPending: () => state.csvPending }, storedReminderDrafts: () => c.payload?.reminderDrafts || [],
     reviewHeads: record => record.heads.map(head => head.id).sort(), APP_VERSION: '1.5.62', INSIGHT_REVIEW_LABELS: { pending: '待查核', confirmed: 'Kit已確認', rejected: '不符合' },
     esc: value => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch])),
@@ -113,7 +113,7 @@ test('wrong-vault, older backup and corrupt backup cannot unlock apply', async (
 });
 
 test('stored drafts, hidden page, updates, lock, session, changed data and other-tab disk invalidate apply', async () => {
-  const changes = [h => h.c.payload.draft = { text: 'unsaved' }, h => h.c.payload.inlineTextDraft = {}, h => h.c.payload.reminderDrafts = [{}], h => h.c.document.hidden = true, h => h.c.pendingLock = true, h => h.c.updateHolding = true, h => h.c.syncInProgress = true, h => h.c.autoFetching = true, h => h.state.csvPending = true, h => h.c.key = {}, h => h.c.meta = {}, h => h.c.syncEpoch++, h => h.c.localRevision++, h => h.state.disk.revision++, h => h.c.payload.bundle.ops[0].data.name = 'stale', h => h.$('review').close()];
+  const changes = [h => h.c.payload.draft = { text: 'unsaved' }, h => h.c.payload.inlineTextDraft = {}, h => h.c.payload.reminderDrafts = [{}], h => h.c.dayPlanContext = {}, h => h.c.document.hidden = true, h => h.c.pendingLock = true, h => h.c.updateHolding = true, h => h.c.syncInProgress = true, h => h.c.autoFetching = true, h => h.state.csvPending = true, h => h.c.key = {}, h => h.c.meta = {}, h => h.c.syncEpoch++, h => h.c.localRevision++, h => h.state.disk.revision++, h => h.c.payload.bundle.ops[0].data.name = 'stale', h => h.$('review').close()];
   for (const change of changes) { const h = await harness(); await h.ready(); change(h); await assert.rejects(h.c.applyStoreMergePreview()); assert.equal(h.state.writes.length, 0); }
 });
 
