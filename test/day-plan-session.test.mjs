@@ -12,19 +12,20 @@ const implementation = app.slice(start, end);
 function session() {
   const key = { synthetic: 'key' }, meta = { synthetic: 'meta' }, bundle = { ops: ['synthetic-only'] };
   const ctx = {
-    kind: 'items', date: '2026-10-14', key, meta, bundle, revision: 17, epoch: 3,
-    today: '2026-10-13', changed: true, items: [{ name: '虛構備品', quantity: 2, unit: '份' }],
+    kind: 'selection', date: '2026-10-14', key, meta, bundle, revision: 17, epoch: 3,
+    today: '2026-10-13', query: '虛構搜尋', basis: 'synthetic-view-basis',
   };
   const sandbox = vm.createContext({
     dayPlanContext: ctx, busy: false, payload: { bundle }, document: { hidden: false },
-    pendingLock: false, updateHolding: false, key, meta, localRevision: 17, syncEpoch: 4,
+    pendingLock: false, updateHolding: false, autoFetching: false, syncInProgress: false,
+    dayPlanSelectedDate: '2026-10-14', key, meta, localRevision: 17, syncEpoch: 4,
     currentDate: '2026-10-13', dayPlanDate() { return sandbox.currentDate; },
   });
   vm.runInContext(implementation, sandbox);
   return { sandbox, ctx };
 }
 
-test('returning to an unchanged foreground form renews only its epoch and keeps entered preparation', () => {
+test('returning to an unchanged add dialog renews only its epoch and preserves the search', () => {
   const { sandbox, ctx } = session(), before = structuredClone(ctx);
   assert.throws(() => sandbox.assertDayPlanContext(ctx), /尚未寫入/);
   sandbox.resumeDayPlanContext();
@@ -40,12 +41,15 @@ test('foreground renewal refuses every changed data, identity, date, lock, or vi
     ['background', s => { s.document.hidden = true; }],
     ['pending lock', s => { s.pendingLock = true; }],
     ['program update', s => { s.updateHolding = true; }],
+    ['fetch in progress', s => { s.autoFetching = true; }],
+    ['sync in progress', s => { s.syncInProgress = true; }],
     ['missing payload', s => { s.payload = null; }],
     ['another key', s => { s.key = { synthetic: 'other-key' }; }],
     ['another metadata object', s => { s.meta = { synthetic: 'other-meta' }; }],
     ['another bundle, even with equal content', s => { s.payload.bundle = structuredClone(s.payload.bundle); }],
     ['new local revision', s => { s.localRevision++; }],
     ['Taipei midnight rollover', s => { s.currentDate = '2026-10-14'; }],
+    ['selected itinerary day changed', s => { s.dayPlanSelectedDate = '2026-10-15'; }],
   ];
   for (const [name, change] of cases) await t.test(name, () => {
     const { sandbox, ctx } = session(); change(sandbox);
@@ -74,6 +78,9 @@ test('save guard rejects later changes after a successful foreground revalidatio
     ['local revision', s => { s.localRevision++; }],
     ['background', s => { s.document.hidden = true; }],
     ['date', s => { s.currentDate = '2026-10-14'; }],
+    ['selected day', s => { s.dayPlanSelectedDate = '2026-10-15'; }],
+    ['fetch', s => { s.autoFetching = true; }],
+    ['sync', s => { s.syncInProgress = true; }],
   ];
   for (const [name, change] of cases) await t.test(name, () => {
     const { sandbox, ctx } = session();

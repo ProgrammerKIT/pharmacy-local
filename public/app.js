@@ -1,6 +1,6 @@
 import { newMeta, checkEnvelope, derive, seal, unseal, planBackupImport, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates, buildStoreEnrichmentRequest, planStoreEnrichment, applyStoreEnrichment, readonlyHealthAudit, dataSafetySummary, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, addReminderTasks, convertReminderTasks, completeReminderTask, reminderTaskHistory, searchStoreVisitText, storeInsightsForStore, insightReviewForEntry, storeInsightReviewHistory, planInsightReview, applyInsightReview, planStoreInsights, applyStoreInsights, buildStoreInsightsSource, planStoreMerge, applyStoreMerge } from './core.js';
 import { readLocal, writeLocal, archiveAndReplaceLocal, listLocalArchives, readLocalArchive } from './db.js';
-import { dayPlanDate, shiftDayPlanDate, dayPlanSources, dayPlanSourceKey, dayPlanForStore, dayPlanSuggestion, dayPlanOverview, applyDayPlanChanges } from './core.js';
+import { dayPlanDate, shiftDayPlanDate, dayPlanForStore, dayPlanOverview, dayItineraryBasis, applyDayItineraryAction } from './core.js';
 import { createCSVImport } from './csv-ui.js';
 import { PROFILE_FIELDS, FILL_FIELDS, scanQuality, setDistinctReview, sourceSuggestions, fillProfile } from './csv.js';
 import { entityRule, evidenceKind, sourceTags, groupCSVNotes, storeIdentityPending, relationVisitAllowed, retailChannel, originalStoreNames, filterStoreDirectory, candidateRelationsForStore, candidateOverview, candidateTrend, visitBriefForStore, regionalOptions, regionalInsights } from './relations.js';
@@ -320,7 +320,7 @@ let draftTimer = null, draftSaveChain = Promise.resolve(), discardingDraft = fal
 let versionReview = null, resolutionPreview = null;
 let coordinatePreview = null, enrichmentPreview = null, backupPreview = null, insightsPreview = null;
 let storeMergePreview = null, storeMergeSetup = null;
-let dayPlanSelectedDate = '', dayPlanContext = null, dayPlanPrepOpen = true;
+let dayPlanSelectedDate = '', dayPlanContext = null, dayPlanSorting = false, dayPlanViewBasis = '', dayPlanNotice = '', dayPlanUndo = null;
 let reminderDraftTimer = null, reminderDraftSaveChain = Promise.resolve();
 let attendancePrompt = null, attendanceCache = null;
 let localSaveState = 'unknown', syncInProgress = false, syncEpoch = 0;
@@ -1002,12 +1002,12 @@ function lockNow(reopen = !document.hidden) {
   captureTransientResumeState();
   syncEpoch++; syncScheduler.reset(); localSaveState = 'unknown';
   attendanceCache = null;
-  pendingLock = false; coordinatePreview = null; enrichmentPreview = null; insightsPreview = null; clearNearbyPosition(); versionReview = null; resolutionPreview = null; inlineTextContext = null; reminderContext = null; dayPlanContext = null; clearTimeout(reminderDraftTimer); reminderDraftTimer = null; clearTimeout(inlineDraftTimer); inlineDraftTimer = null; clearInterval(autoTimer); key = null; meta = null; payload = null; records = []; trail = []; editorContext = null; lastError = ''; macProgram = null; lastSyncFailure = null; syncWarning = '';
+  pendingLock = false; coordinatePreview = null; enrichmentPreview = null; insightsPreview = null; clearNearbyPosition(); versionReview = null; resolutionPreview = null; inlineTextContext = null; reminderContext = null; dayPlanContext = null; dayPlanUndo = null; dayPlanNotice = ''; dayPlanSorting = false; dayPlanViewBasis = ''; clearTimeout(reminderDraftTimer); reminderDraftTimer = null; clearTimeout(inlineDraftTimer); inlineDraftTimer = null; clearInterval(autoTimer); key = null; meta = null; payload = null; records = []; trail = []; editorContext = null; lastError = ''; macProgram = null; lastSyncFailure = null; syncWarning = '';
   csvImport.reset(); qualityCache = null; qualityReview = null; qualityTab = 'duplicates'; qualityField = ''; qualityPage = 0;
   resetStoreFilters();
   for (const u of objectURLs) URL.revokeObjectURL(u); objectURLs = [];
   document.querySelectorAll('dialog').forEach(d => d.close());
-  for (const id of ['day-plan-content', 'day-plan-entry', 'day-plan-fields', 'day-plan-confirmation', 'quality-content', 'regional-content', 'focus-header', 'graph', 'graph-pager', 'focus-detail', 'evidence-list', 'store-list', 'visit-list', 'recent-store-list', 'draft-banner-text', 'reminder-draft-list', 'customer-list', 'entity-list', 'trash-list', 'review-body', 'editor-fields', 'conflict-list', 'connection-detail', 'program-detail', 'local-save-detail', 'mac-ack-detail', 'sync-success-detail', 'sync-failure-detail', 'connection-check', 'device-label', 'sync-result', 'storage-detail', 'sync-health-title', 'sync-health-body', 'pending-sync-detail', 'sync-conflict-count', 'health-audit-title', 'health-audit-time', 'health-audit-list', 'backup-result', 'data-safety-title', 'data-safety-detail']) $(id).replaceChildren();
+  for (const id of ['day-plan-content', 'day-plan-entry', 'day-plan-fields', 'quality-content', 'regional-content', 'focus-header', 'graph', 'graph-pager', 'focus-detail', 'evidence-list', 'store-list', 'visit-list', 'recent-store-list', 'draft-banner-text', 'reminder-draft-list', 'customer-list', 'entity-list', 'trash-list', 'review-body', 'editor-fields', 'conflict-list', 'connection-detail', 'program-detail', 'local-save-detail', 'mac-ack-detail', 'sync-success-detail', 'sync-failure-detail', 'connection-check', 'device-label', 'sync-result', 'storage-detail', 'sync-health-title', 'sync-health-body', 'pending-sync-detail', 'sync-conflict-count', 'health-audit-title', 'health-audit-time', 'health-audit-list', 'backup-result', 'data-safety-title', 'data-safety-detail']) $(id).replaceChildren();
   $('connection-check').hidden = true;
   $('store-reminder-form').reset(); resetReminderOptionGroup('store-reminder-next'); $('store-reminder-existing').replaceChildren(); $('store-reminder-title').textContent = '門市提醒'; $('store-reminder-draft-state').textContent = ''; $('store-reminder-error').textContent = ''; $('reminder-draft-banner').hidden = true; $('reminder-draft-count').textContent = '未完成門市提醒';
   $('editor-form').reset(); $('gate-form').reset(); $('rebuild-connect-form').reset(); $('password').value = ''; $('backup-file').value = '';
@@ -1979,12 +1979,11 @@ function renderVisitSearchGroup(group, query) {
   const target = store && !store.conflict && !storeIdentityPending(store) ? `data-visit-brief="${esc(group.storeId)}"` : `data-node-type="store" data-node-id="${esc(group.storeId)}"`;
   return `<section class="visit-search-group"><div class="visit-search-group-head"><button class="text-button store-link" ${target}>${visitStoreNameHTML(name('store', group.storeId), query)}</button><span class="pill">${group.matches.length} 筆命中 · 共 ${total} 筆</span></div>${storeAttendanceHTML(group.storeId)}<div class="visit-search-preview">${lead ? visitSearchPreview(lead, query) : ''}</div><details class="visit-search-details"><summary>展開這間藥局全部 ${total} 筆拜訪紀錄</summary><div class="visit-search-expanded">${group.allVisits.map(v => noteHTML(v, query)).join('')}</div></details></section>`;
 }
-// Day plans are a separate store field. These paths never call attendance/task
-// completion or note editing; the only formal changes are datePlans revisions.
+// Day itinerary actions only change datePlans / datePlanOrder. They never call
+// task completion, attendance confirmation, or note editing.
 function dayPlanLabel(date) {
   return new Intl.DateTimeFormat('zh-TW', { timeZone: 'Asia/Taipei', month: 'numeric', day: 'numeric', weekday: 'short' }).format(new Date(date + 'T04:00:00.000Z'));
 }
-function dayPlanSourceLabel(source) { return { task: '下次記得', legacy: '下次記得（原文字）', every: '每次必做、必給' }[source?.kind] || '自行補充'; }
 function dayPlanAvailable(store) { return !!store && !store.deleted && !store.conflict && !store.mergedInto && !storeIdentityPending(store); }
 function renderDayPlanEntry() {
   const today = dayPlanDate(), tomorrow = shiftDayPlanDate(today, 1);
@@ -1992,160 +1991,90 @@ function renderDayPlanEntry() {
   $('day-plan-entry').innerHTML = `<button type="button" data-view="itinerary"><span><strong>行程與準備</strong><small>今天 ${count(today)} 間 · 明天 ${count(tomorrow)} 間</small></span><span>安排／查看 ›</span></button>`;
 }
 function currentDayOverview() { return dayPlanOverview(records, dayPlanSelectedDate || dayPlanDate()); }
-function dayPlanGroupBasis(group) {
-  return JSON.stringify(group.allocations.map(a => [a.storeId, a.itemId, by('store', a.storeId)?.heads.map(h => h.id).sort()]));
+function dayPlanReminderHTML(row) {
+  const next = row.sources.filter(source => source.kind !== 'every'), every = row.sources.filter(source => source.kind === 'every');
+  return [[next, '下次記得', ''], [every, '每次必做、必給', ' day-source-always']].filter(([sources]) => sources.length).map(([sources, label, style]) => `<section class="day-source-block${style}"><strong>${label}</strong>${sources.map(source => `<p>${esc(source.text)}</p>`).join('')}</section>`).join('');
+}
+function dayPlanLegacyHTML(row) {
+  if (!row.plan.items.length && !row.plan.acknowledged.length) return '';
+  return `<details class="day-plan-legacy"><summary>先前準備紀錄</summary><p class="muted">保留當時填寫的準備與已帶上紀錄，不代表已交付、完成任務或實際拜訪。</p>${row.plan.items.length ? `<ul>${row.plan.items.map(item => `<li>${esc(item.name)}${item.quantity === null ? '' : ' × ' + item.quantity}${esc(item.unit)}${item.packedAt ? ` · 已帶上（${esc(dateText(item.packedAt))}）` : ''}</li>`).join('')}</ul>` : ''}${row.plan.acknowledged.length ? `<p class="muted">當時標記無需攜帶：${row.plan.acknowledged.map(source => esc(source.text)).join('；')}</p>` : ''}<button class="text-button" data-history="store:${esc(row.storeId)}">查看門市完整歷史</button></details>`;
 }
 function renderDayPlan() {
   if (!dayPlanSelectedDate) dayPlanSelectedDate = dayPlanDate();
   const overview = currentDayOverview(), today = dayPlanDate(), dated = [today, shiftDayPlanDate(today, 1), shiftDayPlanDate(today, 2)];
-  const warningCount = overview.unclassifiedSources.length + overview.staleItems.length + overview.unknownItems.length + overview.unavailableStores.length;
-  const packed = overview.groups.filter(group => group.packed).length;
-  const groups = overview.groups.map(group => `<label class="day-pack-row"><input type="checkbox" data-day-pack="${esc(group.key)}" data-day-basis="${esc(dayPlanGroupBasis(group))}" ${group.packed ? 'checked' : ''} ${overview.past ? 'disabled' : ''} aria-label="${esc(group.name)} ${group.quantity}${esc(group.unit)} 已帶上"><span><strong>${esc(group.name)}</strong><small>${group.allocations.map(a => `${esc(a.storeName)} ${a.quantity}${esc(group.unit)}`).join(' · ')}</small>${group.packed ? '<small class="day-packed">已帶上</small>' : ''}</span><strong>${group.quantity} ${esc(group.unit)}</strong></label>`).join('');
-  const unknown = overview.unknownItems.map(item => `<p class="day-plan-warning">${esc(item.storeName)}：${esc(item.name)} · 數量／單位待確認</p>`).join('');
-  const stale = overview.staleItems.length ? `<p class="day-plan-warning">${overview.staleItems.length} 項的來源已改變或任務已完成，暫不計入物品總量；請進入該店「核對準備」更新。原準備與已帶上紀錄留在歷史。</p>` : '';
-  const unresolved = overview.unclassifiedSources.length ? `<p class="day-plan-warning">還有 ${overview.unclassifiedSources.length} 項提醒未核對是否需要攜帶物品。請逐店核對，避免漏帶。</p>` : '';
-  const unavailable = overview.unavailableStores.length ? `<p class="day-plan-warning">${overview.unavailableStores.length} 間門市有衝突、身分疑點、已整併或在回收桶；本日安排仍保留，暫不計入可準備總量。</p>` : '';
-  const cards = overview.stores.map(row => `<article class="panel day-store"><div class="section-row"><button class="text-button store-link" ${row.available ? `data-visit-brief="${esc(row.storeId)}"` : 'disabled'}>${esc(row.name)}</button>${!overview.past && row.available ? `<button type="button" data-day-items="${esc(row.storeId)}">核對準備</button>` : ''}</div>${!row.available ? `<p class="day-plan-warning">${esc(row.unavailableReason)}</p>` : ''}${row.historical ? '<p class="muted">此行程只存於歷史版本，唯讀查看。</p>' : ''}${row.items.length ? `<ul class="day-store-items">${row.items.map(item => `<li>${item.stale ? '需重核：' : item.packed ? '已帶上：' : '帶：'}${esc(item.name)} ${item.quantity == null ? '數量待確認' : item.quantity}${esc(item.unit || '')}</li>`).join('')}</ul>` : ''}${row.sources.length ? row.sources.map(source => `<p class="day-source-text"><strong>${dayPlanSourceLabel(source)}：</strong>${esc(source.text)}</p>`).join('') : '<p class="muted">目前沒有待做提醒。</p>'}${!overview.past && row.unclassifiedSources.length ? `<p class="muted">${row.unclassifiedSources.length} 項提醒尚待核對準備</p>` : ''}<div class="day-card-actions">${row.available ? `<button class="text-button" data-visit-brief="${esc(row.storeId)}">查看原文與完整門市</button>` : ''}<button class="text-button" data-history="store:${esc(row.storeId)}">行程／門市歷史</button></div></article>`).join('');
-  const cancelled = overview.cancelledStores || [];
-  $('day-plan-content').innerHTML = `<div class="day-plan-datebar"><div class="day-plan-days">${dated.map((date, index) => `<button type="button" data-day-date="${date}" aria-pressed="${date === dayPlanSelectedDate}">${['今天', '明天', '後天'][index]}<small>${esc(dayPlanLabel(date))}</small></button>`).join('')}</div><details class="day-plan-other-date"><summary>其他日期／歷史</summary><label>行程日期<input id="day-plan-date" type="date" value="${esc(dayPlanSelectedDate)}" aria-label="行程日期"></label></details></div><div class="section-row"><h3>${esc(dayPlanSelectedDate)} · ${overview.stores.length} 間預計拜訪</h3>${!overview.past ? '<button type="button" class="primary" data-day-select>安排門市</button>' : '<span class="pill">過去行程 · 唯讀</span>'}</div>${overview.past ? '<p class="muted">顯示當時保存的提醒與準備。已帶上不代表已交付或實際拜訪。</p>' : ''}<details class="panel day-preparation" id="day-plan-preparation" ${dayPlanPrepOpen ? 'open' : ''}><summary><strong>出門前，帶齊這些</strong><span>${packed}/${overview.groups.length} 類已帶上${warningCount ? ' · 仍有待核對' : ''}</span></summary><p class="muted">勾選只記錄「已帶上」。交付、任務完成及實際拜訪，仍由你在門市內分別確認。</p>${groups}${unknown}${stale}${unresolved}${unavailable}${!overview.groups.length && !warningCount ? `<p class="muted">${overview.past ? '這天沒有留存已核對的攜帶物品。' : '尚無已核對的攜帶物品；安排門市後，可核對既有提醒或自行補充。'}</p>` : ''}</details><div class="day-plan-store-grid">${cards || `<p class="empty">${overview.past ? '這天沒有留存行程；不代表當天沒有實際拜訪。' : '這天尚未安排門市。按「安排門市」一次選好要去的店。'}</p>`}</div>${cancelled.length ? `<details class="day-plan-cancelled"><summary>已移出本日行程 · ${cancelled.length} 間</summary>${cancelled.map(row => `<p>${esc(row.name)} <button class="text-button" data-history="store:${esc(row.storeId)}">查看歷史</button></p>`).join('')}</details>` : ''}`;
+  dayPlanViewBasis = dayItineraryBasis(records, dayPlanSelectedDate);
+  const canSort = !overview.past && overview.stores.length > 1 && overview.stores.every(row => row.available);
+  if (!canSort) dayPlanSorting = false;
+  const cards = overview.stores.map((row, index) => `<article class="panel day-store"><div class="day-store-heading"><span class="day-store-number">${index + 1}</span><button class="text-button store-link" ${row.available ? `data-visit-brief="${esc(row.storeId)}"` : 'disabled'}>${esc(row.name)}${row.available ? ' ›' : ''}</button>${!overview.past ? `<button type="button" class="text-button day-store-cancel" data-day-cancel="${esc(row.storeId)}" aria-label="取消${esc(row.name)}的${esc(overview.date)}安排" ${!row.available ? 'disabled' : ''}>取消安排</button>` : ''}</div>${!row.available ? `<p class="day-plan-warning">${esc(row.unavailableReason)}</p>` : ''}${row.historical ? '<p class="muted">此行程只存於歷史版本，唯讀查看。</p>' : ''}${dayPlanSorting ? `<div class="day-sort-controls"><button type="button" data-day-up="${esc(row.storeId)}" aria-label="上移${esc(row.name)}" ${index === 0 ? 'disabled' : ''}>↑ 上移</button><button type="button" data-day-down="${esc(row.storeId)}" aria-label="下移${esc(row.name)}" ${index === overview.stores.length - 1 ? 'disabled' : ''}>↓ 下移</button></div>` : dayPlanReminderHTML(row) + dayPlanLegacyHTML(row)}</article>`).join('');
+  const cancelled = overview.cancelledStores || [], undo = dayPlanUndo?.date === overview.date;
+  $('day-plan-content').innerHTML = `<div class="day-plan-datebar"><div class="day-plan-days">${dated.map((date, index) => `<button type="button" data-day-date="${date}" aria-pressed="${date === dayPlanSelectedDate}">${['今天', '明天', '後天'][index]}<small>${esc(dayPlanLabel(date))}</small></button>`).join('')}</div><details class="day-plan-other-date"><summary>其他日期／歷史</summary><label>行程日期<input id="day-plan-date" type="date" value="${esc(dayPlanSelectedDate)}" aria-label="行程日期"></label></details></div><div class="day-plan-toolbar"><h3>${esc(dayPlanLabel(overview.date))} · ${overview.stores.length} 間</h3>${!overview.past ? `<div><button type="button" class="text-button" data-day-sort aria-pressed="${dayPlanSorting}" ${!canSort ? 'disabled' : ''}>${dayPlanSorting ? '完成排序' : '調整順序'}</button><button type="button" class="primary" data-day-select>＋ 新增門市</button></div>` : '<span class="pill">過去行程 · 唯讀</span>'}</div>${overview.past ? '<p class="muted">顯示當時保存的提醒；安排日期不代表實際拜訪日期。</p>' : ''}<div class="day-plan-notice" role="status" aria-live="polite" ${dayPlanNotice ? '' : 'hidden'}>${esc(dayPlanNotice)}${undo ? '<button type="button" class="text-button" data-day-undo>復原</button>' : ''}</div><div class="day-plan-store-grid">${cards || `<p class="empty">${overview.past ? '這天沒有留存行程；不代表當天沒有實際拜訪。' : '這天還沒有安排門市。'}</p>`}</div>${cancelled.length ? `<details class="day-plan-cancelled"><summary>已取消安排 · ${cancelled.length} 間</summary>${cancelled.map(row => `<div class="day-cancelled-row"><span>${esc(row.name)}</span>${!overview.past && row.available ? `<button class="text-button" data-day-restore="${esc(row.storeId)}">重新加入</button>` : ''}<button class="text-button" data-history="store:${esc(row.storeId)}">查看歷史</button></div>`).join('')}</details>` : ''}`;
 }
 function assertDayPlanIdle() {
-  if (!payload || document.hidden || pendingLock || updateHolding || syncInProgress || dayPlanContext || editorContext || reminderContext || singleStoreContext || inlineTextContext || payload.inlineTextDraft || document.querySelector('dialog[open]') || csvImport.hasPending()) throw new Error('請先完成或關閉目前的編輯／核對，再安排或勾選準備。');
+  if (!payload || document.hidden || pendingLock || updateHolding || autoFetching || syncInProgress || dayPlanContext || editorContext || reminderContext || singleStoreContext || inlineTextContext || payload.inlineTextDraft || document.querySelector('dialog[open]') || csvImport.hasPending()) throw new Error('請先完成或關閉目前的編輯，並等待同步結束，再調整行程。');
 }
 function newDayPlanContext(kind) {
   assertDayPlanIdle();
+  if (!dayPlanSelectedDate) dayPlanSelectedDate = dayPlanDate();
   if (dayPlanSelectedDate < dayPlanDate()) throw new Error('過去行程保留供查看，不在此改寫歷史。');
-  return { kind, date: dayPlanSelectedDate, key, meta, bundle: payload.bundle, revision: localRevision, epoch: syncEpoch, today: dayPlanDate(), changed: false };
+  return { kind, date: dayPlanSelectedDate, key, meta, bundle: payload.bundle, revision: localRevision, epoch: syncEpoch, today: dayPlanDate(), basis: dayPlanViewBasis || dayItineraryBasis(records, dayPlanSelectedDate) };
 }
 function assertDayPlanContext(ctx) {
-  if (!ctx || !payload || key !== ctx.key || meta !== ctx.meta || payload.bundle !== ctx.bundle || localRevision !== ctx.revision || syncEpoch !== ctx.epoch || document.hidden || pendingLock || updateHolding || ctx.today !== dayPlanDate()) throw new Error('核對期間資料、工作階段或日期已改變；尚未寫入。請取消後重新開啟核對。');
+  if (!ctx || !payload || key !== ctx.key || meta !== ctx.meta || payload.bundle !== ctx.bundle || localRevision !== ctx.revision || syncEpoch !== ctx.epoch || dayPlanSelectedDate !== ctx.date || autoFetching || syncInProgress || document.hidden || pendingLock || updateHolding || ctx.today !== dayPlanDate()) throw new Error('資料、工作階段或日期已改變；尚未寫入。請關閉後重新開啟行程。');
 }
 function resumeDayPlanContext() {
-  // Merely return to the same unsaved form after a phone app switch. Never
-  // refresh an in-flight save guard; IndexedDB CAS still verifies disk on save.
+  // Only renew an idle, unchanged picker. Never refresh an in-flight save guard.
   const ctx = dayPlanContext;
-  if (ctx && !busy && payload && !document.hidden && !pendingLock && !updateHolding && key === ctx.key && meta === ctx.meta && payload.bundle === ctx.bundle && localRevision === ctx.revision && ctx.today === dayPlanDate()) ctx.epoch = syncEpoch;
+  if (ctx && !busy && !autoFetching && !syncInProgress && payload && !document.hidden && !pendingLock && !updateHolding && key === ctx.key && meta === ctx.meta && payload.bundle === ctx.bundle && localRevision === ctx.revision && ctx.date === dayPlanSelectedDate && ctx.today === dayPlanDate()) ctx.epoch = syncEpoch;
 }
 function openDayPlanSelection() {
   const ctx = newDayPlanContext('selection');
-  ctx.initial = new Set(records.filter(r => r.type === 'store' && dayPlanForStore(r, ctx.date)?.active).map(r => r.id));
-  ctx.selected = new Set(ctx.initial);
-  ctx.stores = records.filter(r => r.type === 'store' && (dayPlanAvailable(r) || ctx.initial.has(r.id))).sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
-  dayPlanContext = ctx; resetDayPlanConfirmation();
-  $('day-plan-title').textContent = `${ctx.date} · 安排門市`;
+  ctx.query = ''; ctx.stores = records.filter(r => r.type === 'store' && !r.deleted && !r.mergedInto).sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
+  dayPlanContext = ctx;
+  $('day-plan-title').textContent = `${dayPlanLabel(ctx.date)} · 新增門市`;
   $('day-plan-error').textContent = '';
   $('day-plan-fields').innerHTML = '<label>搜尋門市<input id="day-store-search" type="search" placeholder="店名、地區或既有來源名稱" autocomplete="off"></label><p id="day-plan-selection-count" role="status"></p><div id="day-store-options"></div>';
-  renderDayPlanChoices('');
-  openDialog($('day-plan-dialog'));
+  renderDayPlanChoices(''); openDialog($('day-plan-dialog'));
 }
 function renderDayPlanChoices(query) {
   const ctx = dayPlanContext; if (ctx?.kind !== 'selection') return;
-  const needle = String(query).toLocaleLowerCase();
-  $('day-plan-selection-count').textContent = `已選 ${ctx.selected.size} 間；取消勾選只移出這天，原任務及歷史保留。`;
-  $('day-store-options').innerHTML = ctx.stores.filter(store => [store.name, store.city, store.district, ...(store.csvAliases || [])].some(value => String(value || '').toLocaleLowerCase().includes(needle))).map(store => `<label class="day-store-choice"><input type="checkbox" data-day-choice="${esc(store.id)}" ${ctx.selected.has(store.id) ? 'checked' : ''} ${!dayPlanAvailable(store) ? 'disabled' : ''}><span><strong>${esc(store.name)}</strong><small>${esc([store.city, store.district].filter(Boolean).join(' · '))}${!dayPlanAvailable(store) ? ' · 門市狀態待核對，既有安排保留' : ''}</small></span></label>`).join('') || '<p class="empty">沒有符合的門市。</p>';
-}
-function openDayPlanItems(storeId) {
-  const ctx = newDayPlanContext('items'), store = by('store', storeId), plan = dayPlanForStore(store, ctx.date);
-  if (!dayPlanAvailable(store) || !plan?.active) throw new Error('這間門市目前不能修改準備，請重新核對。');
-  Object.assign(ctx, { storeId, storeName: store.name, items: structuredClone(plan.items), acknowledged: structuredClone(plan.acknowledged), sources: dayPlanSources(store) });
-  dayPlanContext = ctx; resetDayPlanConfirmation();
-  $('day-plan-title').textContent = store.name + ' · 核對準備';
-  $('day-plan-error').textContent = '';
-  renderDayPlanItems();
-  openDialog($('day-plan-dialog'));
-}
-function renderDayPlanItems() {
-  const ctx = dayPlanContext; if (ctx?.kind !== 'items') return;
-  $('day-plan-fields').innerHTML = `<p class="muted">${esc(ctx.date)}。提醒原文不會改寫；把要帶的物品拆成獨立品項，填好數量與單位，才會在當日加總。同一段提醒可加入多個品項。</p><h3>已列入的攜帶物品</h3><div id="day-item-rows">${ctx.items.map((item, i) => {
-    const stale = item.source && !ctx.sources.some(source => dayPlanSourceKey(source) === dayPlanSourceKey(item.source));
-    return `<fieldset class="day-item-row" data-day-item="${i}"><legend>物品 ${i + 1}${stale ? ' · 來源需重核' : ''}</legend><label>品項與規格<input data-day-item-name value="${esc(item.name)}" maxlength="200" required></label><div class="day-item-quantity"><label>數量（未知可留空）<input data-day-item-quantity type="number" min="0.001" max="100000" step="any" inputmode="decimal" value="${item.quantity ?? ''}"></label><label>單位<input data-day-item-unit maxlength="30" value="${esc(item.unit)}" placeholder="盒、支、個、份"></label></div><p class="day-item-source">${item.source ? `${dayPlanSourceLabel(item.source)}：${esc(item.source.text)}` : '自行補充的本日攜帶物品'}</p>${stale ? '<p class="error">來源已變更／完成，不計入總量。請移除此日舊品項後，從下方現行提醒重新加入；舊版本保留。</p>' : ''}<button type="button" class="text-button" data-day-remove-item="${i}">移出本日準備</button></fieldset>`;
-  }).join('') || '<p class="muted">尚未加入。可由下方提醒加入，或自行補充。</p>'}</div><button type="button" data-day-manual>＋ 自行補充攜帶物品</button><h3>本店既有提醒</h3><div class="day-source-list">${ctx.sources.map((source, i) => {
-    const token = dayPlanSourceKey(source), included = ctx.items.some(item => item.source && dayPlanSourceKey(item.source) === token), acknowledged = ctx.acknowledged.some(item => dayPlanSourceKey(item) === token);
-    return `<section class="day-source-review"><strong>${dayPlanSourceLabel(source)}</strong><p>${esc(source.text)}</p><div class="day-card-actions"><button type="button" data-day-add-source="${i}">${included ? '再加入另一個品項' : '列入攜帶物品'}</button><label class="check"><input type="checkbox" data-day-action-source="${i}" ${acknowledged ? 'checked' : ''} ${included ? 'disabled' : ''}>只在門市提醒，無需攜帶</label></div></section>`;
-  }).join('') || '<p class="muted">目前沒有待做提醒。</p>'}</div>`;
-}
-function readDayPlanItemInputs() {
-  const ctx = dayPlanContext; if (ctx?.kind !== 'items') return;
-  $('day-item-rows').querySelectorAll('[data-day-item]').forEach(row => {
-    const item = ctx.items[Number(row.dataset.dayItem)], value = row.querySelector('[data-day-item-quantity]').value;
-    item.name = row.querySelector('[data-day-item-name]').value.trim();
-    item.quantity = value === '' ? null : Number(value); item.unit = row.querySelector('[data-day-item-unit]').value.trim();
-  });
-}
-function addDayPlanItem(sourceIndex = null) {
-  const ctx = dayPlanContext; if (ctx?.kind !== 'items') return;
-  readDayPlanItemInputs();
-  const source = sourceIndex == null ? null : ctx.sources[sourceIndex];
-  if (sourceIndex != null && !source) return;
-  const suggestion = source ? dayPlanSuggestion(source) : null;
-  ctx.items.push({ id: uuid(), name: suggestion?.name || (source?.text || '').trim().slice(0, 200), quantity: suggestion?.quantity ?? null, unit: suggestion?.unit || '', source: source ? structuredClone(source) : null, packedAt: '' });
-  if (source) ctx.acknowledged = ctx.acknowledged.filter(item => dayPlanSourceKey(item) !== dayPlanSourceKey(source));
-  ctx.changed = true; renderDayPlanItems(); dismissKeyboard();
+  ctx.query = query;
+  const needle = String(query).toLocaleLowerCase(), count = ctx.stores.filter(store => dayPlanForStore(store, ctx.date)?.active).length;
+  $('day-plan-selection-count').textContent = `已排 ${count} 間`;
+  $('day-store-options').innerHTML = ctx.stores.filter(store => [store.name, store.city, store.district, ...(store.csvAliases || [])].some(value => String(value || '').toLocaleLowerCase().includes(needle))).map(store => {
+    const active = dayPlanForStore(store, ctx.date)?.active, available = dayPlanAvailable(store);
+    return `<div class="day-store-choice"><span><strong>${esc(store.name)}</strong><small>${esc([store.city, store.district].filter(Boolean).join(' · '))}${!available ? ' · 門市狀態待確認' : ''}</small></span><button type="button" data-day-add="${esc(store.id)}" aria-label="加入${esc(store.name)}" ${active || !available ? 'disabled' : ''}>${active ? '已加入' : '加入'}</button></div>`;
+  }).join('') || '<p class="empty">沒有符合的門市。</p>';
 }
 function closeDayPlanEditor() {
   if (busy || !dayPlanContext) return;
-  if (dayPlanContext.changed && !confirm('取消這份尚未儲存的行程／準備修改？已正式保存的安排、任務、筆記與歷史都保持原樣。')) return;
-  dayPlanContext = null; $('day-plan-dialog').close(); $('day-plan-fields').replaceChildren(); $('day-plan-error').textContent = ''; resetDayPlanConfirmation(); dismissKeyboard();
+  dayPlanContext = null; $('day-plan-dialog').close(); $('day-plan-fields').replaceChildren(); $('day-plan-error').textContent = ''; dismissKeyboard();
 }
-function resetDayPlanConfirmation() {
-  if (dayPlanContext) dayPlanContext.preview = null;
-  $('day-plan-fields').hidden = false; $('day-plan-confirmation').hidden = true;
-  $('day-plan-confirmation').replaceChildren(); $('day-plan-save').textContent = '核對並儲存';
+async function performDayItineraryAction(action, storeId) {
+  const selecting = action === 'add';
+  const ctx = selecting ? dayPlanContext : newDayPlanContext('action');
+  if (selecting && ctx?.kind !== 'selection') throw new Error('請重新開啟新增門市。');
+  assertDayPlanContext(ctx);
+  if (!selecting) dayPlanContext = ctx;
+  try {
+    const storeName = by('store', storeId)?.name || '門市';
+    const bundle = applyDayItineraryAction(payload.bundle, { date: ctx.date, storeId, action, expectedBasis: ctx.basis }, payload.device);
+    if (bundle === payload.bundle) return toast('行程沒有變更，未建立新版本。');
+    await persist({ ...payload, bundle, dirty: true }, { guard: () => assertDayPlanContext(ctx) });
+    // No optimistic UI: renew the picker from the committed bundle only.
+    if (selecting) {
+      Object.assign(ctx, { bundle: payload.bundle, revision: localRevision, epoch: syncEpoch, basis: dayItineraryBasis(project(payload.bundle), ctx.date), stores: project(payload.bundle).filter(r => r.type === 'store' && !r.deleted && !r.mergedInto).sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant')) });
+      renderDayPlanChoices(ctx.query);
+    }
+    dayPlanNotice = action === 'cancel' ? `已取消 ${dayPlanLabel(ctx.date)} ${storeName}的安排。` : ['add', 'restore'].includes(action) ? `${storeName}已加入 ${dayPlanLabel(ctx.date)}行程。` : '門市順序已儲存。';
+    dayPlanUndo = action === 'cancel' ? { date: ctx.date, storeId, heads: reviewHeads(project(payload.bundle).find(row => row.type === 'store' && row.id === storeId)) } : null;
+    render(); toast(dayPlanNotice);
+    if (selecting) dismissKeyboard();
+  } finally { if (!selecting && dayPlanContext === ctx) dayPlanContext = null; }
 }
-async function saveDayPlanEditor(event) {
-  event.preventDefault();
-  await run(async () => {
-    const ctx = dayPlanContext; assertDayPlanContext(ctx);
-    if (ctx.preview) {
-      await persist({ ...payload, bundle: ctx.preview.bundle, dirty: true }, { guard: () => assertDayPlanContext(ctx) });
-      dayPlanContext = null; $('day-plan-dialog').close(); $('day-plan-fields').replaceChildren(); resetDayPlanConfirmation(); render();
-      toast('行程與準備已加密儲存；實際拜訪日期、門市任務與筆記保持原樣。'); return;
-    }
-    const changes = [], impact = [];
-    if (ctx.kind === 'selection') {
-      for (const store of ctx.stores) {
-        const selected = ctx.selected.has(store.id), previous = ctx.initial.has(store.id); if (selected === previous) continue;
-        const before = dayPlanForStore(store, ctx.date);
-        changes.push({ storeId: store.id, expectedHeads: reviewHeads(store), plan: { ...(before || { date: ctx.date, items: [], acknowledged: [] }), active: selected } });
-        impact.push(`${selected ? '加入' : '移出'}：${store.name}`);
-      }
-    } else {
-      readDayPlanItemInputs();
-      const store = by('store', ctx.storeId), plan = dayPlanForStore(store, ctx.date);
-      const usableSources = new Set(ctx.sources.map(dayPlanSourceKey));
-      const acknowledged = ctx.acknowledged.filter(source => usableSources.has(dayPlanSourceKey(source)));
-      changes.push({ storeId: ctx.storeId, expectedHeads: reviewHeads(store), plan: { ...plan, items: ctx.items, acknowledged } });
-      impact.push(`${ctx.storeName} 的本日準備：`, ...ctx.items.map(item => `${item.name || '（品項未填）'} · ${item.quantity == null ? '數量待確認' : item.quantity} ${item.unit || '單位未填'}`));
-      const removed = plan.items.filter(item => !ctx.items.some(next => next.id === item.id));
-      if (removed.length) impact.push('移出本日準備：' + removed.map(item => item.name).join('、') + '（原版本保留）');
-      impact.push(`無需攜帶、仍在門市提醒：${acknowledged.length} 項`);
-    }
-    const bundle = applyDayPlanChanges(payload.bundle, changes, payload.device);
-    if (bundle === payload.bundle) { dayPlanContext = null; $('day-plan-dialog').close(); $('day-plan-fields').replaceChildren(); return toast('行程與準備沒有變更，未建立新版本。'); }
-    assertDayPlanContext(ctx);
-    ctx.preview = { bundle };
-    $('day-plan-fields').hidden = true; $('day-plan-confirmation').hidden = false;
-    $('day-plan-confirmation').innerHTML = `<h3>核對 ${esc(ctx.date)} 的變更</h3><ul class="day-confirmation-list">${impact.map(line => `<li>${esc(line)}</li>`).join('')}</ul><p>確認後只儲存行程與準備。原任務、實際拜訪日期及原始筆記都不變；先前版本完整保留。</p><button type="button" data-day-back>返回修改</button>`;
-    $('day-plan-save').textContent = '確認儲存行程與準備';
-    dismissKeyboard(); focusReadingSurface($('day-plan-dialog'));
-
-  }, 'day-plan-error');
-}
-async function setDayPlanPacked(groupKey, basis, packed) {
-  assertDayPlanIdle();
-  const ctx = newDayPlanContext('packing'), group = currentDayOverview().groups.find(item => item.key === groupKey);
-  if (!group || dayPlanGroupBasis(group) !== basis) throw new Error('準備內容已改變，請重新核對後再勾選。');
-  const at = new Date().toISOString(), updates = new Map();
-  for (const allocation of group.allocations) {
-    if (!updates.has(allocation.storeId)) {
-      const store = by('store', allocation.storeId);
-      updates.set(store.id, { storeId: store.id, expectedHeads: reviewHeads(store), plan: structuredClone(dayPlanForStore(store, ctx.date)) });
-    }
-    updates.get(allocation.storeId).plan.items.find(item => item.id === allocation.itemId).packedAt = packed ? at : '';
-  }
-  const bundle = applyDayPlanChanges(payload.bundle, [...updates.values()], payload.device, at);
-  if (bundle !== payload.bundle) await persist({ ...payload, bundle, dirty: true }, { guard: () => assertDayPlanContext(ctx) });
-  render(); toast(packed ? '已記錄帶上這些物品；尚未完成任務，也沒有登記拜訪。' : '已改為尚未帶上；先前紀錄仍留在歷史。');
+async function restoreLastDayPlanCancellation() {
+  const undo = dayPlanUndo, store = undo && by('store', undo.storeId);
+  if (!undo || undo.date !== dayPlanSelectedDate || !store || JSON.stringify(reviewHeads(store)) !== JSON.stringify(undo.heads) || dayPlanForStore(store, undo.date)?.active) throw new Error('這間門市的行程已有更新；請從「已取消安排」重新加入。');
+  await performDayItineraryAction('restore', undo.storeId);
 }
 function renderVisits() {
   renderQuickVisit(); renderReminderDrafts(); renderDayPlanEntry();
@@ -2696,13 +2625,13 @@ async function saveEditor(event) {
 }
 function describeData(type, data) {
   if (type === 'visit') return `${name('store', data.store)} · ${data.date || '原始日期未提供'}\n${data.source}\n${data.sourceMissing ? 'Google 最新匯出：備註缺少（舊文保留）\n' : ''}${data.googleUpdatePending ? `Google 最新文字：${data.googleText}\nApp 文字待人工核對\n` : ''}\n${data.text}\n\n下次跟進：${data.next}\n主題：${data.topics.map(id => name('topic', id)).join('、')}\n人物：${data.people.map(id => name('person', id)).join('、')}\n附件：${data.attachments.map(a => a.name).join('、')}`;
-  const labels = { address: '地址', mapUrl: '地圖網址', lists: '來源清單', name: '名稱', city: '縣市', district: '地區', channel: '通路', attr: '屬性', contact: '窗口', nextRemember: '下次記得（未轉換文字）', nextRememberTasks: '下次記得任務', nextRememberImports: '提醒轉換原始文字', datePlans: '行程與準備（不代表實際拜訪）', preVisitInsights: '拜訪前線索（獨立分析）', preVisitInsightReviews: '線索人工審核與留存', everyTimeMust: '每次必做、必給', desc: '備註', role: '職務', confirmed: '身分已核對', sameAs: '同一人連結', mergedInto: '已整併至門市 ID', mergeDecision: '整併裁定' };
-  const details = Object.entries(data).filter(([k]) => k !== 'csvSources' && k !== 'qualityDistinct').map(([k, v]) => `${labels[k] || k}：${k === 'sameAs' && v ? name('person', v) : ['datePlans', 'nextRememberTasks', 'nextRememberImports', 'preVisitInsights', 'preVisitInsightReviews'].includes(k) ? JSON.stringify(v, null, 2) : v}`);
+  const labels = { address: '地址', mapUrl: '地圖網址', lists: '來源清單', name: '名稱', city: '縣市', district: '地區', channel: '通路', attr: '屬性', contact: '窗口', nextRemember: '下次記得（未轉換文字）', nextRememberTasks: '下次記得任務', nextRememberImports: '提醒轉換原始文字', datePlanOrder: '每日門市順序', datePlans: '行程與準備（不代表實際拜訪）', preVisitInsights: '拜訪前線索（獨立分析）', preVisitInsightReviews: '線索人工審核與留存', everyTimeMust: '每次必做、必給', desc: '備註', role: '職務', confirmed: '身分已核對', sameAs: '同一人連結', mergedInto: '已整併至門市 ID', mergeDecision: '整併裁定' };
+  const details = Object.entries(data).filter(([k]) => k !== 'csvSources' && k !== 'qualityDistinct').map(([k, v]) => `${labels[k] || k}：${k === 'sameAs' && v ? name('person', v) : ['datePlans', 'datePlanOrder', 'nextRememberTasks', 'nextRememberImports', 'preVisitInsights', 'preVisitInsightReviews'].includes(k) ? JSON.stringify(v, null, 2) : v}`);
   if (data.qualityDistinct !== undefined) details.push('此版本保存的不同門市核對：' + data.qualityDistinct.length + ' 組（辨識資料改變後需重新核對）');
   return details.join('\n');
 }
 function reviewHeads(record) { return record.heads.map(h => h.id).sort(); }
-const SAFE_CONFLICT_BLOCKED_FIELDS = new Set(['datePlans', 'preVisitInsights', 'preVisitInsightReviews', 'nextRememberTasks', 'nextRememberImports', 'nextRemember', 'attachments', 'csvSources', 'csvIdentityRules', 'qualityDistinct', 'storeMergeHistory', 'storeMergeStaleEntries', 'mergedInto', 'mergeDecision', 'sameAs', 'confirmed', 'googleText', 'googleUpdatePending', 'sourceMissing']);
+const SAFE_CONFLICT_BLOCKED_FIELDS = new Set(['datePlans', 'datePlanOrder', 'preVisitInsights', 'preVisitInsightReviews', 'nextRememberTasks', 'nextRememberImports', 'nextRemember', 'attachments', 'csvSources', 'csvIdentityRules', 'qualityDistinct', 'storeMergeHistory', 'storeMergeStaleEntries', 'mergedInto', 'mergeDecision', 'sameAs', 'confirmed', 'googleText', 'googleUpdatePending', 'sourceMissing']);
 function sameReviewValue(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
 function conflictMergeBase(record) {
   const versions = new Map(record.versions.map(version => [version.id, version]));
@@ -2747,7 +2676,7 @@ function safeConflictMerge(record) {
   return { safe: true, base, data: result, changes };
 }
 function safeMergeSummary(plan, record) {
-  const labels = { text: '拜訪文字', next: '下次跟進', store: '門市', date: '拜訪日期', source: '紀錄來源', topics: '主題連結', people: '人物連結', name: '名稱', address: '地址', mapUrl: '地圖網址', city: '縣市', district: '地區', channel: '通路', attr: '屬性', contact: '窗口', nextRemember: '下次記得（未轉換文字）', nextRememberTasks: '下次記得任務', nextRememberImports: '提醒轉換原始文字', datePlans: '行程與準備（不代表實際拜訪）', preVisitInsights: '拜訪前線索（獨立分析）', preVisitInsightReviews: '線索人工審核與留存', everyTimeMust: '每次必做、必給', desc: '備註', role: '職務' };
+  const labels = { text: '拜訪文字', next: '下次跟進', store: '門市', date: '拜訪日期', source: '紀錄來源', topics: '主題連結', people: '人物連結', name: '名稱', address: '地址', mapUrl: '地圖網址', city: '縣市', district: '地區', channel: '通路', attr: '屬性', contact: '窗口', nextRemember: '下次記得（未轉換文字）', nextRememberTasks: '下次記得任務', nextRememberImports: '提醒轉換原始文字', datePlanOrder: '每日門市順序', datePlans: '行程與準備（不代表實際拜訪）', preVisitInsights: '拜訪前線索（獨立分析）', preVisitInsightReviews: '線索人工審核與留存', everyTimeMust: '每次必做、必給', desc: '備註', role: '職務' };
   return plan.changes.map(change => {
     const versions = change.heads.map(id => record.heads.findIndex(head => head.id === id) + 1).join('、');
     return `<li>${esc(labels[change.field] || change.field)}：取自版本 ${esc(versions)}</li>`;
@@ -2777,7 +2706,7 @@ function reviewValue(value) {
   return JSON.stringify(value, null, 2);
 }
 function reviewFields(before, after) {
-  const labels = { text: '拜訪文字', next: '下次跟進', store: '門市 ID', date: '拜訪日期', source: '紀錄來源', topics: '主題連結', people: '人物連結', attachments: '附件', name: '名稱', address: '地址', mapUrl: '地圖網址', city: '縣市', district: '地區', channel: '通路', attr: '屬性', contact: '窗口', nextRemember: '下次記得（未轉換文字）', nextRememberTasks: '下次記得任務', nextRememberImports: '提醒轉換原始文字', datePlans: '行程與準備（不代表實際拜訪）', preVisitInsights: '拜訪前線索（獨立分析）', preVisitInsightReviews: '線索人工審核與留存', everyTimeMust: '每次必做、必給', desc: '備註', role: '職務', confirmed: '身分已核對', sameAs: '人物身分連結', csvSources: 'CSV 來源證據', csvIdentityPending: '門市身分待確認', csvIdentityRules: '門市身分裁定', googleText: 'Google 來源文字', googleUpdatePending: 'Google 文字待核對', sourceMissing: '來源缺失' };
+  const labels = { text: '拜訪文字', next: '下次跟進', store: '門市 ID', date: '拜訪日期', source: '紀錄來源', topics: '主題連結', people: '人物連結', attachments: '附件', name: '名稱', address: '地址', mapUrl: '地圖網址', city: '縣市', district: '地區', channel: '通路', attr: '屬性', contact: '窗口', nextRemember: '下次記得（未轉換文字）', nextRememberTasks: '下次記得任務', nextRememberImports: '提醒轉換原始文字', datePlanOrder: '每日門市順序', datePlans: '行程與準備（不代表實際拜訪）', preVisitInsights: '拜訪前線索（獨立分析）', preVisitInsightReviews: '線索人工審核與留存', everyTimeMust: '每次必做、必給', desc: '備註', role: '職務', confirmed: '身分已核對', sameAs: '人物身分連結', csvSources: 'CSV 來源證據', csvIdentityPending: '門市身分待確認', csvIdentityRules: '門市身分裁定', googleText: 'Google 來源文字', googleUpdatePending: 'Google 文字待核對', sourceMissing: '來源缺失' };
   const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])];
   const changed = keys.filter(k => JSON.stringify(before[k]) !== JSON.stringify(after[k]));
   const rows = changed.map(k => {
@@ -2902,7 +2831,7 @@ function backupChangeTitle(change) {
   return `${labels[change.type]} · ${title}：${action}${change.addedVisitAttendance?.length ? '；加入 ' + change.addedVisitAttendance.length + ' 份既有拜訪確認' : ''}`;
 }
 function backupVersionHTML(head) {
-  const data = head.data, labels = { datePlans: '行程與準備（含已帶上歷史）', name: '名稱', text: '拜訪原文', date: '拜訪日期', source: '紀錄來源', next: '下次跟進', nextRemember: '下次記得（未轉換文字）', everyTimeMust: '每次必做、必給', address: '地址', city: '縣市', district: '行政區', contact: '窗口', desc: '備註', role: '職務' };
+  const data = head.data, labels = { datePlanOrder: '每日門市順序', datePlans: '行程與準備（含已帶上歷史）', name: '名稱', text: '拜訪原文', date: '拜訪日期', source: '紀錄來源', next: '下次跟進', nextRemember: '下次記得（未轉換文字）', everyTimeMust: '每次必做、必給', address: '地址', city: '縣市', district: '行政區', contact: '窗口', desc: '備註', role: '職務' };
   const fields = Object.entries(labels).filter(([field]) => Object.hasOwn(data, field)).map(([field, label]) => `<h5>${label}</h5><pre>${esc(reviewValue(data[field]))}</pre>`).join('');
   const tasks = data.nextRememberTasks?.length ? `<h5>下次記得任務</h5>${data.nextRememberTasks.map(task => `<p>${task.completedAt ? '✓ 已完成' : '□ 待完成'}：${esc(task.text)}${task.completedAt ? `<br><small>完成：${esc(dateText(task.completedAt))}</small>` : ''}</p>`).join('')}` : '';
   return `<article class="backup-version"><p>${esc(dateText(head.at))} · ${head.deleted ? '回收桶' : '保留紀錄'}</p>${head.visitAttendance ? reviewAttendanceHTML(head, backupPreview?.storeNames?.get(head.visitAttendance.store) || '') : ''}${fields}${tasks}<details><summary>完整欄位與來源證據</summary><p class="muted">版本識別：${esc(head.id)}</p><pre>${esc(reviewValue(data))}</pre></details></article>`;
@@ -3066,19 +2995,16 @@ document.addEventListener('click', event => {
   }
   if (updateHolding || busy || !payload) return;
   if (b.hasAttribute('data-day-close')) return closeDayPlanEditor();
-  if (b.hasAttribute('data-day-back')) return resetDayPlanConfirmation();
-  if (b.dataset.dayDate) { dismissKeyboard(); dayPlanSelectedDate = b.dataset.dayDate; dayPlanPrepOpen = true; return renderDayPlan(); }
+  if (b.dataset.dayAdd) return run(() => performDayItineraryAction('add', b.dataset.dayAdd), 'day-plan-error');
+  if (dayPlanContext && !b.closest('#day-plan-dialog')) return toast('請先關閉新增門市，再操作其他內容。');
+  if (b.dataset.dayDate) { dismissKeyboard(); dayPlanSelectedDate = b.dataset.dayDate; dayPlanSorting = false; dayPlanNotice = ''; dayPlanUndo = null; return renderDayPlan(); }
   if (b.hasAttribute('data-day-select')) return run(openDayPlanSelection);
-  if (b.dataset.dayItems) return run(() => openDayPlanItems(b.dataset.dayItems));
-  if (b.hasAttribute('data-day-manual')) return addDayPlanItem();
-  if (b.hasAttribute('data-day-add-source')) return addDayPlanItem(Number(b.dataset.dayAddSource));
-  if (b.hasAttribute('data-day-remove-item')) {
-    if (dayPlanContext?.kind !== 'items') return;
-    readDayPlanItemInputs(); const index = Number(b.dataset.dayRemoveItem), item = dayPlanContext.items[index];
-    if (item && confirm(`把「${item.name || '未填品項'}」移出這天的準備表單？正式儲存前不會寫入，既有提醒與歷史仍保留。`)) { dayPlanContext.items.splice(index, 1); dayPlanContext.changed = true; renderDayPlanItems(); dismissKeyboard(); }
-    return;
-  }
-  if (dayPlanContext && !b.closest('#day-plan-dialog')) return toast('請先儲存或取消行程編輯，未送出的內容仍保留。');
+  if (b.hasAttribute('data-day-sort')) { dayPlanSorting = !dayPlanSorting; dayPlanNotice = ''; dayPlanUndo = null; return renderDayPlan(); }
+  if (b.dataset.dayCancel) return run(() => performDayItineraryAction('cancel', b.dataset.dayCancel));
+  if (b.dataset.dayRestore) return run(() => performDayItineraryAction('restore', b.dataset.dayRestore));
+  if (b.dataset.dayUp) return run(() => performDayItineraryAction('up', b.dataset.dayUp));
+  if (b.dataset.dayDown) return run(() => performDayItineraryAction('down', b.dataset.dayDown));
+  if (b.hasAttribute('data-day-undo')) return run(restoreLastDayPlanCancellation);
   if (b.dataset.resumeReminder !== undefined) return openStoreReminder(b.dataset.resumeReminder);
   if (b.id === 'discard-reminder-draft') return run(discardReminderDraft, 'store-reminder-error');
   if (b.dataset.startSingleStoreCapture !== undefined) return activateSingleStoreCapture();
@@ -3186,8 +3112,6 @@ document.addEventListener('input', event => {
   if (event.target.id) document.querySelectorAll(`[data-reminder-options-for="${CSS.escape(event.target.id)}"]`).forEach(syncReminderOptionGroup);
 });
 document.addEventListener('change', event => {
-  const pack = event.target.closest?.('[data-day-pack]');
-  if (pack) { const selected = pack.checked; pack.checked = !selected; return run(() => setDayPlanPacked(pack.dataset.dayPack, pack.dataset.dayBasis, selected)); }
   const task = event.target.closest?.('[data-reminder-complete]');
   if (task) { task.checked = false; return run(() => changeReminderTask(task.dataset.reminderStore, task.dataset.reminderComplete, task.dataset.reminderHead)); }
   const option = event.target.closest?.('[data-reminder-option]'); if (option) return changeReminderOption(option);
@@ -3218,36 +3142,18 @@ $('visit-attendance-cancel').addEventListener('click', () => finishAttendancePro
 $('visit-attendance-dialog').addEventListener('cancel', event => { event.preventDefault(); finishAttendancePrompt(); });
 $('visit-attendance-dialog').addEventListener('close', () => { if (!$('visit-attendance-dialog').open) finishAttendancePrompt(); });
 $('gate-form').addEventListener('submit', initializeOrUnlock); $('editor-form').addEventListener('submit', saveEditor); $('quick-text-form').addEventListener('submit', saveQuickTextEdit); $('store-reminder-form').addEventListener('submit', saveStoreReminder);
-$('day-plan-form').addEventListener('submit', saveDayPlanEditor);
+$('day-plan-form').addEventListener('submit', event => event.preventDefault());
 $('day-plan-dialog').addEventListener('cancel', event => { event.preventDefault(); closeDayPlanEditor(); });
 $('day-plan-dialog').addEventListener('close', () => {
   if (!$('day-plan-dialog').open && dayPlanContext) { openDialog($('day-plan-dialog')); closeDayPlanEditor(); }
 });
 $('day-plan-fields').addEventListener('input', event => {
-  if (event.target.id === 'day-store-search') return renderDayPlanChoices(event.target.value);
-  if (dayPlanContext) dayPlanContext.changed = true;
-});
-$('day-plan-fields').addEventListener('change', event => {
-  const ctx = dayPlanContext; if (!ctx || busy || updateHolding) return;
-  const choice = event.target.closest('[data-day-choice]'), action = event.target.closest('[data-day-action-source]');
-  if (choice && ctx.kind === 'selection') {
-    if (choice.checked) ctx.selected.add(choice.dataset.dayChoice); else ctx.selected.delete(choice.dataset.dayChoice);
-    ctx.changed = true; $('day-plan-selection-count').textContent = `已選 ${ctx.selected.size} 間；取消勾選只移出這天，原任務及歷史保留。`;
-  }
-  if (action && ctx.kind === 'items') {
-    const source = ctx.sources[Number(action.dataset.dayActionSource)];
-    if (!source) return;
-    ctx.acknowledged = ctx.acknowledged.filter(item => dayPlanSourceKey(item) !== dayPlanSourceKey(source));
-    if (action.checked) ctx.acknowledged.push(structuredClone(source));
-    ctx.changed = true;
-  }
+  if (event.target.id === 'day-store-search' && !busy) renderDayPlanChoices(event.target.value);
 });
 $('day-plan-content').addEventListener('change', event => {
   if (event.target.id !== 'day-plan-date' || busy || dayPlanContext || !event.target.value) return;
-  try { dayPlanSelectedDate = dayPlanDate(event.target.value); dayPlanPrepOpen = true; dismissKeyboard(); renderDayPlan(); } catch (error) { toast(error.message); }
+  try { dayPlanSelectedDate = dayPlanDate(event.target.value); dayPlanSorting = false; dayPlanNotice = ''; dayPlanUndo = null; dismissKeyboard(); renderDayPlan(); } catch (error) { toast(error.message); }
 });
-$('day-plan-content').addEventListener('toggle', event => { if (event.target.id === 'day-plan-preparation') dayPlanPrepOpen = event.target.open; }, true);
-window.addEventListener('beforeunload', event => { if (dayPlanContext?.changed) { event.preventDefault(); event.returnValue = ''; } });
 $('review').addEventListener('submit', event => {
   if (event.target.id === 'single-store-capture-form') saveSingleStoreVisit(event);
   if (event.target.id === 'store-merge-form') { event.preventDefault(); void run(previewStoreMerge, 'store-merge-error'); }
