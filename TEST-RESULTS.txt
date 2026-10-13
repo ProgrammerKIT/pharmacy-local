@@ -1,3 +1,13 @@
+v1.5.64 附近門市卡片精簡｜2026-10-13
+
+完整 Node 回歸 530／530 通過，0 失敗／取消／略過；node --check public/app.js 及 git diff --check 通過。runtime 行為只改 renderQuickVisit 的卡片模板，移除拜訪日期與正常門市操作說明，保留身分待確認警示及原點擊屬性；共用 storeAttendanceHTML、GPS、資料操作及其他卡片不變。
+
+另以實際 renderQuickVisit 函式在 Node VM 渲染虛構門市，確認手機4張／桌面3張、沒有日期或操作說明文字、原門市點擊識別保留、不呼叫日期 renderer，輸入 payload 不變。輸出搭配實際 CSS 於 127.0.0.1:18864 唯讀預覽，Chrome 393×852 與 1280×900 截圖已檢視，無水平溢出、卡片高度隨文字減少。這是隔離卡片版面驗證，不宣稱真 iPhone GPS 或端到端點擊驗收；既有 GPS／導航屬性與其他頁面日期由回歸及最小 diff 核對。
+
+無新增測試檔、無正式資料讀寫或客戶資料上傳。App1.5.64／SOP1 1.2.49；schema2、protocol1及21條runtime路徑維持。真機仍依 DEVICE-ACCEPTANCE.md 分開核對。
+
+以下保留歷史測試結果。
+
 v1.5.63 行程與準備｜2026-10-13
 
 完整 Node 回歸 530／530 通過，0 失敗／取消／略過；新增行程核心、衝突邊界、工作階段與二階段儲存共 50 項。初次完整回歸僅 SOP 文件版本斷言仍為 1.2.48；文件升版斷言更新為 1.2.49 後全套通過。node --check 與 git diff --check 通過。

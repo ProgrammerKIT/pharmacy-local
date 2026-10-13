@@ -567,7 +567,7 @@ function renderQuickVisit() {
   const fallback = mobile && !located.length ? '<p class="nearby-fallback-label">先顯示最近使用的門市（不是距離排序）</p>' : '';
   $('recent-store-list').innerHTML = fallback + entries.map(({ store, distance }) => {
     const range = Number.isFinite(distance) ? (distance < 1000 ? `約 ${Math.round(distance / 10) * 10} 公尺` : `約 ${(distance / 1000).toFixed(1)} 公里`) + ' · 直線距離' : store.district || '地區未提供';
-    return `<button type="button" class="recent-store" ${storeIdentityPending(store) ? `data-quick-visit="${esc(store.id)}"` : `data-visit-brief="${esc(store.id)}"`}><strong>${esc(store.name)}</strong><small>${esc(range)}</small>${storeAttendanceHTML(store.id)}${storeIdentityPending(store) ? '<small>身分待確認 · 直接記錄拜訪</small>' : '<small>查看重點並記錄拜訪</small>'}</button>`;
+    return `<button type="button" class="recent-store" ${storeIdentityPending(store) ? `data-quick-visit="${esc(store.id)}"` : `data-visit-brief="${esc(store.id)}"`}><strong>${esc(store.name)}</strong><small>${esc(range)}</small>${storeIdentityPending(store) ? '<small>身分待確認 · 直接記錄拜訪</small>' : ''}</button>`;
   }).join('') || '<p class="muted">目前沒有可用門市，可按「新增拜訪」開始記錄。</p>';
 }
 function requestNearbyPosition(force = false) {
