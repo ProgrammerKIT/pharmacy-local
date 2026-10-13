@@ -285,6 +285,11 @@ export function sop1Report(plan, bundle) {
     if (row.errors.length) { fail(row, row.errors.join('；')); continue; }
     const resolved = target(row);
     if (!resolved) { fail(row, '門市連結尚未完成、被略過、已刪除或有衝突'); continue; }
+    const selectedStore = resolved.startsWith('store:') ? byStore.get(resolved.slice(6)) : null;
+    const mergedSource = [...byStore.values()].some(store => store.storeMergeHistory?.length &&
+      (store === selectedStore || identity(row.data) && identity(row.data) === identity(store) ||
+        [store.name, ...(store.csvAliases || [])].some(name => comparisonText(name) === comparisonText(row.data.name))));
+    if (mergedSource) { fail(row, '此來源涉及已合併門市，須另行核對原筆記串流；本批不會自動新建、覆蓋或還原'); continue; }
     const file = plan.files[row.fileIndex];
     if ((row.textFields || []).some(f => f.kind === 'supplement') && !row.sop1?.extraAccepted) fail(row, '尚有其他非空白文字欄，須核對並確認保留為來源補充，不可默默漏掉');
     const stream = resolved + ':' + sourceListKey(file.list), bucket = streams.get(stream) || [];
@@ -401,6 +406,7 @@ export async function planCSV(files, bundle) {
       let choice = 'new', reason = '新增門市';
       if (seenBatch.has(batchFingerprint)) { choice = 'skip'; reason = '同一來源清單的相同原始列已在本批出現'; }
       else if (errors.length) { choice = 'skip'; reason = errors.join('；'); }
+      else if ([...matches, ...names].some(store => store.mergedInto || store.storeMergeHistory?.length)) { choice = 'review'; reason = '此來源涉及已合併門市，須另行核對原筆記串流；不會自動新建、覆蓋或還原'; }
       else if (matches.length === 1 && !matches[0].conflict && !matches[0].deleted) {
         const matched = matches[0]; choice = `store:${matched.id}`; reason = '相同地圖網址或名稱＋地址';
         const stream = csvStream(matched.id, f.list), current = visits.filter(v => visitStream(v) === stream);
@@ -408,7 +414,9 @@ export async function planCSV(files, bundle) {
         const sameState = !noteProvided || (!note ? !current.length || current.length === 1 && current[0].sourceMissing : current.length === 1 && (current[0].googleText ?? current[0].text) === note && (!date || current[0].date === date) && !current[0].sourceMissing);
         if (sameStoreRow && sameState) { choice = 'skip'; reason = '目前版本已包含相同原始列'; }
       }
-      else if (matches.length || names.length) { choice = 'review'; reason = '同名、已刪除或多個可能門市，請指定'; }
+      else if (matches.length || names.length) { choice = 'review'; reason = [...matches, ...names].some(store => store.mergedInto)
+        ? '命中已合併門市的舊名稱或地點識別；請核對保留主檔，不會自動復活舊店或另建門市'
+        : '同名、已刪除或多個可能門市，請指定'; }
       else if (id && batchIdentities.has(id)) { choice = `row:${batchIdentities.get(id)}`; reason = '連結本批相同網址／地址的門市'; }
       else if (batchNames.has(data.name.trim())) { choice = 'review'; reason = '本批有同名門市，不能只依名稱合併'; }
       else if (candidates.length || batchCandidates.length) { choice = 'review'; reason = '有相似名稱、地址或地點識別，請比對來源後指定'; }
