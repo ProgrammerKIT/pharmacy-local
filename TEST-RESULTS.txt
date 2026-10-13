@@ -1,3 +1,15 @@
+v1.5.67 已確認線索預設收合｜2026-10-14
+
+完整 Node 回歸 562／562 通過，0 失敗／取消／略過；node --check public/app.js、QA fixture --self-test 及 git diff --check 通過。本版新增已確認／待查核顯示切換、HTML escaping、匯入及歷史快照完整性、內容變更不繼承確認、純渲染不寫入，以及實際 openVisitBrief 狀態保存／恢復的回歸檢查。原有審核加密、同步、備份與失敗防護維持。
+
+隔離 fixture 僅 127.0.0.1:18867，兩間虛構門市、兩筆虛構原文、四張卡、九個初始版本；API 禁用且拒絕覆寫既有測試庫。Codex in-app browser 實際檢查 393×852 與 1280×720 尺寸並檢視截圖。兩張已確認人物連結／客群卡均預設收合，手機每張約71px，只顯示原標題與確認標示。展開可讀提問、限制、來源分類及完整來源原文；關閉門市再進入會收合。待查核完整呈現，不符合仍收在審核留存；開啟門市沒有聚焦文字輸入。手機 document scrollWidth=393，沒有額外橫向溢出。
+
+純瀏覽前後完整 bundle SHA-256 相同；originalOpsPreserved、currentOriginalNotesUnchanged、currentNonReviewStoreDataUnchanged、attendanceUnchanged 皆 true，ops9→9。審核控制點擊後的原生確認視窗使 IAB 自動操作逾時，未完成瀏覽器端確認保存；這段由實際審核／持久化與視窗狀態 Node 測試核對，不宣稱端到端瀏覽器已通過。
+
+App1.5.67／SOP1 1.2.50；schema2／protocol1、CSV引擎1.2.16及21條runtime路徑不變。本次未讀寫正式資料、未建立正式審核、未執行匯入／restore，也未呼叫外部AI。真 iPhone／Safari／PWA／原生鍵盤及雙裝置同步仍依 DEVICE-ACCEPTANCE.md 分開驗收。
+
+以下保留歷史測試結果。
+
 v1.5.66 精簡行程與準備｜2026-10-13
 
 完整 Node 回歸 556／556 通過，0 失敗／取消／略過；node --check public/app.js、public/core.js 及 git diff --check 通過。首輪沙箱不允許 loopback 的 3 項伺服器測試，獲准本機測試連接埠後全數通過。

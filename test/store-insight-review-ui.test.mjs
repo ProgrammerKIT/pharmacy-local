@@ -96,6 +96,37 @@ test('cancel and pending-to-pending are read-only; explicit review creates only 
   assert.match(h.state.confirms.at(-1), /Synthetic source/); assert.match(h.state.confirms.at(-1), /Kit已確認/);
 });
 
+test('current confirmed cards collapse to an escaped headline while keeping details and review actions read-only', async () => {
+  const h = await harness(); await h.act('confirmed');
+  const before = JSON.stringify(h.c.payload), writes = h.state.writes.length;
+  const entry = core.storeInsightsForStore(h.c.payload.bundle, 's').entries[0];
+  const html = h.c.insightEntryHTML(entry, '2026-10-07', '', h.c.by('store', 's'));
+  const summary = html.match(/<summary>([\s\S]*?)<\/summary>/)[1];
+  assert.match(summary, /Synthetic source &lt;img src=x&gt; headline/);
+  assert.match(summary, /Kit已確認/);
+  assert.doesNotMatch(summary, /這次可以問|原文有記載|data-insight-review|Synthetic.*question/);
+  const outer = html.match(/<details[^>]*>/)[0];
+  assert.match(outer, /data-insight-confirmed="entry-0"/);
+  assert.doesNotMatch(outer, /\bopen\b|data-insight-detail=/);
+  assert.match(html, /data-insight-detail="entry-0"/); // Opening evidence before confirming must not reopen the outer card.
+  for (const kept of ['這次可以問', 'Synthetic &lt;svg&gt; caution', 'Synthetic &lt;b&gt; limitation', 'data-insight-source=', 'data-insight-review="pending"']) assert.ok(html.includes(kept), kept);
+  assert.doesNotMatch(html, /<img|<script|<svg|SYNTHETIC_FULL_TEXT_MARKER/);
+  const snapshot = h.c.insightEntryHTML(entry, '2026-10-07', 'history:');
+  assert.doesNotMatch(snapshot, /insight-confirmed-details/); // Import/history snapshots stay fully inspectable within their own disclosures.
+  assert.equal(JSON.stringify(h.c.payload), before); assert.equal(h.state.writes.length, writes);
+  await h.act('pending');
+  assert.doesNotMatch(h.c.insightEntryHTML(entry, '2026-10-07', '', h.c.by('store', 's')), /insight-confirmed-details/);
+});
+
+test('fully confirmed stores omit the pending-review introduction without rewriting card headlines', async () => {
+  const h = await harness();
+  for (const id of ['entry-0', 'entry-1', 'entry-2']) await h.act('confirmed', id);
+  const html = h.c.storeInsightsHTML('s'), current = html.slice(0, html.indexOf('<details class="insight-review-archive"'));
+  assert.doesNotMatch(current, /先看線索與原文，再由你人工審核/);
+  assert.equal((current.match(/class="insight-confirmed-details"/g) || []).length, 3);
+  for (const level of ['source', 'inference', 'counter']) assert.ok(current.includes(`Synthetic ${level} &lt;img src=x&gt; headline`));
+});
+
 test('stale target and stale source cannot be reviewed even if card remains on screen', async () => {
   for (const type of ['store', 'visit']) {
     const h = await harness(), expected = h.head(), record = h.c.by(type, type === 'store' ? 's' : 'v');
@@ -191,6 +222,8 @@ test('changed content never inherits a Kit approval and removed cards retain the
   const html = h.c.storeInsightsHTML('s'), start = html.indexOf('<details class="insight-review-archive"');
   assert.match(html.slice(0, start), /Synthetic changed content needs a new review/);
   assert.match(html.slice(0, start), /data-status="pending">待查核/);
+  assert.doesNotMatch(html.slice(0, start), /insight-confirmed-details/);
+  assert.match(html.slice(0, start), /這次可以問/);
   assert.match(html.slice(start), /Synthetic source &lt;img/); assert.match(html.slice(start), /Synthetic inference &lt;img/);
   assert.doesNotMatch(html.slice(start), /data-insight-review="/);
   assert.equal(h.state.writes.length, 2);

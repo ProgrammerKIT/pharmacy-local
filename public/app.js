@@ -1395,7 +1395,14 @@ function insightReviewControlsHTML(store, entry) {
 }
 function insightEntryHTML(entry, sourceAsOf, prefix = '', reviewStore = null) {
   const level = { source: '原文有記載', inference: '分析推論', counter: '反向線索' }[entry.level];
-  return `<article class="store-insight-card" data-store-insight="${esc(entry.id)}"><div class="store-insight-labels"><span>${entry.kind === 'relationship' ? '人物連結' : '客群與需求'}</span><span class="pill ${entry.level === 'source' ? '' : 'warn'}">${level}</span></div><h3>${esc(entry.headline)}</h3><p class="store-insight-question"><strong>這次可以問</strong>${esc(entry.question)}</p>${entry.caution ? `<p class="store-insight-caution">${esc(entry.caution)}</p>` : ''}<details data-insight-detail="${esc(prefix + entry.id)}"><summary>查看原文依據與限制</summary><p class="muted">來源核對日 ${esc(sourceAsOf)}。原文記載與分析推論是證據類別，不代表 Kit 已確認關係；現況仍可能改變。</p>${entry.limitations.length ? `<ul>${entry.limitations.map(text => `<li>${esc(text)}</li>`).join('')}</ul>` : ''}${entry.evidence.map((source, i) => `<section class="store-insight-evidence"><strong>${esc(source.storeName || JSON.parse(source.storeIdentityKey).name)}${source.role === 'counter' ? ' · 反向證據' : ''}</strong><blockquote>${esc(source.quote)}</blockquote><details data-insight-detail="${esc(prefix + entry.id + ':' + i)}" data-insight-source="${esc(source.visitId)}" data-insight-revision="${esc(source.revisionId)}" data-insight-store="${esc(source.storeId)}"><summary>展開這筆完整原文</summary><p class="muted">${esc(source.sourceLabel || '審核時來源')} · 來源版本 ${esc(source.revisionId)}</p><pre></pre></details></section>`).join('')}</details>${reviewStore ? insightReviewControlsHTML(reviewStore, entry) : ''}</article>`;
+  const labels = `<div class="store-insight-labels"><span>${entry.kind === 'relationship' ? '人物連結' : '客群與需求'}</span><span class="pill ${entry.level === 'source' ? '' : 'warn'}">${level}</span></div>`;
+  const body = `<p class="store-insight-question"><strong>這次可以問</strong>${esc(entry.question)}</p>${entry.caution ? `<p class="store-insight-caution">${esc(entry.caution)}</p>` : ''}<details data-insight-detail="${esc(prefix + entry.id)}"><summary>查看原文依據與限制</summary><p class="muted">來源核對日 ${esc(sourceAsOf)}。原文記載與分析推論是證據類別，不代表 Kit 已確認關係；現況仍可能改變。</p>${entry.limitations.length ? `<ul>${entry.limitations.map(text => `<li>${esc(text)}</li>`).join('')}</ul>` : ''}${entry.evidence.map((source, i) => `<section class="store-insight-evidence"><strong>${esc(source.storeName || JSON.parse(source.storeIdentityKey).name)}${source.role === 'counter' ? ' · 反向證據' : ''}</strong><blockquote>${esc(source.quote)}</blockquote><details data-insight-detail="${esc(prefix + entry.id + ':' + i)}" data-insight-source="${esc(source.visitId)}" data-insight-revision="${esc(source.revisionId)}" data-insight-store="${esc(source.storeId)}"><summary>展開這筆完整原文</summary><p class="muted">${esc(source.sourceLabel || '審核時來源')} · 來源版本 ${esc(source.revisionId)}</p><pre></pre></details></section>`).join('')}</details>${reviewStore ? insightReviewControlsHTML(reviewStore, entry) : ''}`;
+  // A current, content-matching human approval alone enables the compact view.
+  // Preview/history snapshots have no reviewStore and retain their full content.
+  if (reviewStore && insightReviewForEntry(reviewStore, entry).status === 'confirmed') {
+    return `<article class="store-insight-card store-insight-confirmed" data-store-insight="${esc(entry.id)}"><details class="insight-confirmed-details" data-insight-confirmed="${esc(prefix + entry.id)}"><summary><span class="insight-confirmed-headline">${esc(entry.headline)}</span><span class="insight-confirmed-badge">Kit已確認</span></summary><div class="insight-confirmed-content">${labels}${body}</div></details></article>`;
+  }
+  return `<article class="store-insight-card" data-store-insight="${esc(entry.id)}">${labels}<h3>${esc(entry.headline)}</h3>${body}</article>`;
 }
 function storeInsightsHTML(storeId) {
   const selected = storeInsightsForStore(payload.bundle, storeId), store = by('store', storeId);
@@ -1405,7 +1412,7 @@ function storeInsightsHTML(storeId) {
   const rejected = selected.entries.filter(entry => insightReviewForEntry(store, entry).status === 'rejected');
   if (!entries.length && !rejected.length && !history.length) return '';
   const sourceAsOf = store.preVisitInsights?.sourceAsOf || '';
-  return `<section class="store-insights" aria-label="本店拜訪前線索"><h2>拜訪前，多一條線索</h2>${entries.length ? '<p class="muted">先看線索與原文，再由你人工審核。</p>' : ''}${entries.slice(0, 2).map(entry => insightEntryHTML(entry, sourceAsOf, '', store)).join('')}${entries.length > 2 ? `<details data-insight-detail="more"><summary>其他本店線索 · ${entries.length - 2} 項</summary>${entries.slice(2).map(entry => insightEntryHTML(entry, sourceAsOf, '', store)).join('')}</details>` : ''}${insightReviewArchiveHTML(store, rejected, history)}<p id="insight-review-error" class="error" role="alert"></p></section>`;
+  return `<section class="store-insights" aria-label="本店拜訪前線索"><h2>拜訪前，多一條線索</h2>${entries.some(entry => insightReviewForEntry(store, entry).status === 'pending') ? '<p class="muted">先看線索與原文，再由你人工審核。</p>' : ''}${entries.slice(0, 2).map(entry => insightEntryHTML(entry, sourceAsOf, '', store)).join('')}${entries.length > 2 ? `<details data-insight-detail="more"><summary>其他本店線索 · ${entries.length - 2} 項</summary>${entries.slice(2).map(entry => insightEntryHTML(entry, sourceAsOf, '', store)).join('')}</details>` : ''}${insightReviewArchiveHTML(store, rejected, history)}<p id="insight-review-error" class="error" role="alert"></p></section>`;
 }
 function insightReviewArchiveHTML(store, rejected, history) {
   if (!rejected.length && !history.length) return '';
@@ -1422,7 +1429,7 @@ async function changeInsightReview(storeId, entryId, status, expectedHead) {
   const sessionKey = key, sessionMeta = meta, currentPayload = payload;
   const plan = planInsightReview(payload.bundle, storeId, entryId, status, expectedHead);
   if (!plan.changed) return;
-  const impact = status === 'rejected' ? '這張卡將從日常線索隱藏，保留在「審核留存」。' : status === 'pending' ? '這張卡將顯示為待查核，保留之前的審核歷史。' : '這張卡將標示為你親自確認；原文證據類別仍分開保留。';
+  const impact = status === 'rejected' ? '這張卡將從日常線索隱藏，保留在「審核留存」。' : status === 'pending' ? '這張卡將顯示為待查核，保留之前的審核歷史。' : '這張卡將標示為你親自確認，預設收合為主標題；展開仍可查看提問、原文證據與審核操作。';
   if (!confirm(`${plan.storeName}\n${plan.entry.headline}\n\n${INSIGHT_REVIEW_LABELS[plan.beforeStatus]} → ${INSIGHT_REVIEW_LABELS[status]}\n${impact}\n\n只更新本店這張卡的人工審核，建立 1 個門市版本並加密保存、同步；不連動其他門市，也不修改拜訪原文或記錄實際拜訪日期。\n確認儲存？`)) return;
   assertInsightReviewReady(storeId);
   if (key !== sessionKey || meta !== sessionMeta || payload !== currentPayload) throw new Error('審核期間資料或工作階段已變更，請重新核對；尚未寫入。');
@@ -1467,7 +1474,8 @@ function openVisitBrief(storeId, { capture = false, restoreDraft = null, preserv
     secondaryOpen: !!reviewBody.querySelector('.brief-secondary')?.open,
     historyOpen: !!reviewBody.querySelector('.brief-history')?.open,
     tasksOpen: !!reviewBody.querySelector('.reminder-task-history')?.open,
-    insightDetails: [...reviewBody.querySelectorAll('[data-insight-detail][open]')].map(el => el.dataset.insightDetail)
+    insightDetails: [...reviewBody.querySelectorAll('[data-insight-detail][open]')].map(el => el.dataset.insightDetail),
+    confirmedInsights: [...reviewBody.querySelectorAll('[data-insight-confirmed][open]')].map(el => el.dataset.insightConfirmed)
   } : null;
   const brief = visitBriefForStore(storeId, all('visit'), all('store'), all('person'));
   if (!brief) return toast('這間門市目前有衝突、身分待確認或已移到回收桶，無法建立重點卡。');
@@ -1495,6 +1503,7 @@ function openVisitBrief(storeId, { capture = false, restoreDraft = null, preserv
     setReviewMode('visit-brief');
     const taskHistory = reviewBody.querySelector('.reminder-task-history'); if (taskHistory) taskHistory.open = preserved.tasksOpen;
     for (const detail of reviewBody.querySelectorAll('[data-insight-detail]')) detail.open = preserved.insightDetails.includes(detail.dataset.insightDetail);
+    for (const detail of reviewBody.querySelectorAll('[data-insight-confirmed]')) detail.open = preserved.confirmedInsights.includes(detail.dataset.insightConfirmed);
     const restorePosition = () => { reviewBody.scrollTop = preserved.scrollTop; };
     restorePosition(); requestAnimationFrame(restorePosition);
   } else openDialog(review, { reviewMode: 'visit-brief' });
