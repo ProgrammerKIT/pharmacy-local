@@ -41,7 +41,7 @@ async function harness({restore = false} = {}) {
     syncScheduler: { request() {}, wake() {}, pause() {}, reset() {}, confirmed() {}, failed() {} },
     $,structuredClone,JSON,Set,Date,uuid,derive,checkEnvelope,validateBundle,planBackupImport,project,
     key:restore ? null : fixture.key,meta:restore ? null : meta,payload,localRevision:restore ? 0 : 7,slot:restore ? null : state.disk,
-    storeMergePreview:null,storeMergeSetup:null,backupPreview:null,insightsPreview:null,editorContext:null,singleStoreContext:null,inlineTextContext:null,reminderContext:null,pendingLock:false,busy:false,updateHolding:false,
+    storeMergePreview:null,storeMergeSetup:null,backupPreview:null,insightsPreview:null,editorContext:null,singleStoreContext:null,inlineTextContext:null,reminderContext:null,dayPlanContext:null,pendingLock:false,busy:false,updateHolding:false,
     document:{hidden:false,querySelectorAll:()=>[...nodes.values()]},csvImport:{hasPending:()=>state.pendingCSV},
     esc,dateText:x=>x,reviewValue:value=>JSON.stringify(value,null,2),reviewFields:(before,after)=>`<pre>${esc(JSON.stringify(before))}</pre><pre>${esc(JSON.stringify(after))}</pre>`,
     openDialog:node=>node.open=true,openWorkspace:async()=>state.opens++,render:()=>state.renders++,switchView:view=>state.view=view,toast:message=>state.notices.push(message),lockNow:()=>{},
@@ -147,7 +147,7 @@ test('a racing write during encryption cannot substitute an unreviewed global re
 });
 
 test('open editors, encrypted drafts, CSV previews, dialogs and background state prohibit inspection and application',async()=>{
-  const cases=[h=>h.c.editorContext={},h=>h.c.singleStoreContext={},h=>h.c.inlineTextContext={},h=>h.c.reminderContext={},h=>h.c.payload.draft={text:'synthetic unsaved'},h=>h.c.payload.inlineTextDraft={after:'synthetic unsaved'},h=>h.state.pendingCSV=true,
+  const cases=[h=>h.c.editorContext={},h=>h.c.singleStoreContext={},h=>h.c.inlineTextContext={},h=>h.c.reminderContext={},h=>h.c.dayPlanContext={},h=>h.c.payload.draft={text:'synthetic unsaved'},h=>h.c.payload.inlineTextDraft={after:'synthetic unsaved'},h=>h.state.pendingCSV=true,
     ...['review','quick-text-dialog','store-reminder-dialog','rebuild-dialog'].map(id=>h=>h.$(id).open=true),h=>h.c.document.hidden=true,h=>h.c.pendingLock=true];
   for(const block of cases) {
     const h=await harness();block(h);const before=JSON.stringify(h.c.payload);

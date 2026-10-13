@@ -183,7 +183,7 @@ async function appHarness() {
   const $ = id => { if (!elements.has(id)) elements.set(id, { textContent: '', open: false, dataset: {}, hidden: false }); return elements.get(id); };
   const c = vm.createContext({ Math, Promise, Error, Set, key: syntheticKey, meta: syntheticMeta, payload: initial, localRevision: 1, slot: null,
     localSaveState: 'saved', syncInProgress: false, syncEpoch: 0, autoFetching: false, updateHolding: false, pendingLock: false, gateOpening: false, busy: false,
-    backupPreview: null, editorContext: null, singleStoreContext: null, inlineTextContext: null, reminderContext: null, attendancePrompt: null,
+    backupPreview: null, editorContext: null, singleStoreContext: null, inlineTextContext: null, reminderContext: null, dayPlanContext: null, attendancePrompt: null,
     document: { hidden: false }, navigator: { onLine: true }, csvImport: { hasPending: () => false }, records: project(initial.bundle),
     lastError: '', lastSyncFailure: null, syncWarning: '', $, dateText: String, validateBundle, merge,
     renderDataSafetyEntry() {}, status() {}, buttons() {}, toast() {}, lockNow() { c.pendingLock = false; c.key = null; c.syncEpoch++; c.syncScheduler.reset(); },
@@ -261,13 +261,13 @@ test('a save performed offline waits for an online event and then converges with
 const blockers = [
   ['offline', c => { c.navigator.onLine = false; }, c => { c.navigator.onLine = true; }],
   ...['pendingLock', 'updateHolding', 'busy', 'gateOpening', 'syncInProgress', 'autoFetching'].map(name => [name, c => { c[name] = true; }, c => { c[name] = false; }]),
-  ...['backupPreview', 'editorContext', 'singleStoreContext', 'inlineTextContext', 'reminderContext', 'attendancePrompt'].map(name => [name, c => { c[name] = {}; }, c => { c[name] = null; }]),
+  ...['backupPreview', 'editorContext', 'singleStoreContext', 'inlineTextContext', 'reminderContext', 'dayPlanContext', 'attendancePrompt'].map(name => [name, c => { c[name] = {}; }, c => { c[name] = null; }]),
   ['hidden', c => { c.document.hidden = true; }, c => { c.document.hidden = false; }],
   ['locked', c => { c.key = null; }, c => { c.key = syntheticKey; }],
   ['unpaired', c => { c.payload.token = ''; }, c => { c.payload.token = 'synthetic-token'; }],
   ['inline draft', c => { c.payload.inlineTextDraft = { format: 'inline-text-draft-1' }; }, c => { delete c.payload.inlineTextDraft; }],
   ['CSV preview', c => { c.csvImport.hasPending = () => true; }, c => { c.csvImport.hasPending = () => false; }],
-  ...['review', 'editor', 'quick-text-dialog', 'store-reminder-dialog', 'rebuild-dialog', 'backup-review', 'visit-attendance-dialog'].map(id => [id, (c, $) => { $(id).open = true; }, (c, $) => { $(id).open = false; }])
+  ...['review', 'editor', 'quick-text-dialog', 'store-reminder-dialog', 'rebuild-dialog', 'backup-review', 'visit-attendance-dialog', 'day-plan-dialog'].map(id => [id, (c, $) => { $(id).open = true; }, (c, $) => { $(id).open = false; }])
 ];
 test('all editing, confirmation, background, update and lock guards block probes and writes, then safely wake', async () => {
   for (const [name, block, release] of blockers) {
@@ -282,7 +282,7 @@ test('all editing, confirmation, background, update and lock guards block probes
 });
 
 test('an editor or confirmation opened during a version probe prevents snapshots and acknowledgement writes', async () => {
-  for (const name of ['editorContext', 'singleStoreContext', 'inlineTextContext', 'reminderContext', 'attendancePrompt', 'backupPreview']) {
+  for (const name of ['editorContext', 'singleStoreContext', 'inlineTextContext', 'reminderContext', 'dayPlanContext', 'attendancePrompt', 'backupPreview']) {
     const h = await appHarness(), gate = latch(); h.control.hook = () => gate.wait();
     const task = h.c.autoSync(); await gate.started; h.c[name] = {}; gate.release();
     assert.equal(await task, 'deferred', name); assert.deepEqual(h.calls, [['/api/version', 'GET']]);
@@ -393,7 +393,7 @@ test('real API version callback cannot update Mac program information after epoc
 });
 
 test('a new editing context during a snapshot wait aborts before merge, upload or acknowledgement', async () => {
-  for (const field of ['inlineTextContext', 'editorContext', 'reminderContext', 'singleStoreContext', 'attendancePrompt']) {
+  for (const field of ['inlineTextContext', 'editorContext', 'reminderContext', 'dayPlanContext', 'singleStoreContext', 'attendancePrompt']) {
     const h = await appHarness(), gate = latch(), original = JSON.stringify(h.c.payload.bundle);
     h.control.hook = () => gate.wait();
     const task = h.c.synchronize().catch(error => error); await gate.started;

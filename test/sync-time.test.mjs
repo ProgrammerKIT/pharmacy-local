@@ -26,7 +26,7 @@ async function client(f, device = 'phone') {
   const $ = id => { if (!elements.has(id)) elements.set(id, { textContent: '', hidden: false, open: false, dataset: {} }); return elements.get(id); };
   const c = vm.createContext({
     localSaveState: 'saved', syncInProgress: false, syncEpoch: 0, pendingLock: false, gateOpening: false,
-    singleStoreContext: null, attendancePrompt: null, navigator: { onLine: true }, dataSafetySummary,
+    singleStoreContext: null, dayPlanContext: null, attendancePrompt: null, navigator: { onLine: true }, dataSafetySummary,
     currentHealthAudit: () => ({ checks: [] }),
 
     ...f, payload: { schema: 1, device, deviceName: device, token: `fictional-${device}`, bundle: structuredClone(f.bundle), dirty: false, serverVersion: 1, lastSync: OLD },

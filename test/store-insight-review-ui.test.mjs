@@ -46,7 +46,7 @@ async function harness() {
   c = vm.createContext({ ...core, $, structuredClone, JSON, Set, Date,
     key: fixture.key, meta: structuredClone(fixture.meta), payload: { device: 'synthetic-review-device', token: 'synthetic-token', bundle: structuredClone(fixture.bundle), dirty: false },
     localRevision: 7, slot: state.disk, localSaveState: 'saved', syncInProgress: false, pendingLock: false, busy: false, updateHolding: false,
-    insightsPreview: null, backupPreview: null, coordinatePreview: null, enrichmentPreview: null, versionReview: null, resolutionPreview: null, editorContext: null, singleStoreContext: null, inlineTextContext: null, reminderContext: null, attendancePrompt: null,
+    insightsPreview: null, backupPreview: null, coordinatePreview: null, enrichmentPreview: null, versionReview: null, resolutionPreview: null, editorContext: null, singleStoreContext: null, inlineTextContext: null, reminderContext: null, dayPlanContext: null, attendancePrompt: null,
     document: { hidden: false, querySelectorAll: () => [...nodes.values()], body: { classList: { add() {}, remove() {} } } },
     csvImport: { hasPending: () => state.pendingCSV, reset() {} }, syncScheduler: { request: reason => state.requests.push(reason), pause() {}, reset() {} },
     openDialog: dialog => { dialog.open = true; }, render: () => state.renders++, renderDataSafetyEntry() {}, toast: message => state.notices.push(message),
