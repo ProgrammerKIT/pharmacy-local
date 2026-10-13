@@ -1,3 +1,19 @@
+v1.5.66 精簡行程與準備｜2026-10-13
+
+完整 Node 回歸 556／556 通過，0 失敗／取消／略過；node --check public/app.js、public/core.js 及 git diff --check 通過。首輪沙箱不允許 loopback 的 3 項伺服器測試，獲准本機測試連接埠後全數通過。
+
+新增核心動作測試，涵蓋逐間加入、取消、復原、當日上移／下移、不同日期隔離、取消位置保留、舊版無順位行程、其他門市衝突不阻擋安全門市加入、排序涉及不安全資料拒絕、過去唯讀、過期來源與容量／格式保護。改寫直接操作／工作階段測試共 43 項，涵蓋連續加入、重複點擊、失敗沒有假成功、過期復原、磁碟／工作階段／跨日／同步防護及真實 HTML 節點的上鎖清理。檢查修正了移除核對畫面後的上鎖殘留 ID、舊 packed 事件，以及順位歷史顯示。
+
+以實際 origin/main v1.5.65 core 驗證新可選頂層 datePlanOrder 可驗證、同步合併及加密往返；舊版一般欄位版本操作仍保留順位及未知巢狀資料。不在 strict datePlans 物件內新增欄位，schema2／protocol1／CSV引擎1.2.16及21條 runtime 路徑不變。正式部署前兩台更新仍建議一致至 v1.5.66。
+
+隔離 fixture 僅 127.0.0.1:18866、合成門市／任務／CSV／附件及獨立加密 IndexedDB，API 拒絕且不接正式 Mac。Codex in-app browser 操作 393×852 固定手機畫布與 1280×900 桌面尺寸，均已檢視截圖。實際逐間加入三店、開啟時不聚焦文字欄位、未完成提醒顯示、上移／下移、取消→復原、已取消區重新加入、跨日空安排、過去唯讀、重開後順位保存及點店名開原文均通過；新頁不含核對、全天彙總或已帶上勾選。瀏覽器 error log 無錯誤。
+
+最終合成庫 audit：originalOpsPreserved、originalBlobsPreserved、originalVisitTextPreserved、currentVisitDataUnchanged、currentNonPlanStoreDataUnchanged、attendanceUnchanged、noNewAttendance、deletedStoreStillDeleted 全為 true；15 個初始版本保留，新增 11 個行程／排序版本，沒有 scenario 額外改動。舊 items／acknowledged／packedAt 的逐字保留由核心測試核對；歷史顯示模板另經程式檢查。未讀寫正式客戶資料、未匯入或 restore、未呼叫外部 AI。
+
+App1.5.66／SOP1 1.2.50。上述為程式與隔離瀏覽器驗收，不宣稱真 iPhone／Safari／PWA／原生鍵盤或兩台實體裝置同步已驗收；真機項目見 DEVICE-ACCEPTANCE.md。
+
+以下保留歷史測試結果。
+
 v1.5.65 定位說明預設收合｜2026-10-13
 
 完整 Node 回歸 530／530 通過，0 失敗／取消／略過；node --check public/app.js 及 git diff --check 通過。未新增測試檔；沿用既有 GPS、四間排序、desktop no-GPS、前背景定位失效及更新簽章測試。

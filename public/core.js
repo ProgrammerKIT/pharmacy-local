@@ -277,6 +277,26 @@ function validDatePlans(plans) {
       && str(item.unit, 40) && item.unit === item.unit.trim() && (item.source === null || validPlanSource(item.source))
       && (item.packedAt === '' || attendanceInstant(item.packedAt))));
 }
+// Keep ranks outside datePlans: v1.5.63–v1.5.65 clients reject extra plan keys.
+const MAX_DAY_PLAN_POSITION = 1000000;
+function validDatePlanOrder(order) {
+  return Array.isArray(order) && order.length <= 1000 && new Set(order.map(entry => entry?.date)).size === order.length && order.every(entry => plain(entry)
+    && Object.keys(entry).sort().join(',') === 'date,position' && validPlanDate(entry.date) && Number.isSafeInteger(entry.position) && entry.position >= 0 && entry.position <= MAX_DAY_PLAN_POSITION);
+}
+const dayPlanPosition = (data, date) => data?.datePlanOrder?.find(entry => entry.date === date)?.position ?? null;
+const compareDayPlanNames = (a, b) => a.name.localeCompare(b.name, 'zh-Hant') || a.storeId.localeCompare(b.storeId);
+const compareDayPlanRows = (a, b) => a.orderPosition - b.orderPosition || compareDayPlanNames(a, b);
+function positionDayPlanRows(rows) {
+  // Legacy rows fill unoccupied slots in their existing name order, without a
+  // write. Include cancelled rows so cancellation does not shift their slot.
+  const used = new Set(rows.filter(row => row.position !== null).map(row => row.position));
+  let available = 0;
+  for (const row of [...rows].sort(compareDayPlanNames)) {
+    if (row.position !== null) { row.orderPosition = row.position; continue; }
+    while (used.has(available)) available++;
+    row.orderPosition = available; used.add(available++);
+  }
+}
 export function dayPlanForStore(store, date) { const plan = store?.datePlans?.find(plan => plan.date === dayPlanDate(date)); return plan ? structuredClone(plan) : null; }
 export function dayPlanSuggestion(source) {
   if (!validPlanSource(source)) return null;
@@ -299,13 +319,16 @@ export function dayPlanOverview(records, date, now = Date.now()) {
   date = dayPlanDate(date); const past = date < dayPlanDate(now), stores = [], cancelledStores = [], groups = new Map();
   const unknownItems = [], staleItems = [], unclassifiedSources = [], unavailableStores = [];
   for (const store of records.filter(record => record.type === 'store')) {
-    let plan = dayPlanForStore(store, date), historical = false;
+    let plan = dayPlanForStore(store, date), historical = false, position = dayPlanPosition(store, date);
     if (!plan && past) {
       const version = [...(store.versions || [])].sort((a, b) => b.at.localeCompare(a.at) || b.id.localeCompare(a.id)).find(op => op.data.datePlans?.some(entry => entry.date === date));
-      plan = version?.data.datePlans.find(entry => entry.date === date) || null; historical = !!plan;
+      plan = version?.data.datePlans.find(entry => entry.date === date) || null; historical = !!plan; position = dayPlanPosition(version?.data, date);
     }
     // A conflicting head must not silently hide the day's arrangement.
-    if (!plan?.active && store.conflict) plan = store.heads.flatMap(head => head.data.datePlans || []).find(entry => entry.date === date && entry.active) || plan;
+    if (!plan?.active && store.conflict) {
+      const head = store.heads.find(head => head.data.datePlans?.some(entry => entry.date === date && entry.active));
+      if (head) { plan = head.data.datePlans.find(entry => entry.date === date); position = dayPlanPosition(head.data, date); }
+    }
     if (!plan) continue;
     const unavailableReason = dayPlanUnavailable(store), available = !unavailableReason;
     const sources = structuredClone(past ? plan.sourceSnapshot : dayPlanSources(store)), currentKeys = new Set(sources.map(dayPlanSourceKey));
@@ -314,7 +337,7 @@ export function dayPlanOverview(records, date, now = Date.now()) {
       return { ...structuredClone(item), stale, packed: available && !stale && !!item.packedAt };
     });
     const classified = new Set([...plan.acknowledged.map(dayPlanSourceKey), ...items.filter(item => !item.stale && item.source).map(item => dayPlanSourceKey(item.source))]);
-    const row = { storeId: store.id, name: store.name, plan: structuredClone(plan), historical, available, unavailableReason, sources, items, unclassifiedSources: sources.filter(source => !classified.has(dayPlanSourceKey(source))) };
+    const row = { storeId: store.id, name: store.name, plan: structuredClone(plan), position, historical, available, unavailableReason, sources, items, unclassifiedSources: sources.filter(source => !classified.has(dayPlanSourceKey(source))) };
     if (!plan.active) { cancelledStores.push(row); continue; }
     stores.push(row);
     if (!available) unavailableStores.push(row);
@@ -330,8 +353,75 @@ export function dayPlanOverview(records, date, now = Date.now()) {
       const group = groups.get(key); group.quantity = Number((group.quantity + item.quantity).toPrecision(15)); group.packed &&= item.packed; group.allocations.push(allocation);
     }
   }
-  stores.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant') || a.storeId.localeCompare(b.storeId));
+  positionDayPlanRows([...stores, ...cancelledStores]);
+  stores.sort(compareDayPlanRows); cancelledStores.sort(compareDayPlanRows);
   return { date, past, stores, cancelledStores, groups: [...groups.values()], unknownItems, staleItems, unclassifiedSources, unavailableStores };
+}
+// All store heads participate, including unselected/cancelled candidates: a stale
+// screen cannot reorder against a newly changed reminder, store, or arrangement.
+export function dayItineraryBasis(records, date) {
+  date = dayPlanDate(date);
+  return JSON.stringify({ date, stores: records.filter(record => record.type === 'store').map(store => [store.id, store.heads.map(head => head.id).sort()]).sort((a, b) => a[0].localeCompare(b[0])) });
+}
+export function applyDayItineraryAction(bundle, request, device, at = new Date().toISOString()) {
+  validateBundle(bundle);
+  if (!attendanceInstant(at) || !str(device, 100) || !device || !plain(request) || Object.keys(request).sort().join(',') !== 'action,date,expectedBasis,storeId'
+    || !validPlanDate(request.date) || !str(request.storeId, 100) || !request.storeId || typeof request.expectedBasis !== 'string'
+    || !['add', 'cancel', 'restore', 'up', 'down'].includes(request.action)) throw new Error('行程修改資料不完整，尚未寫入。');
+  const { date, storeId, action, expectedBasis } = request, records = project(bundle), index = new Map(records.filter(record => record.type === 'store').map(store => [store.id, store]));
+  if (date < dayPlanDate(at)) throw new Error('過去行程保留歷史，不能重新安排或調整順序。');
+  if (dayItineraryBasis(records, date) !== expectedBasis) throw new Error('門市、提醒或行程已有新版本，請重新開啟行程；尚未寫入。');
+  const store = index.get(storeId);
+  if (!store || dayPlanUnavailable(store)) throw new Error('行程門市不存在、已刪除、整併、身分待確認或有衝突；請先核對。');
+  const before = dayPlanForStore(store, date), drafts = new Map();
+  const draft = id => {
+    if (!index.has(id) || dayPlanUnavailable(index.get(id))) throw new Error('順序涉及已刪除、整併、身分待確認或有衝突的門市；請先核對。');
+    if (!drafts.has(id)) drafts.set(id, structuredClone(index.get(id).heads[0].data));
+    return drafts.get(id);
+  };
+  const setPlan = plan => { const data = draft(storeId); data.datePlans = [...(data.datePlans || []).filter(entry => entry.date !== date), plan].sort((a, b) => a.date.localeCompare(b.date)); };
+  const setPosition = (id, position) => {
+    if (dayPlanPosition(drafts.get(id) || index.get(id), date) === position) return;
+    const data = draft(id); data.datePlanOrder = [...(data.datePlanOrder || []).filter(entry => entry.date !== date), { date, position }].sort((a, b) => a.date.localeCompare(b.date));
+  };
+  if (action === 'cancel' || action === 'restore') {
+    if (action === 'restore' && !before) throw new Error('找不到可復原的安排，尚未寫入。');
+    if (!before || before.active === (action === 'restore')) return bundle;
+    // Cancellation/restoration never recalculate sources or reset old packedAt.
+    setPlan({ ...before, active: action === 'restore', updatedAt: at });
+  } else {
+    if (action === 'add' && before?.active) return bundle;
+    if (action !== 'add' && !before?.active) throw new Error('門市尚未安排於當日，不能調整順序。');
+    const overview = dayPlanOverview(records, date, at), rows = [...overview.stores, ...overview.cancelledStores].sort(compareDayPlanRows);
+    const activeIndex = overview.stores.findIndex(row => row.storeId === storeId), neighborIndex = activeIndex + (action === 'up' ? -1 : 1);
+    if (action !== 'add' && (neighborIndex < 0 || neighborIndex >= overview.stores.length)) return bundle;
+    if (action !== 'add' && dayPlanUnavailable(index.get(overview.stores[neighborIndex].storeId))) throw new Error('順序涉及已刪除、整併、身分待確認或有衝突的門市；請先核對。');
+    // Reserve cancelled slots. Restoring a store returns it to the retained slot;
+    // moving active neighbors swaps their ranks without deleting any history.
+    if (action === 'add') {
+      // Appending only changes this store. An unrelated legacy/conflicting row
+      // must not prevent adding a safe store or silently get a new revision.
+      const position = Math.max(-1, ...rows.map(row => row.orderPosition)) + 1;
+      if (position > MAX_DAY_PLAN_POSITION) throw new Error('當日順序已達安全上限，請先調整順序；尚未寫入。');
+      setPlan(before ? { ...before, active: true, updatedAt: at } : { date, active: true, items: [], acknowledged: [], sourceSnapshot: dayPlanSources(store), updatedAt: at });
+      setPosition(storeId, position);
+    } else {
+      const positions = new Map(rows.map(row => [row.storeId, row.position]));
+      if (rows.some(row => row.position === null) || new Set(rows.map(row => row.position)).size !== rows.length || rows.some(row => row.position === MAX_DAY_PLAN_POSITION)) {
+        rows.forEach((row, position) => { positions.set(row.storeId, position); setPosition(row.storeId, position); });
+      }
+      const neighborId = overview.stores[neighborIndex].storeId, position = positions.get(storeId), neighborPosition = positions.get(neighborId);
+      setPosition(storeId, neighborPosition); setPosition(neighborId, position);
+    }
+  }
+  if (!drafts.size) return bundle;
+  const next = structuredClone(bundle);
+  for (const [id, data] of drafts) {
+    const op = revision('store', id, data, index.get(id).heads.map(head => head.id), device); op.at = at; next.ops.push(op);
+  }
+  validateBundle(next);
+  if (enc.encode(JSON.stringify(next)).length > MAX_BYTES) throw new Error('行程儲存後資料超過 24 MB 上限；全部原資料保留，本次尚未寫入。');
+  return next;
 }
 const planItemSpec = item => JSON.stringify([item.name, item.quantity, item.unit, item.source]);
 export function applyDayPlanChanges(bundle, changes, device, at = new Date().toISOString()) {
@@ -377,6 +467,7 @@ export function applyDayPlanChanges(bundle, changes, device, at = new Date().toI
 export function validData(type, d) {
   if (!plain(d)) return false;
   if (d.datePlans !== undefined && (type !== 'store' || !validDatePlans(d.datePlans))) return false;
+  if (d.datePlanOrder !== undefined && (type !== 'store' || !validDatePlanOrder(d.datePlanOrder))) return false;
   if (d.storeMergeHistory !== undefined && (type !== 'store' || !validStoreMergeHistory(d.storeMergeHistory))) return false;
   if (d.storeMergeStaleEntries !== undefined && (type !== 'store' || !Array.isArray(d.storeMergeStaleEntries) || d.storeMergeStaleEntries.length > 20 || !d.storeMergeStaleEntries.every(item => plain(item) && insightId(item.id) && str(item.key, 300000)))) return false;
   if (d.preVisitInsights !== undefined && (type !== 'store' || !validStoreInsights(d.preVisitInsights))) return false;
@@ -1136,7 +1227,7 @@ export async function planStoreMerge(bundle, request) {
   const records = project(bundle).sort((a, b) => (a.type + ':' + a.id).localeCompare(b.type + ':' + b.id)), index = new Map(records.map(item => [item.type + ':' + item.id, item]));
   if (records.some(item => item.conflict)) throw new Error('資料庫有同步衝突，請先核對後再預覽門市整併。');
   const keeper = index.get('store:' + request.keeperId), donor = index.get('store:' + request.donorId);
-  if ([keeper, donor].some(store => store?.datePlans?.length || store?.versions?.some(op => op.data.datePlans?.length))) throw new Error('門市保有行程與準備紀錄，須另行核對日期、備品與已帶上狀態的歸屬；本次不自動搬移或整併。');
+  if ([keeper, donor].some(store => store?.datePlans?.length || store?.datePlanOrder?.length || store?.versions?.some(op => op.data.datePlans?.length || op.data.datePlanOrder?.length))) throw new Error('門市保有行程與準備紀錄，須另行核對日期、備品與已帶上狀態的歸屬；本次不自動搬移或整併。');
   for (const store of [keeper, donor]) if (!safeInsightStore(store) || store.storeMergeHistory?.length) throw new Error('門市已刪除、待確認、已有整併歷史或來源未核對；本次不合併。');
   const selected = new Set([keeper.id, donor.id]);
   if (records.some(item => item.type === 'store' && (item.qualityDistinct || []).some(review => selected.has(item.id) || selected.has(review.store)))) throw new Error('相關門市保存了不同門市裁定，須先人工核對；不能用整併覆蓋。');
