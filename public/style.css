@@ -281,3 +281,14 @@ dialog:focus{outline:none}
 .insight-review-archive { border-top: 1px solid var(--line); padding-top: 14px; margin-top: 16px; }
 .insight-review-event { margin-top: 12px; overflow-wrap: anywhere; }
 .insight-review-event > summary { font-size: .9rem; font-weight: 500; }
+
+/* Identity review is readable on a narrow phone without moving the page sideways. */
+.store-merge-preview, .store-merge-origins, .store-merge-change, .store-merge-origin-history { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.store-merge-origins { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.store-merge-origins > section, .store-merge-preservation, .store-merge-backup, .store-merge-change { border: 1px solid var(--line); border-radius: 12px; padding: 1rem; margin-block: 1rem; }
+.store-merge-preview pre, .store-merge-origin-history pre { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; max-width: 100%; }
+.store-merge-preview label, #store-merge-form label { display: grid; gap: .5rem; margin-block: 1rem; }
+.store-merge-preview .check { display: flex; align-items: flex-start; }
+.store-merge-preview input[type="file"], #store-merge-form input, #store-merge-form select { min-width: 0; max-width: 100%; width: 100%; }
+.store-merge-preview .dialog-footer { display: flex; flex-wrap: wrap; gap: .75rem; }
+@media (max-width: 680px) { .store-merge-origins { grid-template-columns: minmax(0, 1fr); } .store-merge-preview .dialog-footer button { flex: 1 1 100%; } }

@@ -45,7 +45,7 @@ async function harness() {
   c = vm.createContext({ $, structuredClone, JSON, Set, Date, storeInsightsForStore, planStoreInsights, applyStoreInsights, buildStoreInsightsSource, insightReviewForEntry, storeInsightReviewHistory, planInsightReview, applyInsightReview,
     key: fixture.key, meta: structuredClone(fixture.meta), payload: { device: 'synthetic-ui-device', token: 'synthetic-token', bundle: structuredClone(fixture.bundle), dirty: false },
     localRevision: 7, slot: state.disk, localSaveState: 'saved', syncInProgress: false, pendingLock: false, busy: false, updateHolding: false,
-    insightsPreview: null, backupPreview: null, versionReview: null, resolutionPreview: null, editorContext: null, singleStoreContext: null, inlineTextContext: null, reminderContext: null, attendancePrompt: null,
+    insightsPreview: null, storeMergePreview: null, storeMergeSetup: null, backupPreview: null, versionReview: null, resolutionPreview: null, editorContext: null, singleStoreContext: null, inlineTextContext: null, reminderContext: null, attendancePrompt: null,
     document: { hidden: false, querySelectorAll: () => [...nodes.values()], body: { classList: { add() {}, remove() {} } } },
     csvImport: { hasPending: () => state.pendingCSV, reset() {} }, syncScheduler: { request: reason => state.requests.push(reason), pause() {}, reset() {} },
     openDialog: dialog => { dialog.open = true; }, render: () => state.renders++, renderDataSafetyEntry() {}, toast: message => state.notices.push(message),
@@ -58,7 +58,7 @@ async function harness() {
       state.writes.push({ envelope, expected, unlockKey }); state.disk = { envelope, revision: expected + 1 }; return expected + 1;
     }
   });
-  vm.runInContext(source('const esc = ', '\n') + '\n' + source('function storedReminderDrafts(', 'function reminderDraftFor(') + source('async function persist(', 'function pendingSyncSummary(') + source('function assertInsightsIdle(', 'function openVisitBrief(') + source("$('store-insights-file').addEventListener('change'"), c);
+  vm.runInContext(source('function clearStoreMergePreview(', 'function assertStoreMergeCurrent(') + source('const esc = ', '\n') + '\n' + source('function storedReminderDrafts(', 'function reminderDraftFor(') + source('async function persist(', 'function pendingSyncSummary(') + source('function assertInsightsIdle(', 'function openVisitBrief(') + source("$('store-insights-file').addEventListener('change'"), c);
   return { c, $, state, fixture, file: fileFor(fixture.input) };
 }
 async function preview(h) { await h.c.previewInsightsFile(h.file); }

@@ -238,6 +238,8 @@ export function reminderTaskHistory(record) {
 }
 export function validData(type, d) {
   if (!plain(d)) return false;
+  if (d.storeMergeHistory !== undefined && (type !== 'store' || !validStoreMergeHistory(d.storeMergeHistory))) return false;
+  if (d.storeMergeStaleEntries !== undefined && (type !== 'store' || !Array.isArray(d.storeMergeStaleEntries) || d.storeMergeStaleEntries.length > 20 || !d.storeMergeStaleEntries.every(item => plain(item) && insightId(item.id) && str(item.key, 300000)))) return false;
   if (d.preVisitInsights !== undefined && (type !== 'store' || !validStoreInsights(d.preVisitInsights))) return false;
   if (d.preVisitInsightReviews !== undefined && (type !== 'store' || !validInsightReviews(d.preVisitInsightReviews))) return false;
   if ((d.nextRememberTasks !== undefined || d.nextRememberImports !== undefined) && (type !== 'store' || !validReminderTasks(d))) return false;
@@ -278,6 +280,7 @@ export function validateBundle(b) {
     if (Object.hasOwn(o, 'visitAttendance') && !validVisitAttendance(o)) throw new Error('拜訪確認資料不完整或與紀錄不符。');
     seen.set(o.id, o);
   }
+  validateStoreMergeProvenance(b, seen);
   for (const o of b.ops) if (Object.hasOwn(o, 'visitAttendance') && !storeEntities.has(o.visitAttendance.store)) throw new Error('拜訪確認所屬門市不存在。');
   for (const o of b.ops) for (const p of o.parents) {
     const parent = seen.get(p);
@@ -766,10 +769,11 @@ function insightEntryKey(entry) {
 }
 function canonicalInsightReview(event) {
   return { id: event.id, status: event.status, reviewedBy: event.reviewedBy, reviewedAt: event.reviewedAt,
-    sourceAsOf: event.sourceAsOf, entry: canonicalInsightEntry(event.entry) };
+    sourceAsOf: event.sourceAsOf, entry: canonicalInsightEntry(event.entry), ...(event.carriedFrom ? { carriedFrom: event.carriedFrom } : {}) };
 }
 function validInsightReview(event) {
-  return insightKeys(event, ['id', 'status', 'reviewedBy', 'reviewedAt', 'sourceAsOf', 'entry'])
+  return insightKeys(event, ['id', 'status', 'reviewedBy', 'reviewedAt', 'sourceAsOf', 'entry', ...(event?.carriedFrom ? ['carriedFrom'] : [])])
+    && (!event.carriedFrom || insightKeys(event.carriedFrom, ['storeId', 'sourceRevision', 'eventId', 'mergeId']) && Object.values(event.carriedFrom).every(insightId))
     && insightId(event.id) && ['confirmed', 'pending', 'rejected'].includes(event.status)
     && event.reviewedBy === 'Kit' && insightInstant(event.reviewedAt) && insightDate(event.sourceAsOf) && validInsightEntry(event.entry);
 }
@@ -791,7 +795,7 @@ export function insightReviewForEntry(store, entry) {
   // manufactures a Kit decision. A conflict never picks one branch's approval.
   const current = key && !store?.conflict && validInsightReviews(store?.preVisitInsightReviews)
     ? [...store.preVisitInsightReviews].reverse().find(event => insightEntryKey(event.entry) === key) : null;
-  return current ? { status: current.status, reviewedAt: current.reviewedAt, reviewedBy: current.reviewedBy, history } : { status: 'pending', history };
+  return current ? { status: current.status, reviewedAt: current.reviewedAt, reviewedBy: current.reviewedBy, ...(current.carriedFrom ? { carriedFrom: structuredClone(current.carriedFrom) } : {}), history } : { status: 'pending', history };
 }
 export function planInsightReview(bundle, storeId, entryId, status, expectedHead) {
   validateBundle(bundle);
@@ -833,6 +837,7 @@ function insightRecordIndex(bundle) { return new Map(project(bundle).map(record 
 function safeInsightStore(store) { return !!store && !store.deleted && !store.conflict && !store.csvIdentityPending && !store.mergedInto && !store.sourceMissing && !store.googleUpdatePending && store.heads.length === 1; }
 function safeInsightVisit(visit, index) { return !!visit && !visit.deleted && !visit.conflict && !visit.sourceMissing && !visit.googleUpdatePending && visit.heads.length === 1 && safeInsightStore(index.get('store:' + visit.store)); }
 function resolveInsightEntry(entry, storeId, index) {
+  if ((index.get('store:' + storeId)?.storeMergeStaleEntries || []).some(item => item.id === entry.id && item.key === insightEntryKey(entry))) return null;
   if (!entry.evidence.some(source => source.storeId === storeId)) return null;
   const evidence = [];
   for (const source of entry.evidence) {
@@ -852,7 +857,7 @@ function resolveStoreInsights(index, storeId) {
   if (!saved) return { entries: [], staleCount: 0 };
   if (!validStoreInsights(saved)) return { entries: [], staleCount: Array.isArray(saved.entries) ? saved.entries.length : 0 };
   if (!safeInsightStore(store)) return { entries: [], staleCount: saved.entries.length };
-  const entries = saved.entries.map(entry => resolveInsightEntry(entry, storeId, index)).filter(Boolean);
+  const entries = saved.entries.filter(entry => !(store.storeMergeStaleEntries || []).some(item => item.id === entry.id && item.key === insightEntryKey(entry))).map(entry => resolveInsightEntry(entry, storeId, index)).filter(Boolean);
   return { entries, staleCount: saved.entries.length - entries.length };
 }
 // Explicitly downloaded private analysis source: current heads only, with a
@@ -904,4 +909,208 @@ export function applyStoreInsights(bundle, input, expected, device) {
     next.ops.push(revision('store', store.id, { ...store.heads[0].data, preVisitInsights: item.after }, [item.expectedHead], device));
   }
   return validateBundle(next);
+}
+
+// Explicit two-ID store merge. Plans are inert, reproducible descriptions; only
+// the caller can persist the returned append-only bundle after final approval.
+function mergeCanonical(value) {
+  if (Array.isArray(value)) return value.map(mergeCanonical);
+  if (plain(value)) return Object.fromEntries(Object.keys(value).sort().map(key => [key, mergeCanonical(value[key])]));
+  return value;
+}
+const mergeJSON = value => JSON.stringify(mergeCanonical(value));
+const mergeEqual = (a, b) => mergeJSON(a) === mergeJSON(b);
+const mergeEmpty = value => value === undefined || value === null || value === '' || Array.isArray(value) && !value.length;
+function validStoreMergeHistory(items) {
+  return Array.isArray(items) && items.length <= 100 && items.every(item => insightKeys(item, ['id', 'keeperId', 'donorId', 'keeperHead', 'donorHead', 'keeperName', 'donorName', 'name', 'visitMoves', 'identityChanges'])
+    && ['id', 'keeperId', 'donorId', 'keeperHead', 'donorHead'].every(key => insightId(item[key])) && item.keeperId !== item.donorId
+    && ['keeperName', 'donorName', 'name'].every(key => insightText(item[key], 200))
+    && Array.isArray(item.visitMoves) && item.visitMoves.length <= 5000 && item.visitMoves.every(move => insightKeys(move, ['id', 'fromRevision', 'toRevision']) && Object.values(move).every(insightId))
+    && new Set(item.visitMoves.map(move => move.id)).size === item.visitMoves.length
+    && Array.isArray(item.identityChanges) && item.identityChanges.length === 2 && item.identityChanges.every(change => insightKeys(change, ['id', 'before', 'after']) && insightId(change.id) && validInsightIdentityKey(change.before) && validInsightIdentityKey(change.after)))
+    && new Set(items.map(item => item.id)).size === items.length;
+}
+function mergedInsightEntry(entry, record) {
+  const next = structuredClone(entry);
+  for (const evidence of next.evidence) {
+    const identity = record.identityChanges.find(change => change.id === evidence.storeId && change.before === evidence.storeIdentityKey);
+    if (identity) {
+      evidence.storeIdentityKey = identity.after;
+      if (evidence.storeId === record.donorId) evidence.storeId = record.keeperId;
+    }
+    const move = record.visitMoves.find(item => item.id === evidence.visitId && item.fromRevision === evidence.revisionId);
+    if (move) evidence.revisionId = move.toRevision;
+  }
+  return next;
+}
+function validateStoreMergeProvenance(bundle, seen) {
+  const records = new Map();
+  for (const op of bundle.ops) for (const record of op.data.storeMergeHistory || []) {
+    if (op.type !== 'store' || ![record.keeperId, record.donorId].includes(op.entity)) throw new Error('門市整併歷史歸屬不符。');
+    if (records.has(record.id) && !mergeEqual(records.get(record.id), record)) throw new Error('門市整併歷史內容不一致。');
+    records.set(record.id, record);
+  }
+  for (const record of records.values()) {
+    const keeper = seen.get(record.keeperHead), donor = seen.get(record.donorHead), merged = seen.get(record.id);
+    if (!keeper || !donor || !merged || keeper.type !== 'store' || donor.type !== 'store' || keeper.entity !== record.keeperId || donor.entity !== record.donorId
+      || keeper.deleted || donor.deleted || merged.type !== 'store' || merged.entity !== record.keeperId || merged.deleted || !merged.parents.includes(record.keeperHead)
+      || merged.data.name !== record.name || keeper.data.name !== record.keeperName || donor.data.name !== record.donorName
+      || !merged.data.storeMergeHistory?.some(item => mergeEqual(item, record))) throw new Error('門市整併歷史缺少原始版本或保存結果。');
+    const after = storeInsightsIdentityKey(merged.data);
+    for (const original of [keeper, donor]) if (!record.identityChanges.some(change => change.id === original.entity && change.before === storeInsightsIdentityKey(original.data) && change.after === after)) throw new Error('門市整併身分來源不符。');
+    if (!bundle.ops.some(op => op.type === 'store' && op.entity === record.donorId && op.deleted && op.parents.includes(record.donorHead) && op.data.mergedInto === record.keeperId && op.data.mergeDecision === record.id && op.data.storeMergeHistory?.some(item => mergeEqual(item, record)))) throw new Error('門市整併缺少封存版本。');
+    for (const move of record.visitMoves) {
+      const before = seen.get(move.fromRevision), moved = seen.get(move.toRevision);
+      if (!before || !moved || before.type !== 'visit' || moved.type !== 'visit' || before.entity !== move.id || moved.entity !== move.id || before.deleted || moved.deleted
+        || before.data.store !== record.donorId || moved.data.store !== record.keeperId || !moved.parents.includes(before.id) || Object.hasOwn(moved, 'visitAttendance')
+        || !mergeEqual({ ...before.data, store: record.keeperId }, moved.data)) throw new Error('門市整併拜訪搬移來源不符。');
+    }
+  }
+  for (const op of bundle.ops) for (const event of op.data.preVisitInsightReviews || []) {
+    if (!event.carriedFrom) continue;
+    const ref = event.carriedFrom, record = records.get(ref.mergeId), source = seen.get(ref.sourceRevision), previous = source?.data.preVisitInsightReviews?.find(item => item.id === ref.eventId);
+    if (!record || !source || source.type !== 'store' || source.entity !== ref.storeId || !previous || previous.id === event.id
+      || (ref.storeId === record.donorId ? op.entity !== record.keeperId : op.entity !== ref.storeId)
+      || ['status', 'reviewedBy', 'reviewedAt', 'sourceAsOf'].some(key => previous[key] !== event[key])
+      || !mergeEqual(mergedInsightEntry(previous.entry, record), event.entry)) throw new Error('沿用審核缺少完全相符的原始審核與同店整併證據。');
+  }
+}
+async function storeMergeFingerprint(bundle) {
+  return hashBytes(enc.encode(mergeJSON({ ...bundle, ops: [...bundle.ops].sort((a, b) => a.id.localeCompare(b.id)) })));
+}
+function mergeUniqueArrays(left, right, field) {
+  const values = [...(left || []), ...(right || [])], seen = new Set(), out = [];
+  for (const value of values) { const key = mergeJSON(value); if (!seen.has(key)) { seen.add(key); out.push(structuredClone(value)); } }
+  if (field === 'nextRememberTasks') {
+    const ids = new Set();
+    for (const task of out) { if (ids.has(task.id)) throw new Error('兩間門市有相同任務 ID 但內容或完成狀態不同，請先核對。'); ids.add(task.id); }
+  }
+  return out;
+}
+/** Pure readonly preview, with no new timestamps, random IDs or persisted state. */
+export async function planStoreMerge(bundle, request) {
+  bundle = structuredClone(bundle); request = structuredClone(request);
+  validateBundle(bundle);
+  if (!plain(request) || Object.keys(request).sort().join(',') !== 'donorId,keeperId,name' || !insightId(request.keeperId) || !insightId(request.donorId) || request.keeperId === request.donorId || !insightText(request.name, 200) || request.name !== request.name.trim()) throw new Error('請指定兩筆不同門市 ID 與正式名稱。');
+  const rawSize = enc.encode(JSON.stringify(bundle)).length;
+  if (rawSize > MAX_BYTES) throw new Error('資料庫超過安全整併預覽大小上限。');
+  const records = project(bundle).sort((a, b) => (a.type + ':' + a.id).localeCompare(b.type + ':' + b.id)), index = new Map(records.map(item => [item.type + ':' + item.id, item]));
+  if (records.some(item => item.conflict)) throw new Error('資料庫有同步衝突，請先核對後再預覽門市整併。');
+  const keeper = index.get('store:' + request.keeperId), donor = index.get('store:' + request.donorId);
+  for (const store of [keeper, donor]) if (!safeInsightStore(store) || store.storeMergeHistory?.length) throw new Error('門市已刪除、待確認、已有整併歷史或來源未核對；本次不合併。');
+  const selected = new Set([keeper.id, donor.id]);
+  if (records.some(item => item.type === 'store' && (item.qualityDistinct || []).some(review => selected.has(item.id) || selected.has(review.store)))) throw new Error('相關門市保存了不同門市裁定，須先人工核對；不能用整併覆蓋。');
+  const baseFingerprint = await storeMergeFingerprint(bundle);
+  const mergeKey = await hashBytes(enc.encode(mergeJSON([baseFingerprint, request])));
+  const newId = async (type, id) => 'sm-' + (await hashBytes(enc.encode(mergeKey + ':' + type + ':' + id))).slice(0, 60);
+  const keeperRevision = await newId('store', keeper.id), donorRevision = await newId('store', donor.id);
+  const data = structuredClone(keeper.heads[0].data);
+  const specialized = new Set(['name', 'mapUrl', 'csvSources', 'csvAliases', 'lists', 'csvDecisionGroups', 'csvIdentityRules', 'enrichmentSources', 'nextRememberTasks', 'nextRememberImports', 'preVisitInsights', 'preVisitInsightReviews', 'storeMergeHistory', 'storeMergeStaleEntries']);
+  for (const [field, value] of Object.entries(donor.heads[0].data)) {
+    if (specialized.has(field) || mergeEmpty(value)) continue;
+    if (mergeEmpty(data[field])) data[field] = structuredClone(value);
+    else if (!mergeEqual(data[field], value)) throw new Error('兩間門市「' + field + '」內容不同，先核對才能整併；不會自動覆蓋或拼接。');
+  }
+  data.name = request.name;
+  // The chosen primary map URL remains exact; alternate URLs remain in immutable
+  // source/identity history. They are not silently substituted to bypass identity checks.
+  for (const field of ['csvSources', 'lists', 'csvDecisionGroups', 'csvIdentityRules', 'enrichmentSources', 'nextRememberTasks', 'nextRememberImports']) {
+    if (keeper[field] !== undefined || donor[field] !== undefined) data[field] = mergeUniqueArrays(keeper[field], donor[field], field);
+  }
+  data.csvAliases = mergeUniqueArrays([...(keeper.csvAliases || []), keeper.name], [...(donor.csvAliases || []), donor.name], 'csvAliases');
+  const movedVisits = records.filter(item => item.type === 'visit' && !item.deleted && item.store === donor.id).sort((a, b) => a.id.localeCompare(b.id));
+  const visitMoves = [];
+  for (const visit of movedVisits) visitMoves.push({ id: visit.id, fromRevision: visit.heads[0].id, toRevision: await newId('visit', visit.id) });
+  const record = { id: keeperRevision, keeperId: keeper.id, donorId: donor.id, keeperHead: keeper.heads[0].id, donorHead: donor.heads[0].id,
+    keeperName: keeper.name, donorName: donor.name, name: request.name, visitMoves,
+    identityChanges: [keeper, donor].map(store => ({ id: store.id, before: storeInsightsIdentityKey(store), after: storeInsightsIdentityKey(data) })) };
+  data.storeMergeHistory = [record];
+  const changes = [], outputData = new Map([[keeper.id, data]]), staleByStore = new Map();
+  const cardSources = new Map(), externalIds = new Set();
+  // Inventory all currently stored cards, including rejected cards. Only cards
+  // resolving exactly before the merge can be rebound; old stale cards stay stale.
+  for (const store of records.filter(item => item.type === 'store' && !item.deleted)) {
+    const targetId = store.id === donor.id ? keeper.id : store.id;
+    const target = outputData.get(targetId) || structuredClone(store.heads[0].data);
+    const sourceProfile = store.preVisitInsights;
+    if (!sourceProfile) continue;
+    const applicable = selected.has(store.id) || sourceProfile.entries.some(entry => entry.evidence.some(source => selected.has(source.storeId)));
+    if (!applicable) continue;
+    if (!selected.has(store.id) && !safeInsightStore(store)) throw new Error('其他門市的相關分析目前待確認或來源失效，須先核對後再整併。');
+    outputData.set(targetId, target);
+    if (!selected.has(store.id)) externalIds.add(store.id);
+    const entries = cardSources.get(targetId) || [];
+    for (const entry of sourceProfile.entries) {
+      const priorBlocked = (store.storeMergeStaleEntries || []).some(item => item.id === entry.id && item.key === insightEntryKey(entry));
+      const wasValid = !priorBlocked && !!resolveInsightEntry(entry, store.id, index);
+      const after = wasValid ? mergedInsightEntry(entry, record) : structuredClone(entry);
+      if (entries.some(item => item.after.id === after.id)) throw new Error('兩間門市有相同分析卡 ID，先核對各自分析與審核，不能自動合併。');
+      entries.push({ owner: store, before: entry, after, wasValid, profile: sourceProfile });
+      if (!wasValid) { const list = staleByStore.get(targetId) || []; list.push({ id: after.id, key: insightEntryKey(after) }); staleByStore.set(targetId, list); }
+    }
+    cardSources.set(targetId, entries);
+  }
+  let carriedReviews = 0, reboundCards = 0, staleCards = 0;
+  for (const [storeId, cards] of cardSources) {
+    const target = outputData.get(storeId), first = cards[0];
+    if (new Set(cards.map(card => card.owner.id)).size > 1 && cards.some(card => !mergeEqual([card.profile.batchId, card.profile.generatedAt, card.profile.sourceAsOf], [first.profile.batchId, first.profile.generatedAt, first.profile.sourceAsOf]))) throw new Error('兩間門市的分析來自不同批次或資料日期，須先核對逐卡來源；本次保留全部原分析、不合併。');
+    const existingProfile = target.preVisitInsights?.entries.length ? target.preVisitInsights : first?.profile || target.preVisitInsights;
+    if (existingProfile) target.preVisitInsights = { ...structuredClone(existingProfile), entries: cards.map(card => card.after) };
+    if (staleByStore.has(storeId)) target.storeMergeStaleEntries = staleByStore.get(storeId);
+    // Existing event objects are never changed or transplanted under another owner.
+    // A continuity event has a new ID and explicit provenance, while its original
+    // Kit status and timestamp remain exact. The original event remains in history.
+    const reviews = [...(target.preVisitInsightReviews || [])];
+    for (const card of cards) {
+      if (!card.wasValid) { staleCards++; continue; }
+      if (!mergeEqual(card.before, card.after) || card.owner.id !== storeId) reboundCards++;
+      const previous = [...(card.owner.preVisitInsightReviews || [])].reverse().find(event => insightEntryKey(event.entry) === insightEntryKey(card.before));
+      if (!previous || mergeEqual(card.before, card.after) && card.owner.id === storeId) continue;
+      const event = { ...structuredClone(previous), id: await newId('review', card.owner.id + ':' + previous.id), entry: card.after,
+        carriedFrom: { storeId: card.owner.id, sourceRevision: card.owner.heads[0].id, eventId: previous.id, mergeId: record.id } };
+      reviews.push(event); carriedReviews++;
+    }
+    if (reviews.length) target.preVisitInsightReviews = reviews;
+  }
+  const donorData = { ...structuredClone(donor.heads[0].data), mergedInto: keeper.id, mergeDecision: record.id, storeMergeHistory: [record] };
+  outputData.set(donor.id, donorData);
+  for (const [id, after] of [...outputData].sort(([a], [b]) => a.localeCompare(b))) {
+    const original = index.get('store:' + id);
+    if (!validData('store', after)) throw new Error('整併後門市、提醒或分析資料超過格式／容量上限，原資料未改動。');
+    if (mergeEqual(original.heads[0].data, after) && id !== donor.id) continue;
+    changes.push({ type: 'store', id, beforeHead: original.heads[0].id, before: structuredClone(original.heads[0].data), after, deleted: id === donor.id,
+      newRevisionId: id === keeper.id ? keeperRevision : id === donor.id ? donorRevision : await newId('store', id) });
+  }
+  for (const visit of movedVisits) changes.push({ type: 'visit', id: visit.id, beforeHead: visit.heads[0].id, before: structuredClone(visit.heads[0].data), after: { ...structuredClone(visit.heads[0].data), store: keeper.id }, deleted: false, newRevisionId: visitMoves.find(move => move.id === visit.id).toRevision });
+  const plan = { format: 'pharmacy-store-merge-plan-1', vaultId: bundle.vaultId, baseFingerprint, keeperId: keeper.id, donorId: donor.id, name: request.name,
+    keeper: { id: keeper.id, name: keeper.name, head: keeper.heads[0].id }, donor: { id: donor.id, name: donor.name, head: donor.heads[0].id },
+    summary: { movedVisits: movedVisits.length, keeperVisits: records.filter(item => item.type === 'visit' && !item.deleted && item.store === keeper.id).length,
+      deletedVisitsPreserved: records.filter(item => item.type === 'visit' && item.deleted && selected.has(item.store)).length,
+      tasks: data.nextRememberTasks?.length || 0, completedTasks: data.nextRememberTasks?.filter(task => task.completedAt).length || 0,
+      donorHistoricalCompletedTasks: reminderTaskHistory(donor).length, insightCards: data.preVisitInsights?.entries.length || 0, reboundCards, staleCards, carriedReviews,
+      externalStores: [...externalIds].sort(), attendanceKeeper: bundle.ops.filter(op => op.visitAttendance?.store === keeper.id).length,
+      attendanceDonor: bundle.ops.filter(op => op.visitAttendance?.store === donor.id).length, sourceSnapshots: records.filter(item => item.type === 'source').length,
+      sourceRecords: data.csvSources?.length || 0, addedRevisions: changes.length }, changes,
+    warnings: ['原始門市與拜訪歷史、CSV、Source Snapshot、附件全部保留；次門市封存於回收桶，不提供一鍵撤銷合併。',
+      '實際拜訪確認仍保留原門市 ID，不搬移、不複製，也不新增今天的拜訪。',
+      '來源已失效的分析維持失效；次門市歷史分析、原審核與歷史完成任務可由來源歷史查看。'] };
+  if (enc.encode(JSON.stringify(plan)).length > 8 * 1024 * 1024) throw new Error('整併預覽超過 8 MB 上限，請先檢查來源資料；尚未寫入。');
+  // Validate the exact planned graph, without using revision() or generating time.
+  const check = structuredClone(bundle);
+  for (const change of changes) check.ops.push({ id: change.newRevisionId, type: change.type, entity: change.id, data: structuredClone(change.after), parents: [change.beforeHead], device: 'merge-preview', deleted: change.deleted, at: '2000-01-01T00:00:00.000Z' });
+  check.schema = Math.max(2, check.schema); validateBundle(check);
+  if (enc.encode(JSON.stringify(check)).length > MAX_BYTES) throw new Error('整併後超過資料庫 24 MB 上限，原資料未改動。');
+  return plan;
+}
+export async function applyStoreMerge(bundle, plan, device) {
+  const original = bundle; bundle = structuredClone(bundle); plan = structuredClone(plan);
+  if (!plain(plan) || plan.format !== 'pharmacy-store-merge-plan-1' || !insightId(device)) throw new Error('門市整併預覽或裝置識別不完整；尚未寫入。');
+  const verified = await planStoreMerge(bundle, { keeperId: plan.keeperId, donorId: plan.donorId, name: plan.name });
+  if (!mergeEqual(verified, plan) || !mergeEqual(original, bundle)) throw new Error('資料或整併預覽已改變，請重新核對；尚未寫入。');
+  const next = structuredClone(bundle), at = new Date().toISOString();
+  next.schema = Math.max(2, next.schema);
+  for (const change of verified.changes) next.ops.push({ id: change.newRevisionId, type: change.type, entity: change.id, data: structuredClone(change.after), parents: [change.beforeHead], device, deleted: change.deleted, at });
+  validateBundle(next);
+  if (enc.encode(JSON.stringify(next)).length > MAX_BYTES) throw new Error('整併後資料超過 24 MB 上限，尚未寫入。');
+  return { bundle: next, summary: structuredClone(verified.summary) };
 }
