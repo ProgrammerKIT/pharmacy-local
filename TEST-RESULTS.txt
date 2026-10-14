@@ -1,3 +1,17 @@
+v1.5.68 門市原有文字閱讀一致性｜2026-10-14
+
+完整 Node 回歸 579／579 通過，0 失敗／取消／略過。新增門市原文字欄位、拜訪頁與單店的實際渲染測試；240 間合成門市逐店驗證，包含零拜訪、多筆拜訪、只有窗口、空欄、同名不同 ID、刪除／整併、身分待確認、門市版本衝突與拜訪歸屬衝突。門市文字搜尋不冒充拜訪命中，不改原文或建立任何資料版本。既有審核、備份、同步及安全測試維持通過。
+
+隔離 test/qa/store-text-fixture.mjs 僅 127.0.0.1:18868、216 個虛構門市 ID／215 間有效門市、311 個原始版本。fixture 自測檢查加密往返、Host／路徑限制、API 拒絕及實際 public/app.js bytes。Chrome 實際操作 393×852 手機與 1280×900 桌面尺寸並檢視截圖；拜訪頁全部 171 間有可讀文字的 DOM 欄位逐字比對基準，171／171 相符且每店僅一區。
+
+瀏覽器涵蓋零拜訪門市直接閱讀、主要窗口獨有文字搜尋、多筆拜訪群組展開不重複、單店原有文字直接展開、空欄不產生空區、衝突卡保留核對入口、長英文／HTML 字面字串安全換行。手機 document scrollWidth=393，長欄位與徽章沒有溢出，單店開啟聚焦標題而非文字欄。單店搜尋仍限正式拜訪原文，僅有門市原有文字時才顯示範圍說明。
+
+純閱讀／搜尋前後完整 bundle SHA-256 相同；311→311 個版本，newOps=0，bundleUnchanged、originalOpsPreserved、visitTextAndHistoryUnchanged、storeDataAndHistoryUnchanged、sourceSnapshotsUnchanged、blobsUnchanged、attendanceUnchanged 全為 true。保留 CRLF、前後空白與 HTML 字面原文；未搬移、複製或改寫資料，未新增拜訪日期。
+
+正式 App 另做全店唯讀畫面盤點；私人逐店核對檔及截圖只留本機 Git 目錄外，不加入測試、GitHub 或發布包。本次 runtime 只改 app.js／style.css 及版本標示，core／schema2／protocol1／CSV引擎1.2.16及21條 runtime 路徑不變；沒有執行匯入、restore、合併、資料補填或外部 AI 分析。真 iPhone／Safari／PWA 及雙裝置同步未冒稱通過，真機項目見 DEVICE-ACCEPTANCE.md。
+
+以下保留歷史測試結果。
+
 v1.5.67 已確認線索預設收合｜2026-10-14
 
 完整 Node 回歸 562／562 通過，0 失敗／取消／略過；node --check public/app.js、QA fixture --self-test 及 git diff --check 通過。本版新增已確認／待查核顯示切換、HTML escaping、匯入及歷史快照完整性、內容變更不繼承確認、純渲染不寫入，以及實際 openVisitBrief 狀態保存／恢復的回歸檢查。原有審核加密、同步、備份與失敗防護維持。

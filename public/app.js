@@ -1271,10 +1271,11 @@ function refreshBriefSearch({ search = false, jump = false } = {}) {
   $('brief-search-clear').disabled = busy || updateHolding || blocked || !ctx.query;
   for (const id of ['brief-search-prev', 'brief-search-next']) $(id).disabled = busy || updateHolding || blocked || ctx.composing || !ctx.matches.length;
   const count = ctx.matches.length, match = ctx.matches[ctx.index];
+  const hasStoreText = storeOriginalTextFields(by('store', ctx.storeId)).length > 0;
   $('brief-search-status').textContent = blocked ? '搜尋已暫停：請先完成或取消未完成的文字／拜訪草稿。'
     : editing ? '正在編輯原文；搜尋標示暫停，保留目前查詢。'
-    : !ctx.query.trim() ? '搜尋本店全部正式拜訪原文；英文不分大小寫。'
-    : !count ? '找不到相同文字；不包含提醒、下次跟進或舊版本。'
+    : !ctx.query.trim() ? '搜尋本店全部正式拜訪原文；英文不分大小寫。' + (hasStoreText ? '不含下方「門市原有文字」。' : '')
+    : !count ? '正式拜訪原文找不到相同文字；不包含提醒、下次跟進或舊版本。' + (hasStoreText ? '門市原有文字不在搜尋範圍，請見下方。' : '')
     : `${ctx.truncated ? '前 ' : '共 '}${count} 處 · 第 ${ctx.index + 1} 處${ctx.truncated ? '（尚有更多，請縮小關鍵字）' : ` · ${new Set(ctx.matches.map(item => item.visitId)).size} 筆紀錄`}`;
   const preview = $('brief-search-preview');
   preview.hidden = !match || blocked || editing;
@@ -1487,7 +1488,7 @@ function openVisitBrief(storeId, { capture = false, restoreDraft = null, preserv
   const recentCount = brief.recent.reduce((sum, item) => sum + item.count, 0);
   const recent = brief.recent.length ? brief.recent.map(item => `<article class="brief-item">${item.source || item.count > 1 ? `<div>${item.source ? `<span class="pill">${esc(item.source)}</span>` : ''}${item.count > 1 ? `<span class="pill brief-duplicate">相同內容 ${item.count} 筆</span>` : ''}</div>` : ''}<pre>${esc(item.text || '原文未提供')}</pre>${item.topics.length || item.people.length ? `<div class="chips">${item.topics.map(id => chip('topic', id)).join('')}${item.people.map(id => chip('person', id)).join('')}</div>` : ''}${item.count > 1 ? briefTraceHTML(item.occurrences) : ''}</article>`).join('') : '<p class="empty">目前沒有可顯示的拜訪原文。</p>';
   const history = all('visit').filter(item => item.store === storeId && !item.deleted && !item.conflict).sort((a, b) => (b.date || '').localeCompare(a.date || '') || b.id.localeCompare(a.id));
-  const historyHTML = history.map(item => `<article class="brief-item" data-brief-visit="${esc(item.id)}"><div><span class="pill">${esc(item.source || '來源未提供')}</span></div>${inlineVisitTextHTML(item)}${item.next ? `<p class="next"><strong>下次跟進</strong>${esc(item.next)}</p>` : ''}</article>`).join('') || '<p class="empty">目前沒有拜訪紀錄。</p>';
+  const historyHTML = history.map(item => `<article class="brief-item" data-brief-visit="${esc(item.id)}"><div><span class="pill">${esc(item.source || '來源未提供')}</span></div>${inlineVisitTextHTML(item)}${item.next ? `<p class="next"><strong>下次跟進</strong>${esc(item.next)}</p>` : ''}</article>`).join('') || `<p class="empty">${storeOriginalTextFields(brief.store).length ? '尚未另建拜訪紀錄；門市原有文字顯示於上方。' : '目前沒有拜訪紀錄。'}</p>`;
   const explicitItems = brief.explicitLinks.map(item => {
     const linked = chip(item.type, item.id); if (!linked) return '';
     return `<article class="brief-linked-item"><div>${linked}<span class="muted">${item.visitCount} 筆明確連結</span></div>${briefTraceHTML(item.occurrences)}</article>`;
@@ -1495,7 +1496,7 @@ function openVisitBrief(storeId, { capture = false, restoreDraft = null, preserv
   const explicit = explicitItems ? `<section class="visit-brief-section"><h3>已明確連結的人物與主題</h3><p class="muted">每項連結都保留建立它的拜訪原文。</p><div class="brief-linked-list">${explicitItems}</div></section>` : '';
   singleStoreContext = null; review.dataset.singleStoreId = storeId;
   $('review-title').textContent = '單店拜訪｜' + brief.store.name;
-  reviewBody.innerHTML = `<div class="visit-brief-head"><p>${esc(location)} · ${brief.visitCount} 筆可用紀錄</p>${storeAttendanceHTML(storeId, true)}</div>${reminders}${storeMergeOriginsHTML(brief.store)}${singleStoreCaptureHTML()}${storeInsightsHTML(storeId)}${brief.followups.length ? `<section class="visit-brief-section brief-followups"><h3>明確填寫的下次跟進</h3>${followups}</section>` : ''}<details class="brief-history" ${preserved ? preserved.historyOpen ? 'open' : '' : 'open'}><summary>既有拜訪原文 · 全部 ${history.length} 筆（可直接修改）</summary><p class="muted">點一下既有拜訪原文即可直接輸入；修改會先加密保存成本機草稿，核對修改前後差異並最後確認後，才建立同一筆拜訪的新版本。這裡不去重，每筆原文、下次跟進與歷史都保留。</p>${historyHTML}</details><details class="brief-secondary" ${preserved?.secondaryOpen ? 'open' : ''}><summary>查看人物、主題、原文候選與最近拜訪原文</summary><div class="candidate-disclaimer"><strong>內容來源與限制</strong><p>只排列你已填寫的欄位、正式拜訪原文與可追溯候選；不生成或改寫正式拜訪內容。只把全半形、英文字母大小寫與空白差異視為相同內容，標點或用詞不同仍分開；完整歷史永遠保留每一筆。</p></div>${explicit}<section class="visit-brief-section"><h3>原文候選提示</h3><p class="muted">點選每個候選可核對命中的原句、來源與原文狀態。</p><div class="candidate-chip-list">${candidates}</div></section><section class="visit-brief-section"><h3>最近 ${recentCount} 筆拜訪原文${brief.recent.length < recentCount ? ` · 合併顯示 ${brief.recent.length} 組` : ''}</h3>${recent}</section></details>`;
+  reviewBody.innerHTML = `<div class="visit-brief-head"><p>${esc(location)} · ${brief.visitCount} 筆正式拜訪紀錄</p>${storeAttendanceHTML(storeId, true)}</div>${reminders}${storeOriginalTextHTML(brief.store)}${storeMergeOriginsHTML(brief.store)}${singleStoreCaptureHTML()}${storeInsightsHTML(storeId)}${brief.followups.length ? `<section class="visit-brief-section brief-followups"><h3>明確填寫的下次跟進</h3>${followups}</section>` : ''}<details class="brief-history" ${preserved ? preserved.historyOpen ? 'open' : '' : 'open'}><summary>既有拜訪原文 · 全部 ${history.length} 筆（可直接修改）</summary><p class="muted">點一下既有拜訪原文即可直接輸入；修改會先加密保存成本機草稿，核對修改前後差異並最後確認後，才建立同一筆拜訪的新版本。這裡不去重，每筆原文、下次跟進與歷史都保留。</p>${historyHTML}</details><details class="brief-secondary" ${preserved?.secondaryOpen ? 'open' : ''}><summary>查看人物、主題、原文候選與最近拜訪原文</summary><div class="candidate-disclaimer"><strong>內容來源與限制</strong><p>只排列你已填寫的欄位、正式拜訪原文與可追溯候選；不生成或改寫正式拜訪內容。只把全半形、英文字母大小寫與空白差異視為相同內容，標點或用詞不同仍分開；完整歷史永遠保留每一筆。</p></div>${explicit}<section class="visit-brief-section"><h3>原文候選提示</h3><p class="muted">點選每個候選可核對命中的原句、來源與原文狀態。</p><div class="candidate-chip-list">${candidates}</div></section><section class="visit-brief-section"><h3>最近 ${recentCount} 筆拜訪原文${brief.recent.length < recentCount ? ` · 合併顯示 ${brief.recent.length} 組` : ''}</h3>${recent}</section></details>`;
   $('review-persistent-actions').classList.remove('capture-active');
   $('review-persistent-actions').innerHTML = singleStoreIdleActions(storeId);
   $('review-persistent-actions').hidden = false;
@@ -1532,8 +1533,8 @@ function inlineVisitTextHTML(v, query = '') {
     ? `<p>${highlightLiteral(v.text, query)}</p>`
     : `<div class="inline-edit-shell ${inlineDraft ? 'editing' : ''} ${inlineBlocked ? 'locked' : ''}" data-inline-shell="${esc(v.id)}"><div class="inline-edit-text" contenteditable="${inlineBlocked ? 'false' : 'true'}" ${inlineBlocked ? 'aria-disabled="true"' : ''} role="textbox" aria-multiline="true" aria-label="直接修改這筆拜訪文字" spellcheck="false" data-inline-edit-text="${esc(v.id)}">${highlightLiteral(shownText, query)}</div>${inlineBlocked ? `<div class="inline-edit-blocked" role="status"><span>${esc(inlineBlocked)}</span>${inlineBlockAction}</div>` : ''}<div class="inline-edit-actions" ${inlineDraft ? '' : 'hidden'}><span class="muted" data-inline-state="${esc(v.id)}" role="status">${savedInlineDraft ? '修改草稿已加密保存在這台裝置，尚未寫入正式紀錄。' : inlineDraft ? '修改正在加密保存；正式紀錄尚未改變。' : ''}</span><button type="button" data-inline-cancel="${esc(v.id)}">取消修改</button><button type="button" class="primary" data-inline-review="${esc(v.id)}">檢查並儲存修改</button></div></div>`;
 }
-function noteHTML(v, query = '') {
-  if (v.evidenceMembers?.length > 1) return `<section class="note"><h3>相同來源文字 · ${v.evidenceMembers.length} 份來源</h3>${storeAttendanceHTML(v.store)}<p>同店、同日期欄位與全文相同，整合顯示一次；不代表已證實是同一次拜訪。每份來源與歷史都保留。</p><p>${highlightLiteral(v.text, query)}</p><details><summary>展開所有來源、歷史與各別操作</summary>${v.evidenceMembers.map(item => noteHTML(item, query)).join('')}</details></section>`;
+function noteHTML(v, query = '', { showStoreText = true } = {}) {
+  if (v.evidenceMembers?.length > 1) return `<section class="note"><h3>相同來源文字 · ${v.evidenceMembers.length} 份來源</h3>${storeAttendanceHTML(v.store)}${showStoreText ? storeOriginalTextHTML(by('store', v.store), query) : ''}<p>同店、同日期欄位與全文相同，整合顯示一次；不代表已證實是同一次拜訪。每份來源與歷史都保留。</p><p>${highlightLiteral(v.text, query)}</p><details><summary>展開所有來源、歷史與各別操作</summary>${v.evidenceMembers.map(item => noteHTML(item, query, { showStoreText: false })).join('')}</details></section>`;
   const rule = activeView === 'explore' ? entityRule(by(focus.type, focus.id)) : null;
   const evidence = rule ? evidenceKind(v.text, rule) : null;
   const hint = evidence?.lines.length ? `<div class="evidence-hint ${evidence.kind}"><strong>${esc(evidence.label)} · 字詞線索</strong>${evidence.lines.map(line => `<blockquote>${esc(line)}</blockquote>`).join('')}</div>` : '';
@@ -1543,7 +1544,7 @@ function noteHTML(v, query = '') {
   const textBlock = inlineVisitTextHTML(v, query);
   const storeButton = store && !store.conflict && !storeIdentityPending(store) ? `data-visit-brief="${esc(v.store)}"` : `data-node-type="store" data-node-id="${esc(v.store)}"`;
   const advanced = `${sourceButton(v)}<button class="text-button" data-edit="visit:${esc(v.id)}">完整編輯</button><button class="text-button" data-history="visit:${esc(v.id)}">歷史 ${v.versions.length}</button><button class="text-button danger" data-delete="visit:${esc(v.id)}">移到回收桶</button>`;
-  return `<article class="note">${v.source ? `<div class="note-head"><span class="pill">${esc(v.source)}</span></div>` : ''}<button class="text-button store-link" ${storeButton}>${visitStoreNameHTML(name('store', v.store), query)}</button>${visitStoreAliasMatchHTML(store, query)}${storeAttendanceHTML(v.store)}${storeNotes}${v.conflict ? `<div class="conflict-card">這筆有 ${v.heads.length} 個版本。以下僅顯示其中一個，請先核對。 <button class="text-button" data-review="visit:${esc(v.id)}">處理衝突</button></div>` : ''}${sourceState}${hint}${textBlock}<div class="chips">${v.topics.map(id => chip('topic', id, query)).join('')}${v.people.map(id => chip('person', id, query)).join('')}</div>${v.next ? `<p class="next"><strong>下次跟進</strong>${highlightLiteral(v.next, query)}</p>` : ''}<div class="attachments">${(v.attachments || []).map((a, i) => `<button data-attachment="${esc(v.id)}" data-index="${i}">↧ ${esc(a.name)}</button>`).join('')}</div><div class="note-actions">${!v.conflict && store && !store.deleted && !store.conflict ? `<button class="primary" data-new-visit-store="${esc(v.store)}">＋ 記錄這次拜訪</button>` : ''}<details class="more-actions"><summary>更多操作</summary><div>${advanced}</div></details></div></article>`;
+  return `<article class="note">${v.source ? `<div class="note-head"><span class="pill">${esc(v.source)}</span></div>` : ''}<button class="text-button store-link" ${storeButton}>${visitStoreNameHTML(name('store', v.store), query)}</button>${visitStoreAliasMatchHTML(store, query)}${storeAttendanceHTML(v.store)}${storeNotes}${showStoreText ? storeOriginalTextHTML(store, query) : ''}${v.conflict ? `<div class="conflict-card">這筆有 ${v.heads.length} 個版本。以下僅顯示其中一個，請先核對。 <button class="text-button" data-review="visit:${esc(v.id)}">處理衝突</button></div>` : ''}${sourceState}${hint}${textBlock}<div class="chips">${v.topics.map(id => chip('topic', id, query)).join('')}${v.people.map(id => chip('person', id, query)).join('')}</div>${v.next ? `<p class="next"><strong>下次跟進</strong>${highlightLiteral(v.next, query)}</p>` : ''}<div class="attachments">${(v.attachments || []).map((a, i) => `<button data-attachment="${esc(v.id)}" data-index="${i}">↧ ${esc(a.name)}</button>`).join('')}</div><div class="note-actions">${!v.conflict && store && !store.deleted && !store.conflict ? `<button class="primary" data-new-visit-store="${esc(v.store)}">＋ 記錄這次拜訪</button>` : ''}<details class="more-actions"><summary>更多操作</summary><div>${advanced}</div></details></div></article>`;
 }
 function render() {
   if (!payload) return;
@@ -1904,6 +1905,28 @@ function storeVisitSearchRank(store, needle) {
   if (visitStoreSourceNames(store).some(alias => lower(alias).includes(q))) return 1;
   return Infinity;
 }
+// These are existing store fields, not visit records. Read them directly for
+// display/search only; never infer a visit, copy text into one, or pick a conflict.
+function storeOriginalTextFields(store) {
+  if (!store || store.deleted || store.mergedInto || store.conflict) return [];
+  return [['attr', '門市特性／客群'], ['contact', '主要窗口']]
+    .filter(([field]) => typeof store[field] === 'string' && store[field].trim())
+    .map(([field, label]) => ({ field, label, text: store[field] }));
+}
+function storeOriginalTextMatch(store, query = '') {
+  const needle = String(query).trim().toLocaleLowerCase('zh-Hant');
+  return !!needle && storeOriginalTextFields(store).some(item => item.text.toLocaleLowerCase('zh-Hant').includes(needle));
+}
+function storeOriginalTextHTML(store, query = '') {
+  if (!store || store.deleted || store.mergedInto) return '';
+  if (store.conflict) {
+    const hasText = store.heads?.some(head => ['attr', 'contact'].some(field => typeof head.data?.[field] === 'string' && head.data[field].trim()));
+    return hasText ? `<section class="store-original-text store-original-text-conflict"><strong>門市原有文字 · 版本待核對</strong><p class="muted">門市資料有衝突，尚未選定目前內容。</p><button type="button" class="text-button" data-review="store:${esc(store.id)}">核對門市文字版本</button></section>` : '';
+  }
+  const fields = storeOriginalTextFields(store);
+  if (!fields.length) return '';
+  return `<section class="store-original-text" data-store-original-text="${esc(store.id)}" aria-label="門市原有文字"><div class="store-original-text-heading"><strong>門市原有文字</strong><span class="muted">唯讀</span></div>${storeIdentityPending(store) ? '<p class="muted">門市身分待確認；以下保留此筆門市填寫的內容。</p>' : ''}${fields.map(item => `<div class="store-original-text-field"><span class="store-original-text-label">${esc(item.label)}</span><pre data-store-original-field="${item.field}"><span>${highlightLiteral(item.text, query).replace(/\r/g, '&#13;')}</span></pre></div>`).join('')}</section>`;
+}
 function visitStoreNameText(value) {
   return String(value ?? '').replace(/[\r\n]/g, '');
 }
@@ -1945,8 +1968,8 @@ function visitStoreCardHTML(store, query = '', unresolvedVisits = []) {
   const notice = store.conflict ? '<p class="conflict-card">門市資料有衝突，請先核對版本。</p>' : pending ? `<p class="muted">${associationPending ? '門市身分待確認，仍須人工核對。' : '門市身分待確認；可先記錄拜訪，不會自動合併門市。'}</p>` : '';
   const actions = store.conflict ? `<button type="button" class="secondary" data-review="store:${esc(store.id)}">比較並處理衝突</button>` : associationPending ? '' : `${!pending ? `<button type="button" class="secondary" data-visit-brief="${esc(store.id)}">單店拜訪</button>` : ''}<button type="button" class="primary" data-new-visit-store="${esc(store.id)}">＋ 記錄這次拜訪</button>`;
   const associationActions = unresolvedVisits.map((visit, index) => `<button type="button" class="secondary" data-review="visit:${esc(visit.id)}">核對拜訪衝突${unresolvedVisits.length > 1 ? ' ' + (index + 1) : ''}</button>`).join('');
-  const noteStatus = associationPending ? '<p class="conflict-card">有拜訪紀錄的門市歸屬待核對</p><p class="muted">未決版本提到此門市，不代表拜訪已歸屬此店；請先核對衝突版本。</p>' : '<p class="muted">尚無拜訪紀錄。</p>';
-  return `<article class="note" data-visit-empty-store="${esc(store.id)}"${associationPending ? ' data-visit-association-pending="true"' : ''}><button type="button" class="text-button store-link" ${target}>${visitStoreNameHTML(store.name, query)}</button>${visitStoreAliasMatchHTML(store, query)}${storeAttendanceHTML(store.id)}${reminders}${noteStatus}${notice}<div class="note-actions">${actions}${associationActions}</div></article>`;
+  const noteStatus = associationPending ? '<p class="conflict-card">有拜訪紀錄的門市歸屬待核對</p><p class="muted">未決版本提到此門市，不代表拜訪已歸屬此店；請先核對衝突版本。</p>' : `<p class="muted">${storeOriginalTextFields(store).length ? '尚未另建拜訪紀錄；既有內容請見上方「門市原有文字」。' : '尚無拜訪紀錄。'}</p>`;
+  return `<article class="note" data-visit-empty-store="${esc(store.id)}"${associationPending ? ' data-visit-association-pending="true"' : ''}><button type="button" class="text-button store-link" ${target}>${visitStoreNameHTML(store.name, query)}</button>${visitStoreAliasMatchHTML(store, query)}${storeAttendanceHTML(store.id)}${reminders}${storeOriginalTextHTML(store, query)}${noteStatus}${notice}<div class="note-actions">${actions}${associationActions}</div></article>`;
 }
 function visitSearchRank(v, needle) {
   if (!needle) return 0;
@@ -1986,7 +2009,8 @@ function renderVisitSearchGroup(group, query) {
   const matches = group.matches.slice().sort((a, b) => a.rank - b.rank || b.v.date.localeCompare(a.v.date));
   const lead = matches[0]?.v, total = group.allVisits.length, store = by('store', group.storeId);
   const target = store && !store.conflict && !storeIdentityPending(store) ? `data-visit-brief="${esc(group.storeId)}"` : `data-node-type="store" data-node-id="${esc(group.storeId)}"`;
-  return `<section class="visit-search-group"><div class="visit-search-group-head"><button class="text-button store-link" ${target}>${visitStoreNameHTML(name('store', group.storeId), query)}</button><span class="pill">${group.matches.length} 筆命中 · 共 ${total} 筆</span></div>${storeAttendanceHTML(group.storeId)}<div class="visit-search-preview">${lead ? visitSearchPreview(lead, query) : ''}</div><details class="visit-search-details"><summary>展開這間藥局全部 ${total} 筆拜訪紀錄</summary><div class="visit-search-expanded">${group.allVisits.map(v => noteHTML(v, query)).join('')}</div></details></section>`;
+  const matchLabel = group.storeTextMatch ? `門市原有文字命中 · 拜訪命中 ${group.matches.length} 筆 · 共 ${total} 筆` : `${group.matches.length} 筆命中 · 共 ${total} 筆`;
+  return `<section class="visit-search-group"><div class="visit-search-group-head"><button class="text-button store-link" ${target}>${visitStoreNameHTML(name('store', group.storeId), query)}</button><span class="pill${group.storeTextMatch ? ' visit-search-profile-match' : ''}">${matchLabel}</span></div>${storeAttendanceHTML(group.storeId)}${storeOriginalTextHTML(store, query)}<div class="visit-search-preview">${lead ? visitSearchPreview(lead, query) : ''}</div><details class="visit-search-details"><summary>展開這間藥局全部 ${total} 筆拜訪紀錄</summary><div class="visit-search-expanded">${group.allVisits.map(v => noteHTML(v, query, { showStoreText: false })).join('')}</div></details></section>`;
 }
 // Day itinerary actions only change datePlans / datePlanOrder. They never call
 // task completion, attendance confirmation, or note editing.
@@ -2111,7 +2135,11 @@ function renderVisits() {
   const emptyStores = all('store').filter(store => !store.deleted && !storesWithVisits.has(store.id))
     .sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
   if (!query) {
-    $('visit-list').innerHTML = visits.map(v => noteHTML(v)).join('') + emptyStores.map(store => visitStoreCardHTML(store, '', unresolvedVisitsByStore.get(store.id))).join('') || '<p class="empty">目前沒有門市或拜訪紀錄。</p>';
+    const shownStoreText = new Set();
+    $('visit-list').innerHTML = visits.map(v => {
+      const showStoreText = !shownStoreText.has(v.store); shownStoreText.add(v.store);
+      return noteHTML(v, '', { showStoreText });
+    }).join('') + emptyStores.map(store => visitStoreCardHTML(store, '', unresolvedVisitsByStore.get(store.id))).join('') || '<p class="empty">目前沒有門市或拜訪紀錄。</p>';
     return;
   }
   const allByStore = new Map();
@@ -2138,10 +2166,19 @@ function renderVisits() {
   }
   for (const store of emptyStores) {
     const rank = storeVisitSearchRank(store, query);
-    if (Number.isFinite(rank)) grouped.set(store.id, { storeId: store.id, emptyStore: store, unresolvedVisits: unresolvedVisitsByStore.get(store.id), bestRank: rank, bestRankDate: '', matches: [], allVisits: [] });
+    const storeTextMatch = storeOriginalTextMatch(store, query);
+    if (Number.isFinite(rank) || storeTextMatch) grouped.set(store.id, { storeId: store.id, emptyStore: store, unresolvedVisits: unresolvedVisitsByStore.get(store.id), storeTextMatch, bestRank: Math.min(rank, storeTextMatch ? 2 : Infinity), bestRankDate: '', matches: [], allVisits: [] });
+  }
+  // A store-field hit is independent of visits: it must not fabricate note hits
+  // or disappear just because this store also has unrelated visit records.
+  for (const store of all('store')) {
+    if (!storeOriginalTextMatch(store, query) || !storesWithVisits.has(store.id)) continue;
+    const group = grouped.get(store.id);
+    if (group) { group.storeTextMatch = true; group.bestRank = Math.min(group.bestRank, 2); }
+    else grouped.set(store.id, { storeId: store.id, storeTextMatch: true, bestRank: 2, bestRankDate: '', matches: [], allVisits: allByStore.get(store.id) || [] });
   }
   const groups = [...grouped.values()].sort((a, b) => a.bestRank - b.bestRank || b.bestRankDate.localeCompare(a.bestRankDate) || name('store', a.storeId).localeCompare(name('store', b.storeId), 'zh-Hant'));
-  $('visit-list').innerHTML = groups.map(group => group.emptyStore ? visitStoreCardHTML(group.emptyStore, query, group.unresolvedVisits) : group.matches.length > 1 ? renderVisitSearchGroup(group, query) : noteHTML(group.matches[0].v, query)).join('') || '<p class="empty">沒有符合的門市或拜訪紀錄。</p>';
+  $('visit-list').innerHTML = groups.map(group => group.emptyStore ? visitStoreCardHTML(group.emptyStore, query, group.unresolvedVisits) : group.storeTextMatch || group.matches.length > 1 ? renderVisitSearchGroup(group, query) : noteHTML(group.matches[0].v, query)).join('') || '<p class="empty">沒有符合的門市或拜訪紀錄。</p>';
 }
 function sourceButton(r) { return (r.csvSources?.length || r.versions?.some(v => v.data.csvSources?.length)) ? `<button class="text-button" data-csv-source="${r.type}:${esc(r.id)}">查看匯入原始來源</button>` : ''; }
 function openSources(type, id) {
