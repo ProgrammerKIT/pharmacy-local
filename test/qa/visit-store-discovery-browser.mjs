@@ -137,7 +137,7 @@ async function readOnlyAcceptance(width) {
     for (const reminder of [pendingTask, everyReminder, legacyReminder]) assert.ok((await page.locator('#review-body').innerText()).includes(reminder));
     assert.match(await page.locator('.brief-history > summary').innerText(), /全部 0 筆/);
     assert.equal(await page.locator('#review [data-brief-visit]').count(), 0);
-    assert.match(await page.locator('#review .visit-brief-head').innerText(), /0 筆可用紀錄/);
+    assert.match(await page.locator('#review .visit-brief-head').innerText(), /0 筆正式拜訪紀錄/);
     geometries.push(await geometry(page, width, 'single-store-zero-history'));
     await page.locator('#review [data-start-single-store-capture]').click();
     await page.locator('#single-store-capture-form').waitFor({ state: 'visible' });

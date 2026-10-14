@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import * as core from '../public/core.js';
-import { visitBriefForStore } from '../public/relations.js';
+import { visitBriefForStore, storeIdentityPending } from '../public/relations.js';
 import { makeFixture } from './qa/confirmed-insight-fixture.mjs';
 
 // Run the actual card renderer, openVisitBrief capture/restore path and source
@@ -63,7 +63,7 @@ function harness() {
   let context;
   const records = () => core.project(context.payload.bundle);
   context = vm.createContext({
-    ...core, visitBriefForStore, $, JSON, Set, Date,
+    ...core, visitBriefForStore, storeIdentityPending, $, JSON, Set, Date,
     payload: { bundle: makeFixture(core) }, singleStoreContext: null, insightsPreview: null,
     all: type => records().filter(record => record.type === type),
     by: (type, id) => records().find(record => record.type === type && record.id === id),
@@ -76,7 +76,8 @@ function harness() {
     requestAnimationFrame: fn => frames.push(fn),
     persist: () => { state.writes++; throw new Error('Disclosure rendering must not persist'); }
   });
-  vm.runInContext(source('const esc = ', '\n') + '\n'
+  vm.runInContext(source('const esc = ', 'const titles =')
+    + source('function storeOriginalTextFields(', 'function visitStoreNameText(')
     + source('const INSIGHT_REVIEW_LABELS = ', 'function assertInsightReviewReady(')
     + source('function openVisitBrief(', 'function canonicalPerson(')
     + source("$('review-body').addEventListener('toggle'", "$('review').addEventListener('close', () => { if (!$('review').open) clearStoreMergePreview(); });"), context);
