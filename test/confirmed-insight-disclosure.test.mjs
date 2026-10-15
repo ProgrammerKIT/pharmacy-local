@@ -180,3 +180,41 @@ test('opening a confirmed wrapper does not load original text; source expansion 
   assert.match(source.pre.textContent, /來源已改變/);
   assert.equal(JSON.stringify(h.context.payload.bundle), afterConcurrentUpdate); assert.equal(h.state.writes, 0);
 });
+
+test('updated sources keep confirmed headlines visible with an external notice and lazy exact historical text', () => {
+  const h = harness(), storeId = 'qa-insight-a', entryId = 'qa-confirmed-relationship';
+  const current = h.context.by('visit', 'qa-insight-note-a'), original = current.text;
+  h.context.payload.bundle.ops.push(core.revision('visit', current.id, { ...current.heads[0].data, text: 'Synthetic replacement with no quoted evidence.' }, current.heads.map(head => head.id), 'synthetic-update'));
+  const before = JSON.stringify(h.context.payload.bundle);
+  h.open(storeId);
+  const html = h.$('review-body').innerHTML, outer = h.find('data-insight-confirmed', entryId);
+  assert.equal(outer.open, false);
+  assert.match(html, /<\/details><p class="insight-source-notice" role="note">來源已更新/);
+  const currentCards = html.slice(html.indexOf('<section class="store-insights"'), html.indexOf('<details class="insight-review-archive"'));
+  assert.doesNotMatch(currentCards, /data-insight-review=/);
+  assert.match(currentCards, /歷史版本/);
+  const source = h.find('data-insight-detail', entryId + ':0');
+  assert.equal(source.pre.textContent, '');
+  outer.open = true; h.find('data-insight-detail', entryId).open = true; source.open = true; h.flush();
+  assert.equal(source.pre.textContent, original);
+  assert.notEqual(source.pre.textContent, h.context.by('visit', current.id).text);
+  assert.equal(JSON.stringify(h.context.payload.bundle), before); assert.equal(h.state.writes, 0);
+});
+
+test('historical source disclosure rechecks a removed card and never substitutes another source version', () => {
+  const h = harness(), storeId = 'qa-insight-a', entryId = 'qa-confirmed-relationship';
+  const visit = h.context.by('visit', 'qa-insight-note-a');
+  h.context.payload.bundle.ops.push(core.revision('visit', visit.id, { ...visit.heads[0].data }, visit.heads.map(head => head.id), 'synthetic-update'));
+  h.open(storeId);
+  const source = h.find('data-insight-detail', entryId + ':0');
+  const store = h.context.by('store', storeId), data = structuredClone(store.heads[0].data);
+  data.preVisitInsights.entries = data.preVisitInsights.entries.filter(entry => entry.id !== entryId);
+  h.context.payload.bundle.ops.push(core.revision('store', storeId, data, store.heads.map(head => head.id), 'synthetic-withdrawal'));
+  const before = JSON.stringify(h.context.payload.bundle);
+  source.open = true; h.flush();
+  assert.match(source.pre.textContent, /無法核實/);
+  assert.notEqual(source.pre.textContent, visit.text);
+  h.open(storeId);
+  assert.equal(h.$('review-body').querySelectorAll('[data-insight-confirmed]').some(detail => detail.dataset.insightConfirmed === entryId), false);
+  assert.equal(JSON.stringify(h.context.payload.bundle), before); assert.equal(h.state.writes, 0);
+});

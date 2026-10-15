@@ -1217,6 +1217,77 @@ function resolveStoreInsights(index, storeId) {
   const entries = saved.entries.filter(entry => !(store.storeMergeStaleEntries || []).some(item => item.id === entry.id && item.key === insightEntryKey(entry))).map(entry => resolveInsightEntry(entry, storeId, index)).filter(Boolean);
   return { entries, staleCount: saved.entries.length - entries.length };
 }
+// Display is deliberately separate from import/review validation. A later source
+// revision does not revoke Kit's exact current decision, and a historical review
+// never becomes a current decision merely because its card was once confirmed.
+function insightEvidenceContext(bundle, index = insightRecordIndex(bundle)) {
+  const revisions = new Map(), identities = new Map();
+  for (const op of bundle.ops) {
+    revisions.set(op.id, op);
+    if (op.type === 'store' && !op.deleted) {
+      if (!identities.has(op.entity)) identities.set(op.entity, new Set());
+      identities.get(op.entity).add(storeInsightsIdentityKey(op.data));
+    }
+  }
+  return { index, revisions, identities };
+}
+function resolveInsightEvidenceForDisplay(source, context) {
+  const { index, revisions, identities } = context, original = revisions.get(source.revisionId);
+  const store = index.get('store:' + source.storeId), visit = index.get('visit:' + source.visitId);
+  const historicalAvailable = !!original && original.type === 'visit' && original.entity === source.visitId
+    && !original.deleted && original.data.store === source.storeId && typeof original.data.text === 'string'
+    && original.data.text.includes(source.quote) && identities.get(source.storeId)?.has(source.storeIdentityKey) === true;
+  const sourceReasons = [];
+  if (!historicalAvailable) sourceReasons.push('無法核實當時引用的完整原文版本。');
+  if (!store) sourceReasons.push('引用的門市目前不存在。');
+  else {
+    if (store.deleted) sourceReasons.push('引用的門市已移至回收桶。');
+    if (store.conflict) sourceReasons.push('引用的門市有版本衝突，尚未選定版本。');
+    if (store.mergedInto) sourceReasons.push('引用的門市已合併，身分需要核對。');
+    if (store.csvIdentityPending) sourceReasons.push('引用的門市身分待確認。');
+    if (store.sourceMissing || store.googleUpdatePending) sourceReasons.push('引用的門市來源待核對。');
+    if (storeInsightsIdentityKey(store) !== source.storeIdentityKey) sourceReasons.push('引用的門市名稱、地址或身分資料已變更。');
+  }
+  if (!visit) sourceReasons.push('引用的拜訪紀錄目前不存在。');
+  else {
+    if (visit.deleted) sourceReasons.push('引用的拜訪紀錄已移至回收桶。');
+    if (visit.conflict) sourceReasons.push('引用的拜訪紀錄有版本衝突，尚未選定版本。');
+    if (visit.sourceMissing || visit.googleUpdatePending) sourceReasons.push('引用的拜訪原始來源待核對。');
+    if (visit.store !== source.storeId) sourceReasons.push('引用的拜訪紀錄所屬門市已變更。');
+    if (!visit.conflict && visit.heads[0]?.id !== source.revisionId) sourceReasons.push(historicalAvailable && visit.text === original.data.text
+      ? '拜訪紀錄已有新版本（原文字未變）。' : '拜訪紀錄已有新版本，文字需重新核對。');
+  }
+  const sourceCurrent = historicalAvailable && safeInsightStore(store) && storeInsightsIdentityKey(store) === source.storeIdentityKey
+    && safeInsightVisit(visit, index) && visit.heads[0].id === source.revisionId && visit.store === source.storeId && visit.text.includes(source.quote);
+  return { ...structuredClone(source), storeName: JSON.parse(source.storeIdentityKey).name, historicalAvailable, sourceCurrent,
+    sourceNotice: sourceReasons.join(' '), sourceReasons,
+    ...(historicalAvailable ? { rawText: original.data.text, sourceLabel: original.data.source || '當時引用的拜訪原文', revisionAt: original.at } : {}) };
+}
+export function storeInsightEvidenceForEntry(bundle, entry) {
+  const exact = canonicalInsightEntry(entry);
+  if (!validInsightEntry(exact)) return [];
+  const context = insightEvidenceContext(bundle);
+  return exact.evidence.map(source => resolveInsightEvidenceForDisplay(source, context));
+}
+export function storeInsightDisplayForStore(bundle, storeId) {
+  const index = insightRecordIndex(bundle), store = index.get('store:' + storeId), saved = store?.preVisitInsights;
+  const empty = { entries: [], staleCount: Array.isArray(saved?.entries) ? saved.entries.length : 0, confirmedStaleCount: 0 };
+  if (!saved || !validStoreInsights(saved) || !store || store.deleted || store.mergedInto || store.conflict || store.heads.length !== 1) return empty;
+  const context = insightEvidenceContext(bundle, index), entries = [];
+  let staleCount = 0, confirmedStaleCount = 0;
+  for (const entry of saved.entries) {
+    const strict = safeInsightStore(store) ? resolveInsightEntry(entry, storeId, index) : null;
+    const confirmed = insightReviewForEntry(store, entry).status === 'confirmed';
+    if (!strict && !confirmed) { staleCount++; continue; }
+    const evidence = entry.evidence.map(source => resolveInsightEvidenceForDisplay(source, context));
+    const sourceReasons = [...new Set(evidence.flatMap(source => source.sourceReasons))];
+    if (!strict && !sourceReasons.length) sourceReasons.push('本店分析來源或整併身分需要重新核對。');
+    if (!strict) confirmedStaleCount++;
+    entries.push({ ...structuredClone(entry), evidence, sourceCurrent: !!strict, sourceReasons,
+      sourceNotice: strict ? '' : '來源已更新，需核對；Kit 已確認的紀錄仍保留。' });
+  }
+  return { entries, staleCount, confirmedStaleCount };
+}
 // Explicitly downloaded private analysis source: current heads only, with a
 // fixed field allowlist. Never include CSV, snapshots, blobs or full history.
 export function buildStoreInsightsSource(bundle, at = new Date().toISOString()) {

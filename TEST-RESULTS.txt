@@ -1,3 +1,17 @@
+v1.5.73 已確認線索常顯｜2026-10-16
+
+完整 Node 回歸 node --test test/*.test.mjs：670／670 通過，0 失敗／取消／略過。新增核心顯示投影14項與UI回歸3項；既有嚴格來源匯入、審核寫入驗證保留。獨立程式審查未發現發布阻擋問題。
+
+本輪驗證：來源相同文字的新版本、文字更新與引句移除、來源門市身分變更、回收桶與衝突；只有目前 exact confirmed 卡保留標題並提示。超過兩張 confirmed 也全部常顯；改內容／撤下／後續 pending 或 rejected 不從歷史復活。精確歷史來源核對 revision/type/entity/store/quote 及可核對身分，資料缺失不代換現行文字。開啟前再次查核卡已撤下時不輸出全文。
+
+Chrome 真實 App 靜態程式，隔離127.0.0.1:18873與加密IndexedDB，全虛構2間門市、5筆原文、7張卡及18個歷史版本。在393×852與393×430檢查：5張confirmed標題均不受外層收合隱藏；2張來源更新提示常顯；詳細預設收合；較矮視窗仍可捲動、關閉且無橫向溢位。已展開quote移除案例，讀到所引用舊版本全文與歷史標籤，非目前文字；rejected僅展開審核留存後出現。
+
+瀏覽後 fingerprint 證明 bundle、全部審核資料、原文、其他門市欄位、所有原版本與實際拜訪確認均不變，OP18→18。首次測試 seed 沒有 lastHealthAudit，App 原有啟動健檢補存本機健檢時間及空 pendingSync，envelope revision1→2；這不是正式資料版本且bundle完全相同。不能將首次diskRevisionUnchanged=false記作通過。再次展開收合後disk revision仍2；fixture後續新建種子明確帶lastHealthAudit與空pendingSync，避免此初始化干擾，既有測試庫未覆蓋。
+
+本輪未接正式庫、未寫入正式資料、未呼叫外部AI。瀏覽器尺寸驗證不是iPhone真機；真iPhone／Safari／PWA與雙端更新仍待裝置驗收。App1.5.73／SOP1 1.2.52、schema2／protocol1、CSV引擎1.2.16、21條runtime路徑不變。
+
+以下保留歷史測試結果。
+
 v1.5.72 行程排序版本隔離｜2026-10-16
 
 修正範圍：applyDayItineraryAction 的上移／下移只修改所選日期的有效安排；一般交換兩個順位，必要時只重編有效安排並保留取消槽。已取消門市不因其他門市排序新增版本。沒有資料遷移、正式資料自動修補或衝突自動裁定。

@@ -277,6 +277,7 @@ dialog:focus{outline:none}
 .insight-confirmed-details[open]>summary::before{content:'▾'}
 .insight-confirmed-headline{flex:1;min-width:0;font-size:.94rem;font-weight:650;line-height:1.55;overflow-wrap:anywhere}
 .insight-confirmed-badge{flex:none;color:var(--teal);background:#e5f1ee;border-radius:5px;padding:3px 5px;font-size:.68rem;line-height:1.5;white-space:nowrap}
+.store-insight-confirmed .insight-source-notice{margin:0 0 10px;font-size:.78rem;line-height:1.5;color:#756043;overflow-wrap:anywhere}
 .insight-confirmed-content{border-top:1px solid var(--line);padding:12px 0}
 .insight-confirmed-details>summary:focus-visible{outline:2px solid var(--teal);outline-offset:3px;border-radius:6px}
 
