@@ -2045,7 +2045,7 @@ function monthlyVisitGroup(storeId) {
   const group = retailChannel(by('store', storeId));
   return group.id === 'great-tree' ? { id: 'tree', label: '大樹' } : group.id === 'you-chuan' ? { id: 'you', label: '佑全／健康人生' } : { id: 'other', label: '其他／未分群' };
 }
-function monthlyVisitIdentity(storeId) {
+function storeSelectionIdentity(storeId) {
   const store = by('store', storeId); if (!store) return '';
   const sameName = records.filter(row => row.type === 'store' && row.name === store.name && !row.mergedInto);
   if (sameName.length < 2) return '';
@@ -2057,7 +2057,7 @@ function monthlyVisitRowsHTML(rows, past, removed = false) {
   const groups = new Map();
   for (const row of rows) { const district = row.district || '地區未填'; if (!groups.has(district)) groups.set(district, []); groups.get(district).push(row); }
   return [...groups].map(([district, list]) => `<section class="monthly-district"><h3>${esc(district)}</h3>${list.map(row => {
-    const group = monthlyVisitGroup(row.storeId), canOpen = row.available, dates = row.dates || [], identity = monthlyVisitIdentity(row.storeId);
+    const group = monthlyVisitGroup(row.storeId), canOpen = row.available, dates = row.dates || [], identity = storeSelectionIdentity(row.storeId);
     return `<div class="monthly-store-row"><button class="text-button monthly-store-open" ${canOpen ? `data-visit-brief="${esc(row.storeId)}"` : 'disabled'} aria-label="開啟${esc(row.name)}${row.completed ? '，本月已拜訪' : ''}"><span class="monthly-check ${row.completed ? 'is-complete' : ''}" aria-hidden="true">${row.completed ? '✓' : ''}</span><span class="monthly-store-copy"><span class="monthly-dot ${group.id}" aria-hidden="true"></span>${esc(row.name)}${identity ? `<small>${esc(identity)}</small>` : ''}${dates.length ? `<small>已拜訪 ${dates.map(date => esc(date.slice(5).replace('-', '/'))).join('、')}</small>` : ''}${!row.available ? `<small class="error">${esc(row.unavailableReason)}</small>` : ''}</span><span aria-hidden="true">›</span></button>${!past && row.available ? `<button class="text-button monthly-store-remove" ${removed ? `data-monthly-add-back="${esc(row.storeId)}"` : `data-monthly-remove="${esc(row.storeId)}"`} aria-label="${removed ? '重新加入' : '從' + esc(monthlyVisitLabel(monthlyVisitSelectedMonth)) + '移除'}${esc(row.name)}">${removed ? '重新加入' : '移除'}</button>` : ''}</div>`;
   }).join('')}</section>`).join('');
 }
@@ -2067,7 +2067,16 @@ function renderMonthlyVisits() {
   const overview = monthlyVisitOverview(payload.bundle, month), doneOpen = $('monthly-completed')?.open || false;
   monthlyVisitViewBasis = monthlyVisitBasis(records, month);
   const counts = ['tree', 'you', 'other'].map(id => ({ id, rows: overview.stores.filter(row => monthlyVisitGroup(row.storeId).id === id) })).filter(group => group.rows.length);
-  $('monthly-visit-content').innerHTML = `<div class="monthly-toolbar"><div class="monthly-month-controls"><button type="button" data-monthly-shift="-1" aria-label="上一個月" ${month === '0001-01' ? 'disabled' : ''}>‹</button><label class="sr-only" for="monthly-visit-month">查看與調整月份</label><input id="monthly-visit-month" type="month" min="0001-01" max="9999-12" value="${esc(month)}" aria-label="查看與調整月份"><button type="button" data-monthly-shift="1" aria-label="下一個月" ${month === '9999-12' ? 'disabled' : ''}>›</button></div>${past ? '<span class="pill">歷史月份 · 唯讀</span>' : '<button type="button" class="primary" data-monthly-select>＋ 新增門市</button>'}</div><div class="monthly-heading"><h2>${esc(monthlyVisitLabel(month))}${month === current ? ' · 本月' : ''}</h2>${month !== current ? '<button type="button" class="text-button" data-monthly-current>回本月</button>' : ''}</div><section class="panel monthly-progress" aria-label="當月必訪進度"><div><strong>待訪 ${overview.pending.length} 間</strong><span role="status">已訪 ${overview.completedCount} / ${overview.total} 間</span></div><div class="monthly-legend">${counts.map(group => `<span><i class="monthly-dot ${group.id}" aria-hidden="true"></i>${{ tree: '大樹', you: '佑全／健康人生', other: '其他／未分群' }[group.id]} ${group.rows.filter(row => row.completed).length}/${group.rows.length}</span>`).join('')}</div></section><p id="monthly-visit-notice" class="muted" role="status" aria-live="polite" ${monthlyVisitNotice ? '' : 'hidden'}>${esc(monthlyVisitNotice)}</p><section class="panel monthly-list" aria-label="當月必訪名單">${overview.pending.length ? monthlyVisitRowsHTML(overview.pending, past) : overview.total ? '<p class="monthly-complete">✓ 本月必訪門市皆已完成</p>' : `<p class="empty">這個月尚未安排必訪門市。${past ? '' : '請按「新增門市」從既有門市選入。'}</p>`}${overview.completed.length ? `<details id="monthly-completed" ${doneOpen ? 'open' : ''}><summary>已拜訪 · ${overview.completed.length} 間</summary>${monthlyVisitRowsHTML(overview.completed, past)}</details>` : ''}</section>${overview.removedStores.length ? `<details class="monthly-removed"><summary>本月已移除 · ${overview.removedStores.length} 間</summary>${monthlyVisitRowsHTML(overview.removedStores, past, true)}</details>` : ''}<details class="monthly-help"><summary>名單調整與完成依據</summary><p class="muted">各月份名單分別保存。新增或移除不會改動其他月份、門市原文或拜訪歷史；過去月份保留唯讀。只有你勾選實際拜訪日期並完成儲存，才依該日期自動計入對應月份。修改文字、安排行程及完成待辦都不算拜訪。同店同月計一次。</p></details>`;
+  const content = $('monthly-visit-content');
+  // Native iPhone month/date pickers keep ownership of the same input node.
+  // Refresh results independently, without removing or re-inserting its controls.
+  if (!content.querySelector('#monthly-visit-month')) content.innerHTML = `<div class="monthly-toolbar"><div class="monthly-month-controls"><button id="monthly-previous-month" type="button" data-monthly-shift="-1" aria-label="上一個月">‹</button><label class="sr-only" for="monthly-visit-month">查看與調整月份</label><input id="monthly-visit-month" type="month" min="0001-01" max="9999-12" aria-label="查看與調整月份"><button id="monthly-next-month" type="button" data-monthly-shift="1" aria-label="下一個月">›</button></div><span id="monthly-readonly-month" class="pill" hidden>歷史月份 · 唯讀</span><button id="monthly-add-store" type="button" class="primary" data-monthly-select>＋ 新增門市</button></div><div id="monthly-visit-results"></div>`;
+  const monthInput = $('monthly-visit-month');
+  if (monthInput.value !== month) monthInput.value = month;
+  $('monthly-previous-month').disabled = month === '0001-01';
+  $('monthly-next-month').disabled = month === '9999-12';
+  $('monthly-readonly-month').hidden = !past; $('monthly-add-store').hidden = past;
+  $('monthly-visit-results').innerHTML = `<div class="monthly-heading"><h2>${esc(monthlyVisitLabel(month))}${month === current ? ' · 本月' : ''}</h2>${month !== current ? '<button type="button" class="text-button" data-monthly-current>回本月</button>' : ''}</div><section class="panel monthly-progress" aria-label="當月必訪進度"><div><strong>待訪 ${overview.pending.length} 間</strong><span role="status">已訪 ${overview.completedCount} / ${overview.total} 間</span></div><div class="monthly-legend">${counts.map(group => `<span><i class="monthly-dot ${group.id}" aria-hidden="true"></i>${{ tree: '大樹', you: '佑全／健康人生', other: '其他／未分群' }[group.id]} ${group.rows.filter(row => row.completed).length}/${group.rows.length}</span>`).join('')}</div></section><p id="monthly-visit-notice" class="muted" role="status" aria-live="polite" ${monthlyVisitNotice ? '' : 'hidden'}>${esc(monthlyVisitNotice)}</p><section class="panel monthly-list" aria-label="當月必訪名單">${overview.pending.length ? monthlyVisitRowsHTML(overview.pending, past) : overview.total ? '<p class="monthly-complete">✓ 本月必訪門市皆已完成</p>' : `<p class="empty">這個月尚未安排必訪門市。${past ? '' : '請按「新增門市」從既有門市選入。'}</p>`}${overview.completed.length ? `<details id="monthly-completed" ${doneOpen ? 'open' : ''}><summary>已拜訪 · ${overview.completed.length} 間</summary>${monthlyVisitRowsHTML(overview.completed, past)}</details>` : ''}</section>${overview.removedStores.length ? `<details class="monthly-removed"><summary>本月已移除 · ${overview.removedStores.length} 間</summary>${monthlyVisitRowsHTML(overview.removedStores, past, true)}</details>` : ''}<details class="monthly-help"><summary>名單調整與完成依據</summary><p class="muted">各月份名單分別保存。新增或移除不會改動其他月份、門市原文或拜訪歷史；過去月份保留唯讀。只有你勾選實際拜訪日期並完成儲存，才依該日期自動計入對應月份。修改文字、安排行程及完成待辦都不算拜訪。同店同月計一次。</p></details>`;
 }
 function assertMonthlyVisitIdle() {
   if (!payload || document.hidden || pendingLock || updateHolding || autoFetching || syncInProgress || monthlyVisitContext || dayPlanContext || editorContext || reminderContext || singleStoreContext || inlineTextContext || payload.inlineTextDraft || document.querySelector('dialog[open]') || csvImport.hasPending()) throw new Error('請先完成或關閉目前的編輯，並等待同步結束，再調整每月名單。');
@@ -2100,7 +2109,7 @@ function renderMonthlyVisitChoices(query) {
   $('monthly-selection-count').textContent = `${monthlyVisitLabel(ctx.month)}已加入 ${overview.total} 間`;
   $('monthly-store-options').innerHTML = stores.filter(store => [store.name, store.city, store.district, store.address, ...(store.csvAliases || [])].some(value => String(value || '').toLocaleLowerCase().includes(needle))).map(store => {
     const active = monthlyVisitForStore(store, ctx.month)?.active, available = !store.conflict && !storeIdentityPending(store), group = monthlyVisitGroup(store.id);
-    return `<div class="monthly-store-choice"><span><strong><i class="monthly-dot ${group.id}" aria-hidden="true"></i>${esc(store.name)}</strong><small>${esc([store.city, store.district, monthlyVisitIdentity(store.id)].filter(Boolean).join(' · '))}${!available ? ' · 門市狀態待確認' : ''}</small></span><button type="button" data-monthly-add="${esc(store.id)}" aria-label="加入${esc(store.name)}" ${active || !available ? 'disabled' : ''}>${active ? '已加入' : '加入'}</button></div>`;
+    return `<div class="monthly-store-choice"><span><strong><i class="monthly-dot ${group.id}" aria-hidden="true"></i>${esc(store.name)}</strong><small>${esc([store.city, store.district, storeSelectionIdentity(store.id)].filter(Boolean).join(' · '))}${!available ? ' · 門市狀態待確認' : ''}</small></span><button type="button" data-monthly-add="${esc(store.id)}" aria-label="加入${esc(store.name)}${storeSelectionIdentity(store.id) ? '，' + esc(storeSelectionIdentity(store.id)) : ''}" ${active || !available ? 'disabled' : ''}>${active ? '已加入' : '加入'}</button></div>`;
   }).join('') || '<p class="empty">沒有符合的門市。請先在「門市」建立門市資料。</p>';
 }
 function closeMonthlyVisitSelection() {
@@ -2124,11 +2133,13 @@ async function performMonthlyVisitAction(action, storeId, fromPicker = false) {
     render(); if (fromPicker) { renderMonthlyVisitChoices(ctx.query); dismissKeyboard(); } toast(monthlyVisitNotice);
   } finally { if (!fromPicker && monthlyVisitContext === ctx) monthlyVisitContext = null; }
 }
-function changeMonthlyVisitMonth(month) {
+function changeMonthlyVisitMonth(month, { keepInputFocus = false } = {}) {
   if (busy || monthlyVisitContext) return;
   const next = monthlyVisitMonth(month);
   if (next !== monthlyVisitSelectedMonth && $('monthly-completed')) $('monthly-completed').open = false;
-  monthlyVisitSelectedMonth = next; monthlyVisitNotice = ''; dismissKeyboard(); renderMonthlyVisits();
+  monthlyVisitSelectedMonth = next; monthlyVisitNotice = '';
+  if (!keepInputFocus) dismissKeyboard();
+  renderMonthlyVisits();
 }
 function dayPlanLabel(date) {
   return new Intl.DateTimeFormat('zh-TW', { timeZone: 'Asia/Taipei', month: 'numeric', day: 'numeric', weekday: 'short' }).format(new Date(date + 'T04:00:00.000Z'));
@@ -2156,7 +2167,12 @@ function renderDayPlan() {
   if (!canSort) dayPlanSorting = false;
   const cards = overview.stores.map((row, index) => `<article class="panel day-store"><div class="day-store-heading"><span class="day-store-number">${index + 1}</span><button class="text-button store-link" ${row.available ? `data-visit-brief="${esc(row.storeId)}"` : 'disabled'}>${esc(row.name)}${row.available ? ' ›' : ''}</button>${!overview.past ? `<button type="button" class="text-button day-store-cancel" data-day-cancel="${esc(row.storeId)}" aria-label="取消${esc(row.name)}的${esc(overview.date)}安排" ${!row.available ? 'disabled' : ''}>取消安排</button>` : ''}</div>${!row.available ? `<p class="day-plan-warning">${esc(row.unavailableReason)}</p>` : ''}${row.historical ? '<p class="muted">此行程只存於歷史版本，唯讀查看。</p>' : ''}${dayPlanSorting ? `<div class="day-sort-controls"><button type="button" data-day-up="${esc(row.storeId)}" aria-label="上移${esc(row.name)}" ${index === 0 ? 'disabled' : ''}>↑ 上移</button><button type="button" data-day-down="${esc(row.storeId)}" aria-label="下移${esc(row.name)}" ${index === overview.stores.length - 1 ? 'disabled' : ''}>↓ 下移</button></div>` : dayPlanReminderHTML(row) + dayPlanLegacyHTML(row)}</article>`).join('');
   const cancelled = overview.cancelledStores || [], undo = dayPlanUndo?.date === overview.date;
-  $('day-plan-content').innerHTML = `<div class="day-plan-datebar"><div class="day-plan-days">${dated.map((date, index) => `<button type="button" data-day-date="${date}" aria-pressed="${date === dayPlanSelectedDate}">${['今天', '明天', '後天'][index]}<small>${esc(dayPlanLabel(date))}</small></button>`).join('')}</div><details class="day-plan-other-date"><summary>其他日期／歷史</summary><label>行程日期<input id="day-plan-date" type="date" value="${esc(dayPlanSelectedDate)}" aria-label="行程日期"></label></details></div><div class="day-plan-toolbar"><h3>${esc(dayPlanLabel(overview.date))} · ${overview.stores.length} 間</h3>${!overview.past ? `<div><button type="button" class="text-button" data-day-sort aria-pressed="${dayPlanSorting}" ${!canSort ? 'disabled' : ''}>${dayPlanSorting ? '完成排序' : '調整順序'}</button><button type="button" class="primary" data-day-select>＋ 新增門市</button></div>` : '<span class="pill">過去行程 · 唯讀</span>'}</div>${overview.past ? '<p class="muted">顯示當時保存的提醒；安排日期不代表實際拜訪日期。</p>' : ''}<div class="day-plan-notice" role="status" aria-live="polite" ${dayPlanNotice ? '' : 'hidden'}>${esc(dayPlanNotice)}${undo ? '<button type="button" class="text-button" data-day-undo>復原</button>' : ''}</div><div class="day-plan-store-grid">${cards || `<p class="empty">${overview.past ? '這天沒有留存行程；不代表當天沒有實際拜訪。' : '這天還沒有安排門市。'}</p>`}</div>${cancelled.length ? `<details class="day-plan-cancelled"><summary>已取消安排 · ${cancelled.length} 間</summary>${cancelled.map(row => `<div class="day-cancelled-row"><span>${esc(row.name)}</span>${!overview.past && row.available ? `<button class="text-button" data-day-restore="${esc(row.storeId)}">重新加入</button>` : ''}<button class="text-button" data-history="store:${esc(row.storeId)}">查看歷史</button></div>`).join('')}</details>` : ''}`;
+  const content = $('day-plan-content');
+  if (!content.querySelector('#day-plan-date')) content.innerHTML = '<div class="day-plan-datebar"><div id="day-plan-days" class="day-plan-days"></div><details class="day-plan-other-date"><summary>其他日期／歷史</summary><label>行程日期<input id="day-plan-date" type="date" aria-label="行程日期"></label></details></div><div id="day-plan-results"></div>';
+  const dateInput = $('day-plan-date');
+  if (dateInput.value !== dayPlanSelectedDate) dateInput.value = dayPlanSelectedDate;
+  $('day-plan-days').innerHTML = dated.map((date, index) => `<button type="button" data-day-date="${date}" aria-pressed="${date === dayPlanSelectedDate}">${['今天', '明天', '後天'][index]}<small>${esc(dayPlanLabel(date))}</small></button>`).join('');
+  $('day-plan-results').innerHTML = `<div class="day-plan-toolbar"><h3>${esc(dayPlanLabel(overview.date))} · ${overview.stores.length} 間</h3>${!overview.past ? `<div><button type="button" class="text-button" data-day-sort aria-pressed="${dayPlanSorting}" ${!canSort ? 'disabled' : ''}>${dayPlanSorting ? '完成排序' : '調整順序'}</button><button type="button" class="primary" data-day-select>＋ 新增門市</button></div>` : '<span class="pill">過去行程 · 唯讀</span>'}</div>${overview.past ? '<p class="muted">顯示當時保存的提醒；安排日期不代表實際拜訪日期。</p>' : ''}<div class="day-plan-notice" role="status" aria-live="polite" ${dayPlanNotice ? '' : 'hidden'}>${esc(dayPlanNotice)}${undo ? '<button type="button" class="text-button" data-day-undo>復原</button>' : ''}</div><div class="day-plan-store-grid">${cards || `<p class="empty">${overview.past ? '這天沒有留存行程；不代表當天沒有實際拜訪。' : '這天還沒有安排門市。'}</p>`}</div>${cancelled.length ? `<details class="day-plan-cancelled"><summary>已取消安排 · ${cancelled.length} 間</summary>${cancelled.map(row => `<div class="day-cancelled-row"><span>${esc(row.name)}</span>${!overview.past && row.available ? `<button class="text-button" data-day-restore="${esc(row.storeId)}">重新加入</button>` : ''}<button class="text-button" data-history="store:${esc(row.storeId)}">查看歷史</button></div>`).join('')}</details>` : ''}`;
 }
 function assertDayPlanIdle() {
   if (!payload || document.hidden || pendingLock || updateHolding || autoFetching || syncInProgress || dayPlanContext || monthlyVisitContext || editorContext || reminderContext || singleStoreContext || inlineTextContext || payload.inlineTextDraft || document.querySelector('dialog[open]') || csvImport.hasPending()) throw new Error('請先完成或關閉目前的編輯，並等待同步結束，再調整行程。');
@@ -2190,8 +2206,8 @@ function renderDayPlanChoices(query) {
   const needle = String(query).toLocaleLowerCase(), count = ctx.stores.filter(store => dayPlanForStore(store, ctx.date)?.active).length;
   $('day-plan-selection-count').textContent = `已排 ${count} 間`;
   $('day-store-options').innerHTML = ctx.stores.filter(store => [store.name, store.city, store.district, ...(store.csvAliases || [])].some(value => String(value || '').toLocaleLowerCase().includes(needle))).map(store => {
-    const active = dayPlanForStore(store, ctx.date)?.active, available = dayPlanAvailable(store);
-    return `<div class="day-store-choice"><span><strong>${esc(store.name)}</strong><small>${esc([store.city, store.district].filter(Boolean).join(' · '))}${!available ? ' · 門市狀態待確認' : ''}</small></span><button type="button" data-day-add="${esc(store.id)}" aria-label="加入${esc(store.name)}" ${active || !available ? 'disabled' : ''}>${active ? '已加入' : '加入'}</button></div>`;
+    const active = dayPlanForStore(store, ctx.date)?.active, available = dayPlanAvailable(store), identity = storeSelectionIdentity(store.id);
+    return `<div class="day-store-choice"><span><strong>${esc(store.name)}</strong><small>${esc([store.city, store.district, identity].filter(Boolean).join(' · '))}${!available ? ' · 門市狀態待確認' : ''}</small></span><button type="button" data-day-add="${esc(store.id)}" aria-label="加入${esc(store.name)}${storeSelectionIdentity(store.id) ? '，' + esc(storeSelectionIdentity(store.id)) : ''}" ${active || !available ? 'disabled' : ''}>${active ? '已加入' : '加入'}</button></div>`;
   }).join('') || '<p class="empty">沒有符合的門市。</p>';
 }
 function closeDayPlanEditor() {
@@ -3321,7 +3337,7 @@ $('monthly-visit-dialog').addEventListener('close', () => {
 document.addEventListener('input', event => { if (event.target.id === 'monthly-store-search' && !busy) renderMonthlyVisitChoices(event.target.value); });
 document.addEventListener('change', event => {
   if (event.target.id !== 'monthly-visit-month' || busy || monthlyVisitContext) return;
-  try { changeMonthlyVisitMonth(event.target.value); } catch (error) { event.target.value = monthlyVisitSelectedMonth; toast(error.message); }
+  try { changeMonthlyVisitMonth(event.target.value, { keepInputFocus: true }); } catch (error) { event.target.value = monthlyVisitSelectedMonth; toast(error.message); }
 });
 $('day-plan-dialog').addEventListener('close', () => {
   if (!$('day-plan-dialog').open && dayPlanContext) { openDialog($('day-plan-dialog')); closeDayPlanEditor(); }
@@ -3330,8 +3346,8 @@ $('day-plan-fields').addEventListener('input', event => {
   if (event.target.id === 'day-store-search' && !busy) renderDayPlanChoices(event.target.value);
 });
 $('day-plan-content').addEventListener('change', event => {
-  if (event.target.id !== 'day-plan-date' || busy || dayPlanContext || monthlyVisitContext || !event.target.value) return;
-  try { dayPlanSelectedDate = dayPlanDate(event.target.value); dayPlanSorting = false; dayPlanNotice = ''; dayPlanUndo = null; dismissKeyboard(); renderDayPlan(); } catch (error) { toast(error.message); }
+  if (event.target.id !== 'day-plan-date' || busy || dayPlanContext || monthlyVisitContext) return;
+  try { dayPlanSelectedDate = dayPlanDate(event.target.value); dayPlanSorting = false; dayPlanNotice = ''; dayPlanUndo = null; renderDayPlan(); } catch (error) { event.target.value = dayPlanSelectedDate; toast(error.message); }
 });
 $('review').addEventListener('submit', event => {
   if (event.target.id === 'single-store-capture-form') saveSingleStoreVisit(event);
