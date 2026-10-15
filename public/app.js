@@ -156,8 +156,8 @@ function installPhoneEditingViewport() {
   if (!window.matchMedia?.('(max-width: 760px)').matches) return;
   const root = document.documentElement, viewport = window.visualViewport;
   let frame = 0, revealCaret = false, viewportChanged = false;
-  let previousHeight = viewport?.height || window.innerHeight, previousTop = viewport?.offsetTop || 0, fallbackHeight = window.innerHeight;
-  let allowViewportPan = true;
+  let previousHeight = viewport?.height || window.innerHeight, fallbackHeight = window.innerHeight;
+  let allowViewportReveal = true, lastSelection = null;
   let pointer = null, suppressSelectionUntil = 0;
   const observed = new Set();
   const resizeObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(() => schedule(false)) : null;
@@ -167,6 +167,17 @@ function installPhoneEditingViewport() {
   }
   function textControl(element) {
     return element?.matches?.('textarea,input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]):not([type="color"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="hidden"])') && !element.disabled && !element.readOnly;
+  }
+  function selectionState() {
+    const active = document.activeElement;
+    // Compare positions only; never read input values, change a Range, or focus a field.
+    if (textControl(active)) return [active, active.selectionStart, active.selectionEnd, active.selectionDirection];
+    const editor = active?.closest?.('[data-inline-edit-text]'), selection = window.getSelection();
+    if (!editor || !selection?.rangeCount || !editor.contains(selection.focusNode)) return null;
+    return [editor, selection.anchorNode, selection.anchorOffset, selection.focusNode, selection.focusOffset, selection.isCollapsed];
+  }
+  function requestCaretReveal() {
+    lastSelection = selectionState(); allowViewportReveal = true; schedule(true);
   }
   function controlCaret(control) {
     const rect = control.getBoundingClientRect();
@@ -214,8 +225,8 @@ function installPhoneEditingViewport() {
     const top = Math.max(0, viewport?.offsetTop || 0), height = viewport?.height || window.innerHeight;
     if (!Number.isFinite(height) || height <= 0) return;
     const expanding = height > previousHeight + 1;
-    const shrinking = height < previousHeight - 1, panning = Math.abs(top - previousTop) > 1;
-    previousHeight = height; previousTop = top;
+    const shrinking = height < previousHeight - 1;
+    previousHeight = height;
     root.style.setProperty('--phone-visible-top', `${top}px`);
     root.style.setProperty('--phone-visible-height', `${height}px`);
     root.style.setProperty('--phone-visible-bottom', `${top + height}px`);
@@ -233,13 +244,16 @@ function installPhoneEditingViewport() {
     for (const action of actions) if (!observed.has(action)) { resizeObserver?.observe(action); observed.add(action); }
     const dockHeight = dock?.getBoundingClientRect().height || 0;
     root.style.setProperty('--phone-edit-dock-height', `${dockHeight}px`);
-    const reveal = revealCaret || (viewportChanged && (shrinking || panning) && !expanding && performance.now() >= suppressSelectionUntil);
+    // A visual-viewport pan can be Safari's response to our previous scroll.
+    // Only an actual keyboard contraction may request another visibility correction.
+    const reveal = revealCaret || (viewportChanged && shrinking && allowViewportReveal && !expanding && performance.now() >= suppressSelectionUntil);
     viewportChanged = false;
     // Geometry still follows a closing keyboard, but it must not pull reading back to the caret.
     if (!keyboard || expanding) { revealCaret = false; return; }
     if (pointer) { if (pointer.moved) revealCaret = false; else revealCaret ||= reveal || shrinking; return; }
     revealCaret = false;
     if (!reveal) return;
+    lastSelection = selectionState();
     const control = textControl(active) ? active : null;
     const editor = control || active?.closest?.('[data-inline-edit-text]');
     if (!editor) return;
@@ -280,29 +294,38 @@ function installPhoneEditingViewport() {
       if (footer && !footer.contains(editor) && ['sticky', 'fixed'].includes(getComputedStyle(footer).position)) lower = Math.min(lower, footer.getBoundingClientRect().top - 8);
     }
     if (lower <= upper) return;
-    const delta = caret.bottom > lower ? caret.bottom - lower : caret.top < upper ? caret.top - upper : 0;
-    if (delta) {
+    // An oversized fallback Range cannot fit both edges. Use one stable edge,
+    // rather than alternating between the top and bottom on successive events.
+    const delta = caret.height > lower - upper ? caret.top - upper
+      : caret.bottom > lower ? caret.bottom - lower : caret.top < upper ? caret.top - upper : 0;
+    if (Math.abs(delta) > 1) {
       if (scroller) scroller.scrollTop += delta;
       else window.scrollBy({ top: delta, left: 0, behavior: 'instant' });
     }
   }
   viewport?.addEventListener('resize', () => schedule(false, true), { passive: true });
-  viewport?.addEventListener('scroll', () => schedule(false, allowViewportPan), { passive: true });
+  viewport?.addEventListener('scroll', () => schedule(false), { passive: true });
   window.addEventListener('resize', () => schedule(false, true), { passive: true });
   window.addEventListener('pageshow', () => schedule(false), { passive: true });
-  document.addEventListener('focusin', () => { allowViewportPan = true; schedule(true); });
+  document.addEventListener('focusin', requestCaretReveal);
   document.addEventListener('focusout', () => schedule(false));
-  document.addEventListener('input', () => { allowViewportPan = true; schedule(true); });
-  document.addEventListener('selectionchange', () => { if (!pointer && performance.now() >= suppressSelectionUntil) schedule(true); });
+  document.addEventListener('input', requestCaretReveal);
+  document.addEventListener('selectionchange', () => {
+    const next = selectionState(); if (!next) return;
+    const changed = !lastSelection || next.some((value, index) => value !== lastSelection[index]);
+    lastSelection = next;
+    // Native caret/layout notifications with the same logical selection are not new input.
+    if (changed && !pointer && performance.now() >= suppressSelectionUntil) { allowViewportReveal = true; schedule(true); }
+  });
   document.addEventListener('pointerdown', event => { pointer = { id: event.pointerId, x: event.clientX, y: event.clientY, moved: false, target: event.target }; }, { passive: true });
-  document.addEventListener('pointermove', event => { if (pointer?.id === event.pointerId && Math.hypot(event.clientX - pointer.x, event.clientY - pointer.y) > 8) { pointer.moved = true; revealCaret = false; allowViewportPan = false; } }, { passive: true });
+  document.addEventListener('pointermove', event => { if (pointer?.id === event.pointerId && Math.hypot(event.clientX - pointer.x, event.clientY - pointer.y) > 8) { pointer.moved = true; revealCaret = false; allowViewportReveal = false; } }, { passive: true });
   for (const type of ['pointerup', 'pointercancel']) document.addEventListener(type, () => {
     const moved = pointer?.moved, target = pointer?.target; pointer = null;
-    if (moved || type === 'pointercancel') { revealCaret = false; allowViewportPan = false; suppressSelectionUntil = performance.now() + 250; }
-    else if (target === document.activeElement && (textControl(target) || target?.closest?.('[data-inline-edit-text]'))) { allowViewportPan = true; schedule(true); }
+    if (moved || type === 'pointercancel') { revealCaret = false; allowViewportReveal = false; suppressSelectionUntil = performance.now() + 250; }
+    else if (target === document.activeElement && (textControl(target) || target?.closest?.('[data-inline-edit-text]'))) requestCaretReveal();
     else if (revealCaret) schedule(true);
   }, { passive: true });
-  document.addEventListener('wheel', () => { allowViewportPan = false; revealCaret = false; suppressSelectionUntil = performance.now() + 250; }, { passive: true });
+  document.addEventListener('wheel', () => { allowViewportReveal = false; revealCaret = false; suppressSelectionUntil = performance.now() + 250; }, { passive: true });
   if (typeof MutationObserver === 'function') new MutationObserver(records => {
     // Ignore the transient, hidden measurement mirror; it never represents an App layout change.
     if (records.some(record => record.type === 'attributes' || [...record.addedNodes, ...record.removedNodes].some(node => !node.hasAttribute?.('data-phone-caret-mirror')))) schedule(false);

@@ -1,3 +1,21 @@
+v1.5.70 iPhone 編輯捲動回授修正｜2026-10-15
+
+問題證據：使用者提供約5秒iPhone錄影，原文編輯、鍵盤保持開啟時，畫面與儲存操作列反覆上下位移。沒有把錄影中的客戶文字、影片或截圖加入Git、測試或發布包。
+
+完整 Node 回歸 node --test test/*.test.mjs：635／635通過，0失敗／取消／略過。需loopback開埠的伺服器測試在允許本機監聽的隔離環境重跑；初次sandbox EPERM並非測試通過，不計入成功紀錄。既有原文差異核對、草稿加密、確認儲存、版本、來源、CSV重匯、衝突、備份與同步測試維持通過。
+
+新增9項動態捲動測試直接擷取實際installPhoneEditingViewport執行：原生pan與相同selection不能反覆scroll；暫失range後恢復同caret不當新輸入；真正offset／node改變、輸入與textarea仍可揭露；password位置追蹤不讀值；超高range固定一端；反白選取不拉動。修正版9／9通過；完全相同測試對v1.5.69為6失敗／3通過。舊版password案例失敗屬重複捲動，不是密碼讀取漏洞。原6次native pan造成額外6次App scroll，修後0次。
+
+互動fixture test/qa/keyboard-pan-fixture.mjs自測通過，只監聽127.0.0.1:18870，Host白名單、GET固定路徑、CSP禁止connect；只引用實際CSS與單一版面控制器，不啟動App，不存取資料庫／API／外網。baseline固定2f85058f52ffc6778240bc0ab6fcdc1fd8709df0，current取本次程式。
+
+Chrome透過實際393px寬iframe、原生contenteditable、真DOM Range及window.scrollBy測試20次交替offsetTop280/0和相同選取通知。舊版額外20次scroll，穩定往返約15px；修後0次、scrollRange0。兩版測試期間1385字合成文字與選取均不變。修後另用實際鍵盤輸入9字，累積1394字，caret在276.78–296.78px、操作列top309.02px，仍可見；收合模擬鍵盤正常。
+
+本機截圖與trace位於Git外的/tmp。以上是真瀏覽器DOM＋模擬visualViewport，沒有假稱iPhone/Safari/PWA/原生或第三方軟鍵盤驗收。真機項目仍待更新後實測，見DEVICE-ACCEPTANCE.md。
+
+本次runtime只改畫面捲動控制器與App版本，不改CSS固定尺寸、每月名單邏輯、資料／同步格式或保存流程；沒有讀寫正式門市、原始筆記、來源、審核、任務、實際拜訪或月名單。App1.5.70／SOP1 1.2.52，schema2／protocol1及21條runtime路徑不變。
+
+以下保留歷史測試結果。
+
 v1.5.69 每月拜訪獨立分頁｜2026-10-15
 
 已執行定向安全測試：node --test test/monthly-visits-ui.test.mjs test/monthly-visits-csv.test.mjs，共 25／25 通過，0 失敗／取消／略過。UI 測試抽取真實 App 函數及事件分支，使用虛構資料與 DOM／持久化替身，配合實際 core 的投影、版本、月名單及拜訪確認計算；不是完整瀏覽器或真機驗收。
