@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { emptyBundle, revision, project, validateBundle, validData, merge, planBackupImport, planStoreMerge, makeVisitAttendance, visitAttendanceForStore, newMeta, derive, seal, unseal,
+  storeInsightsIdentityKey, planInsightReview, applyInsightReview,
   dayPlanSources, dayPlanForStore, dayPlanOverview, shiftDayPlanDate, applyDayPlanChanges, dayItineraryBasis, applyDayItineraryAction } from '../public/core.js';
 
 // Synthetic data only; no production records, coordinates, or private notes.
@@ -186,7 +187,163 @@ test('mixed legacy and ranked rows retain cancellation slots when appending and 
   bundle = apply(bundle, 'b', 'cancel'); bundle = apply(bundle, 'a', 'add');
   assert.deepEqual(list(bundle), ['c', 'a']);
   bundle = apply(bundle, 'b', 'restore'); assert.deepEqual(list(bundle), ['b', 'c', 'a']);
-  bundle = apply(bundle, 'a', 'up'); assert.deepEqual(list(bundle), ['b', 'a', 'c']);
-  const ranks = ['a', 'b', 'c'].map(id => get(bundle, id).datePlanOrder[0].position);
-  assert.deepEqual([...ranks].sort(), [0, 1, 2]);
+  const before = bundle; bundle = apply(bundle, 'a', 'up'); assert.deepEqual(list(bundle), ['b', 'a', 'c']);
+  assert.equal(get(bundle, 'b').datePlanOrder, undefined);
+  assert.deepEqual(get(bundle, 'b'), get(before, 'b'));
+  assert.deepEqual(bundle.ops.slice(before.ops.length).map(op => op.entity).sort(), ['a', 'c']);
+  assert.deepEqual(dayPlanOverview(project(bundle), date, at).stores.map(row => row.orderPosition), [0, 1, 2]);
+});
+
+test('cancelled missing, duplicate and maximum ranks never cause a revision when active neighbors move', () => {
+  const initial = apply(arrange(fixture()), 'a', 'cancel');
+  for (const rank of [null, 1, 1000000]) {
+    const bundle = alter(initial, 'a', draft => { if (rank === null) delete draft.datePlanOrder; else draft.datePlanOrder[0].position = rank; });
+    const before = structuredClone(bundle), moved = apply(bundle, 'c', 'up');
+    assert.deepEqual(list(moved), ['c', 'b']); assert.deepEqual(bundle, before);
+    assert.deepEqual(moved.ops.slice(bundle.ops.length).map(op => op.entity).sort(), ['b', 'c']);
+    assert.deepEqual(get(moved, 'a'), get(bundle, 'a'));
+    assert.deepEqual(moved.ops.slice(0, bundle.ops.length), bundle.ops);
+    assert.deepEqual(get(apply(moved, 'c', 'down'), 'a'), get(bundle, 'a'));
+  }
+});
+
+test('cancelled legacy conflict, identity, merged and deleted stores cannot block or receive active reorder writes', () => {
+  const cancelled = apply(legacy(fixture()), 'a', 'cancel');
+  const variants = [cancelled, alter(cancelled, 'a', draft => draft.csvIdentityPending = true), alter(cancelled, 'a', draft => draft.mergedInto = 'b'), alter(cancelled, 'a', () => {}, later, true),
+    merge(alter(cancelled, 'a', draft => draft.contact = 'Synthetic left'), alter(cancelled, 'a', draft => draft.contact = 'Synthetic right'))];
+  for (const variant of variants) for (const duplicateActive of [false, true]) {
+    let bundle = variant;
+    if (duplicateActive) for (const id of ['b', 'c']) bundle = alter(bundle, id, draft => { draft.datePlanOrder = [{ date, position: 0 }]; });
+    const before = structuredClone(bundle), moved = apply(bundle, 'c', 'up');
+    assert.deepEqual(list(moved), ['c', 'b']); assert.deepEqual(bundle, before);
+    assert.deepEqual(moved.ops.slice(bundle.ops.length).map(op => op.entity).sort(), duplicateActive ? ['b'] : ['b', 'c']);
+    assert.deepEqual(get(moved, 'a'), get(bundle, 'a'));
+    assert.equal(get(moved, 'a').datePlanOrder, undefined);
+  }
+});
+
+test('unique effective ranks move only the two neighbors despite unrelated legacy rows and rank gaps', () => {
+  const bundle = alter(legacy(fixture()), 'c', draft => { draft.datePlanOrder = [{ date, position: 17 }]; });
+  const moved = apply(bundle, 'c', 'up');
+  assert.deepEqual(list(moved), ['a', 'c', 'b']);
+  assert.deepEqual(moved.ops.slice(bundle.ops.length).map(op => op.entity).sort(), ['b', 'c']);
+  assert.deepEqual(get(moved, 'a'), get(bundle, 'a'));
+  assert.equal(get(moved, 'b').datePlanOrder[0].position, 17);
+  assert.equal(get(moved, 'c').datePlanOrder[0].position, 1);
+  assert.deepEqual(list(apply(moved, 'c', 'down')), ['a', 'b', 'c']);
+});
+
+test('moving an active MAX rank compacts only active stores and permits the next addition', () => {
+  let bundle = arrange(fixture(), ['a', 'b']);
+  bundle = alter(bundle, 'b', draft => { draft.datePlanOrder[0].position = 1000000; });
+  const before = structuredClone(bundle), moved = apply(bundle, 'b', 'up');
+  assert.deepEqual(list(moved), ['b', 'a']); assert.deepEqual(bundle, before);
+  assert.deepEqual(get(moved, 'c'), get(bundle, 'c'));
+  assert.deepEqual(dayPlanOverview(project(moved), date, at).stores.map(row => row.position), [0, 1]);
+  assert.deepEqual(list(apply(moved, 'c', 'add')), ['b', 'a', 'c']);
+});
+
+test('a cancelled MAX rank stays untouched and append refusal never promises reordering can clear it', () => {
+  let bundle = apply(arrange(fixture()), 'c', 'cancel');
+  bundle = alter(bundle, 'c', draft => { draft.datePlanOrder[0].position = 1000000; });
+  const moved = apply(bundle, 'b', 'up');
+  assert.deepEqual(list(moved), ['b', 'a']); assert.deepEqual(get(moved, 'c'), get(bundle, 'c'));
+  assert.throws(() => apply(moved, 'c', 'add'), error => /安全上限.*已取消順位/.test(error.message) && !/先調整順序/.test(error.message));
+  assert.equal(get(moved, 'c').datePlanOrder[0].position, 1000000);
+});
+
+test('duplicate active ranks normalize only active stores and retain cancelled virtual or saved slots', () => {
+  const cancelled = apply(legacy(fixture()), 'a', 'cancel');
+  for (const cancelledRank of [null, 0, 1000000]) for (const activeRank of [0, 1000000]) {
+    let bundle = cancelled;
+    if (cancelledRank !== null) bundle = alter(bundle, 'a', draft => { draft.datePlanOrder = [{ date, position: cancelledRank }]; });
+    for (const id of ['b', 'c']) bundle = alter(bundle, id, draft => { draft.datePlanOrder = [{ date, position: activeRank }]; });
+    const beforeOverview = dayPlanOverview(project(bundle), date, at), cancelledSlot = beforeOverview.cancelledStores[0].orderPosition;
+    const moved = apply(bundle, 'c', 'up'), overview = dayPlanOverview(project(moved), date, at);
+    assert.deepEqual(list(moved), ['c', 'b']);
+    assert.deepEqual(get(moved, 'a'), get(bundle, 'a'));
+    assert.equal(overview.cancelledStores[0].orderPosition, cancelledSlot);
+    assert.ok(overview.stores.every(row => row.orderPosition !== cancelledSlot));
+    assert.ok(moved.ops.slice(bundle.ops.length).every(op => ['b', 'c'].includes(op.entity)));
+    const restored = apply(moved, 'a', 'restore');
+    assert.equal(dayPlanOverview(project(restored), date, at).stores.find(row => row.storeId === 'a').orderPosition, cancelledSlot);
+  }
+});
+
+test('normalizing a duplicate active set fails atomically if any active member is unavailable', () => {
+  let initial = arrange(fixture());
+  for (const id of ['a', 'b', 'c']) initial = alter(initial, id, draft => { draft.datePlanOrder[0].position = 0; });
+  const variants = [alter(initial, 'a', draft => draft.csvIdentityPending = true), alter(initial, 'a', draft => draft.mergedInto = 'b'), alter(initial, 'a', () => {}, later, true),
+    merge(alter(initial, 'a', draft => draft.contact = 'Synthetic left'), alter(initial, 'a', draft => draft.contact = 'Synthetic right'))];
+  for (const bundle of variants) {
+    const before = structuredClone(bundle);
+    assert.throws(() => apply(bundle, 'c', 'up'), /待確認|衝突/);
+    assert.deepEqual(bundle, before);
+  }
+});
+
+test('boundary no-ops do not initialize cancelled or duplicate active ranks', () => {
+  let bundle = apply(legacy(fixture()), 'a', 'cancel');
+  for (const id of ['b', 'c']) bundle = alter(bundle, id, draft => { draft.datePlanOrder = [{ date, position: 0 }]; });
+  const before = structuredClone(bundle);
+  assert.equal(apply(bundle, 'b', 'up'), bundle); assert.equal(apply(bundle, 'c', 'down'), bundle);
+  assert.deepEqual(bundle, before);
+});
+
+test('reorder preserves original notes, review decisions, attendance, other dates and every old operation', () => {
+  let bundle = fixture();
+  const note = project(bundle).find(row => row.type === 'visit'), profile = {
+    format: 'pharmacy-store-insights-1', batchId: 'synthetic-itinerary-review', generatedAt: at, sourceAsOf: '2026-10-13', entries: [{
+      id: 'synthetic-card', kind: 'relationship', level: 'source', headline: 'Synthetic evidence', question: 'Synthetic question?', caution: 'Synthetic caution', limitations: ['Synthetic limitation'],
+      evidence: [{ storeId: 'a', storeIdentityKey: storeInsightsIdentityKey(get(bundle)), visitId: note.id, revisionId: note.heads[0].id, quote: '原始文字', role: 'support' }]
+    }]
+  };
+  bundle = alter(bundle, 'a', draft => { draft.preVisitInsights = profile; draft.monthlyVisits = [{ month: '2026-10', active: true, updatedAt: at }]; });
+  bundle = applyInsightReview(bundle, planInsightReview(bundle, 'a', 'synthetic-card', 'confirmed', get(bundle).heads[0].id), 'synthetic-review');
+  bundle = arrange(arrange(bundle), ['c', 'b', 'a'], nextDate);
+  for (const id of ['a', 'b', 'c']) bundle = alter(bundle, id, draft => { draft.datePlanOrder.find(entry => entry.date === date).position = 0; });
+  const before = structuredClone(bundle), moved = apply(bundle, 'b', 'up');
+  assert.deepEqual(list(moved), ['b', 'a', 'c']); assert.deepEqual(bundle, before);
+  assert.deepEqual(moved.ops.slice(0, bundle.ops.length), bundle.ops); assert.deepEqual(moved.blobs, bundle.blobs);
+  assert.deepEqual(moved.ops.filter(op => op.type !== 'store'), bundle.ops.filter(op => op.type !== 'store'));
+  for (const id of ['a', 'b', 'c']) {
+    const current = structuredClone(get(moved, id).heads[0].data), previous = structuredClone(get(bundle, id).heads[0].data);
+    current.datePlanOrder = current.datePlanOrder.filter(entry => entry.date !== date); previous.datePlanOrder = previous.datePlanOrder.filter(entry => entry.date !== date);
+    assert.deepEqual(current, previous);
+    assert.deepEqual(visitAttendanceForStore(moved, id, later), visitAttendanceForStore(bundle, id, later));
+  }
+  assert.equal(get(moved).preVisitInsightReviews[0].status, 'confirmed');
+  assert.ok(moved.ops.slice(bundle.ops.length).every(op => !Object.hasOwn(op, 'visitAttendance')));
+});
+
+test('independent cancelled-store updates merge without conflict after active reordering', () => {
+  const base = apply(legacy(fixture()), 'a', 'cancel');
+  const local = apply(base, 'c', 'up'), remote = alter(base, 'a', draft => draft.contact = 'Synthetic separately approved edit');
+  for (const next of [merge(local, remote), merge(remote, local)]) {
+    assert.deepEqual(list(next), ['c', 'b']);
+    assert.equal(get(next, 'a').conflict, false);
+    assert.equal(get(next, 'a').contact, 'Synthetic separately approved edit');
+    assert.deepEqual(get(next, 'a').heads, get(remote, 'a').heads);
+    assert.ok(base.ops.every(op => next.ops.some(saved => JSON.stringify(saved) === JSON.stringify(op))));
+  }
+});
+
+test('rank combinations preserve exactly the requested adjacent order and never write unrelated stores', () => {
+  let base = fixture();
+  for (const id of ['cancelled', 'other-date', 'no-plan']) { const op = revision('store', id, data('Synthetic ' + id), [], 'test'); op.at = at; base.ops.push(op); }
+  base = apply(legacy(base, ['a', 'b', 'c', 'cancelled']), 'cancelled', 'cancel');
+  base = arrange(base, ['other-date'], nextDate);
+  const options = [null, 0, 1, 1000000];
+  for (const a of options) for (const b of options) for (const c of options) for (const cancelled of [null, 0, 1000000]) {
+    let bundle = base;
+    for (const [id, position] of Object.entries({ a, b, c, cancelled })) if (position !== null) bundle = alter(bundle, id, draft => { draft.datePlanOrder = [{ date, position }]; });
+    const originalOrder = list(bundle), target = originalOrder[1];
+    for (const [action, neighborIndex] of [['up', 0], ['down', 2]]) {
+      const expected = [...originalOrder]; [expected[1], expected[neighborIndex]] = [expected[neighborIndex], expected[1]];
+      const moved = apply(bundle, target, action);
+      assert.deepEqual(list(moved), expected, JSON.stringify({ a, b, c, cancelled, action }));
+      for (const id of ['cancelled', 'other-date', 'no-plan']) assert.deepEqual(get(moved, id), get(bundle, id));
+      assert.ok(moved.ops.slice(bundle.ops.length).every(op => ['a', 'b', 'c'].includes(op.entity)));
+    }
+  }
 });

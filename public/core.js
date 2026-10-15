@@ -508,22 +508,36 @@ export function applyDayItineraryAction(bundle, request, device, at = new Date()
     const activeIndex = overview.stores.findIndex(row => row.storeId === storeId), neighborIndex = activeIndex + (action === 'up' ? -1 : 1);
     if (action !== 'add' && (neighborIndex < 0 || neighborIndex >= overview.stores.length)) return bundle;
     if (action !== 'add' && dayPlanUnavailable(index.get(overview.stores[neighborIndex].storeId))) throw new Error('順序涉及已刪除、整併、身分待確認或有衝突的門市；請先核對。');
-    // Reserve cancelled slots. Restoring a store returns it to the retained slot;
-    // moving active neighbors swaps their ranks without deleting any history.
+    // Cancelled slots are read-only. Restoring a store retains its saved rank;
+    // moving active neighbors must never create a cancelled-store revision.
     if (action === 'add') {
       // Appending only changes this store. An unrelated legacy/conflicting row
       // must not prevent adding a safe store or silently get a new revision.
       const position = Math.max(-1, ...rows.map(row => row.orderPosition)) + 1;
-      if (position > MAX_DAY_PLAN_POSITION) throw new Error('當日順序已達安全上限，請先調整順序；尚未寫入。');
+      if (position > MAX_DAY_PLAN_POSITION) throw new Error('當日順序已達安全上限（含保留的已取消順位）；本次無法新增，既有行程尚未變更。');
       setPlan(before ? { ...before, active: true, updatedAt: at } : { date, active: true, items: [], acknowledged: [], sourceSnapshot: dayPlanSources(store), updatedAt: at });
       setPosition(storeId, position);
     } else {
-      const positions = new Map(rows.map(row => [row.storeId, row.position]));
-      if (rows.some(row => row.position === null) || new Set(rows.map(row => row.position)).size !== rows.length || rows.some(row => row.position === MAX_DAY_PLAN_POSITION)) {
-        rows.forEach((row, position) => { positions.set(row.storeId, position); setPosition(row.storeId, position); });
+      const activeRows = overview.stores, neighbor = activeRows[neighborIndex];
+      if (new Set(activeRows.map(row => row.orderPosition)).size === activeRows.length && !activeRows.some(row => row.orderPosition === MAX_DAY_PLAN_POSITION)) {
+        // The overview already gives legacy rows deterministic virtual slots.
+        // Persist only the two exchanged slots when no rank needs compaction.
+        setPosition(storeId, neighbor.orderPosition); setPosition(neighbor.storeId, activeRows[activeIndex].orderPosition);
+      } else {
+        // Concurrent additions can give active stores equal ranks; MAX ranks
+        // need compaction to leave space for later additions. Only the day's
+        // active set is normalized; unavailable active stores make
+        // the entire operation fail closed before any draft is prepared.
+        if (activeRows.some(row => dayPlanUnavailable(index.get(row.storeId)))) throw new Error('順序涉及已刪除、整併、身分待確認或有衝突的門市；請先核對。');
+        const reordered = [...activeRows], reserved = new Set(overview.cancelledStores.map(row => row.orderPosition));
+        [reordered[activeIndex], reordered[neighborIndex]] = [reordered[neighborIndex], reordered[activeIndex]];
+        let position = 0;
+        for (const row of reordered) {
+          while (reserved.has(position)) position++;
+          if (position > MAX_DAY_PLAN_POSITION) throw new Error('當日順序已達安全上限；尚未寫入。');
+          setPosition(row.storeId, position++);
+        }
       }
-      const neighborId = overview.stores[neighborIndex].storeId, position = positions.get(storeId), neighborPosition = positions.get(neighborId);
-      setPosition(storeId, neighborPosition); setPosition(neighborId, position);
     }
   }
   if (!drafts.size) return bundle;
