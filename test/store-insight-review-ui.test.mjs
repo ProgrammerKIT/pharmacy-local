@@ -124,6 +124,7 @@ test('fully confirmed stores omit the pending-review introduction without rewrit
   const html = h.c.storeInsightsHTML('s'), current = html.slice(0, html.indexOf('<details class="insight-review-archive"'));
   assert.doesNotMatch(current, /先看線索與原文，再由你人工審核/);
   assert.equal((current.match(/class="insight-confirmed-details"/g) || []).length, 3);
+  assert.doesNotMatch(current, /data-insight-detail="more"/);
   for (const level of ['source', 'inference', 'counter']) assert.ok(current.includes(`Synthetic ${level} &lt;img src=x&gt; headline`));
 });
 
@@ -227,4 +228,18 @@ test('changed content never inherits a Kit approval and removed cards retain the
   assert.match(html.slice(start), /Synthetic source &lt;img/); assert.match(html.slice(start), /Synthetic inference &lt;img/);
   assert.doesNotMatch(html.slice(start), /data-insight-review="/);
   assert.equal(h.state.writes.length, 2);
+});
+
+
+test('source changes preserve only current confirmed cards; rejected cards remain solely in history without writes', async () => {
+  const h = await harness();
+  await h.act('confirmed', 'entry-0'); await h.act('rejected', 'entry-1');
+  h.c.payload.bundle.ops.push(core.revision('visit', 'v', { ...h.fixture.visit.data }, [h.fixture.visit.id], 'synthetic-new-version'));
+  const before = JSON.stringify(h.c.payload), writes = h.state.writes.length;
+  const html = h.c.storeInsightsHTML('s'), boundary = html.indexOf('<details class="insight-review-archive"');
+  const current = html.slice(0, boundary), history = html.slice(boundary);
+  assert.match(current, /data-insight-confirmed="entry-0"/); assert.match(current, /來源已更新/);
+  assert.doesNotMatch(current, /Synthetic inference|Synthetic counter|data-insight-review=/);
+  assert.match(history, /Synthetic inference/); assert.match(history, /不符合/);
+  assert.equal(JSON.stringify(h.c.payload), before); assert.equal(h.state.writes.length, writes);
 });
