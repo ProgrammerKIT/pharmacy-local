@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { uiNodeFixture } from './helpers/ui-node-fixture.mjs';
 import { emptyBundle, revision, project, validateBundle, makeVisitAttendance, visitAttendanceForStore, attendanceTaipeiDate,
   monthlyVisitMonth, shiftMonthlyVisitMonth, monthlyVisitForStore, monthlyVisitOverview, monthlyVisitBasis, applyMonthlyVisitAction } from '../public/core.js';
 
@@ -26,11 +27,7 @@ function fixture() {
   }, [], 'fictional-device', false, id === 'a' ? makeVisitAttendance('a', now) : undefined));
   bundle.ops.push(revision('visit', 'fictional-original', { store: 'a', date: '', text: '  虛構拜訪原文\r\n保留。 ', next: '', source: 'fictional', people: [], topics: [], attachments: [] }, [], 'fictional-device'));
   const original = structuredClone(bundle), elements = new Map(), writes = [];
-  function node(id) {
-    if (!elements.has(id)) elements.set(id, { innerHTML: '', textContent: '', open: false, hidden: false, value: '', dataset: {},
-      replaceChildren() { this.innerHTML = ''; this.textContent = ''; }, close() { this.open = false; } });
-    return elements.get(id);
-  }
+  const { node } = uiNodeFixture();
   const sandbox = vm.createContext({
     monthlyVisitContext: null, monthlyVisitSelectedMonth: month, monthlyVisitViewBasis: '', monthlyVisitNotice: '',
     dayPlanContext: null, editorContext: null, reminderContext: null, singleStoreContext: null, inlineTextContext: null,
@@ -123,7 +120,7 @@ test('switching months writes nothing, isolates monthly rosters and cannot switc
   f.open(); await f.act('add', 'c'); f.close(); assert.deepEqual(f.members(f.month), ['b']); assert.deepEqual(f.members(f.nextMonth), ['c']);
   await f.act('remove', 'c'); assert.deepEqual(f.members(f.nextMonth), []); assert.deepEqual(f.members(f.month), ['b']);
   const before = JSON.stringify(f.sandbox.payload.bundle); f.sandbox.changeMonthlyVisitMonth(shiftMonthlyVisitMonth(f.month, -1));
-  assert.match(f.node('monthly-visit-content').innerHTML, /歷史月份 · 唯讀/); assert.doesNotMatch(f.node('monthly-visit-content').innerHTML, /data-monthly-select/);
+  assert.match(f.node('monthly-visit-content').innerHTML, /歷史月份 · 唯讀/); assert.equal(f.node('monthly-add-store').hidden, true);
   assert.throws(() => f.open(), /過去月份/); assert.equal(JSON.stringify(f.sandbox.payload.bundle), before); assertPreserved(f);
 });
 
@@ -176,5 +173,5 @@ test('same-name stores display distinct existing addresses in both picker and ro
   assert.match(f.node('monthly-store-options').innerHTML, /虛構甲路一號/); assert.match(f.node('monthly-store-options').innerHTML, /虛構乙路二號/);
   f.sandbox.renderMonthlyVisitChoices('乙路二號'); assert.match(f.node('monthly-store-options').innerHTML, /data-monthly-add="c"/); assert.doesNotMatch(f.node('monthly-store-options').innerHTML, /data-monthly-add="b"/);
   await f.act('add', 'c'); f.close(); assert.match(f.node('monthly-visit-content').innerHTML, /虛構乙路二號/);
-  assert.equal(f.sandbox.monthlyVisitIdentity('b'), '虛構甲路一號');
+  assert.equal(f.sandbox.storeSelectionIdentity('b'), '虛構甲路一號');
 });

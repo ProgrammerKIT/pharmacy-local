@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { uiNodeFixture } from './helpers/ui-node-fixture.mjs';
 import { emptyBundle, revision, project, validateBundle, makeVisitAttendance, visitAttendanceForStore,
   dayPlanDate, shiftDayPlanDate, dayPlanForStore, dayPlanOverview, dayItineraryBasis, applyDayItineraryAction } from '../public/core.js';
 
@@ -11,7 +12,8 @@ function section(first, next) {
   assert.ok(start >= 0 && end > start, 'Exercise the actual direct itinerary UI implementation');
   return app.slice(start, end);
 }
-const implementation = section('async function run(', 'function programDetail(')
+const implementation = section('function storeSelectionIdentity(', 'function monthlyVisitRowsHTML(')
+  + section('async function run(', 'function programDetail(')
   + section('function dayPlanLabel(', 'function renderVisits(');
 
 // Only synthetic data. Real projection, revision, action and validation helpers
@@ -25,13 +27,7 @@ function fixture() {
   }, [], 'synthetic', false, id === 'a' ? makeVisitAttendance('a', now) : undefined));
   bundle.ops.push(revision('visit', 'note', { store: 'a', date: '', text: '保留原文\r\n 與空白 ', next: '', source: 'synthetic', people: [], topics: [], attachments: [] }, [], 'synthetic'));
   const original = structuredClone(bundle), key = {}, meta = {}, elements = new Map(), writes = [];
-  function node(id) {
-    if (!elements.has(id)) elements.set(id, {
-      innerHTML: '', textContent: '', open: false, hidden: false, value: '', dataset: {},
-      replaceChildren() { this.innerHTML = ''; this.textContent = ''; }, close() { this.open = false; },
-    });
-    return elements.get(id);
-  }
+  const { node } = uiNodeFixture();
   const sandbox = vm.createContext({
     dayPlanContext: null, monthlyVisitContext: null, dayPlanSelectedDate: date, dayPlanViewBasis: '', dayPlanSorting: false, dayPlanNotice: '', dayPlanUndo: null,
     key, meta, localRevision: 4, syncEpoch: 8, payload: { bundle, device: 'synthetic', dirty: false }, records: project(bundle),
