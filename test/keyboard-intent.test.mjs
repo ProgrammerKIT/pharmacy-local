@@ -157,7 +157,7 @@ test('background and bfcache lifecycle dismiss focus synchronously without remov
   Object.assign(f.context, {
     payload: { draft: { text: '保留中的虛構草稿' } }, editorContext: { type: 'visit' }, singleStoreContext: null,
     inlineTextContext: { after: '保留的直接修改' }, reminderContext: { id: 'fictional-store', draftTouched: true }, busy: false, backupPreview: null, pendingLock: false,
-    clearNearbyPosition() {}, requestNearbyPosition() {}, showGate() {}, lockNow() {}, finishAttendancePrompt() {}, resumeDayPlanContext() { f.events.push(['resume-day-plan']); },
+    clearNearbyPosition() {}, requestNearbyPosition() {}, showGate() {}, lockNow() {}, finishAttendancePrompt() {}, resumeDayPlanContext() { f.events.push(['resume-day-plan']); }, resumeMonthlyVisitContext() {},
     flushVisitDraft() { f.events.push(['flush-visit']); }, flushInlineTextDraft() { f.events.push(['flush-inline']); },
     async flushReminderDraft() { f.events.push(['flush-reminder']); }
   });

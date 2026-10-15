@@ -45,7 +45,7 @@ async function harness() {
   c = vm.createContext({ $, structuredClone, JSON, Set, Date, storeInsightsForStore, planStoreInsights, applyStoreInsights, buildStoreInsightsSource, insightReviewForEntry, storeInsightReviewHistory, planInsightReview, applyInsightReview,
     key: fixture.key, meta: structuredClone(fixture.meta), payload: { device: 'synthetic-ui-device', token: 'synthetic-token', bundle: structuredClone(fixture.bundle), dirty: false },
     localRevision: 7, slot: state.disk, localSaveState: 'saved', syncInProgress: false, pendingLock: false, busy: false, updateHolding: false,
-    insightsPreview: null, storeMergePreview: null, storeMergeSetup: null, backupPreview: null, versionReview: null, resolutionPreview: null, editorContext: null, singleStoreContext: null, inlineTextContext: null, reminderContext: null, dayPlanContext: null, attendancePrompt: null,
+    insightsPreview: null, storeMergePreview: null, storeMergeSetup: null, backupPreview: null, versionReview: null, resolutionPreview: null, editorContext: null, singleStoreContext: null, inlineTextContext: null, reminderContext: null, dayPlanContext: null, monthlyVisitContext: null, attendancePrompt: null,
     document: { hidden: false, querySelectorAll: () => [...nodes.values()], body: { classList: { add() {}, remove() {} } } },
     csvImport: { hasPending: () => state.pendingCSV, reset() {} }, syncScheduler: { request: reason => state.requests.push(reason), pause() {}, reset() {} },
     openDialog: dialog => { dialog.open = true; }, render: () => state.renders++, renderDataSafetyEntry() {}, toast: message => state.notices.push(message),

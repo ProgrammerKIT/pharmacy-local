@@ -39,7 +39,7 @@ async function harness() {
     payload: { device: 'synthetic-device', bundle: structuredClone(fixture.bundle), token: 'synthetic-pair', dirty: false }, key: fixture.key, meta: structuredClone(fixture.meta), localRevision: 8, syncEpoch: 1,
     slot: state.disk, localSaveState: 'saved', busy: false, pendingLock: false, updateHolding: false, syncInProgress: false, autoFetching: false,
     storeMergePreview: null, storeMergeSetup: null, qualityReview: { a: 'keeper', b: 'donor' }, versionReview: null, resolutionPreview: null,
-    editorContext: null, singleStoreContext: null, inlineTextContext: null, reminderContext: null, dayPlanContext: null, quickTextContext: null, backupPreview: null, insightsPreview: null, coordinatePreview: null, enrichmentPreview: null, attendancePrompt: null,
+    editorContext: null, singleStoreContext: null, inlineTextContext: null, reminderContext: null, dayPlanContext: null, monthlyVisitContext: null, quickTextContext: null, backupPreview: null, insightsPreview: null, coordinatePreview: null, enrichmentPreview: null, attendancePrompt: null,
     document: { hidden: false }, csvImport: { hasPending: () => state.csvPending }, storedReminderDrafts: () => c.payload?.reminderDrafts || [],
     reviewHeads: record => record.heads.map(head => head.id).sort(), APP_VERSION: '1.5.62', INSIGHT_REVIEW_LABELS: { pending: '待查核', confirmed: 'Kit已確認', rejected: '不符合' },
     esc: value => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch])),

@@ -183,7 +183,7 @@ async function appHarness() {
   const $ = id => { if (!elements.has(id)) elements.set(id, { textContent: '', open: false, dataset: {}, hidden: false }); return elements.get(id); };
   const c = vm.createContext({ Math, Promise, Error, Set, key: syntheticKey, meta: syntheticMeta, payload: initial, localRevision: 1, slot: null,
     localSaveState: 'saved', syncInProgress: false, syncEpoch: 0, autoFetching: false, updateHolding: false, pendingLock: false, gateOpening: false, busy: false,
-    backupPreview: null, editorContext: null, singleStoreContext: null, inlineTextContext: null, reminderContext: null, dayPlanContext: null, attendancePrompt: null,
+    backupPreview: null, editorContext: null, singleStoreContext: null, inlineTextContext: null, reminderContext: null, dayPlanContext: null, monthlyVisitContext: null, attendancePrompt: null,
     document: { hidden: false }, navigator: { onLine: true }, csvImport: { hasPending: () => false }, records: project(initial.bundle),
     lastError: '', lastSyncFailure: null, syncWarning: '', $, dateText: String, validateBundle, merge,
     renderDataSafetyEntry() {}, status() {}, buttons() {}, toast() {}, lockNow() { c.pendingLock = false; c.key = null; c.syncEpoch++; c.syncScheduler.reset(); },

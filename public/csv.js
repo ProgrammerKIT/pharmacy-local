@@ -633,6 +633,7 @@ function reviewedMergePlan(group, candidates, records) {
   const scoped = active.filter(s => rule.names.some(name => comparisonText(name) === comparisonText(s.name)) && mapKey(s.mapUrl || '') === rule.mapKey && (!rule.addresses.length || !s.address?.trim() || rule.addresses.some(address => comparisonText(address) === comparisonText(s.address))));
   if (scoped.length < 2) return null;
   if (scoped.some(s => s.conflict)) return { blocked: '已裁定同店的既有門市存在同步衝突，不能自動整併' };
+  if (scoped.some(store => store.monthlyVisits?.length || store.versions?.some(version => version.data.monthlyVisits?.length))) return { blocked: '既有門市保有每月必訪名單或歷史，須先核對月份與門市歸屬，不能透過 CSV 自動整併' };
   const scopedIds = new Set(scoped.map(s => s.id));
   const unrelated = active.filter(s => !scopedIds.has(s.id));
   if (unrelated.length) return { blocked: '同店裁定附近仍有裁定範圍外的既有門市候選，不能自動整併' };
