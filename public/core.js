@@ -191,6 +191,118 @@ export function visitAttendanceForStore(bundle, storeId, now = Date.now()) {
   const daysSince = !latestDate || hasFutureDates ? null : (Date.parse(today + 'T00:00:00.000Z') - Date.parse(latestDate + 'T00:00:00.000Z')) / 86400000;
   return { today, latestDate, daysSince, hasFutureDates, history };
 }
+
+// Membership is explicit for one calendar month and remains independent of
+// attendance. Optional store data keeps schema-2 backup/sync append-only; opening
+// a new month never copies a roster or creates a visit confirmation.
+export function monthlyVisitMonth(value = Date.now()) {
+  if (typeof value === 'string' && /^\d{4}-\d\d$/.test(value)) {
+    if (value.startsWith('0000') || Number(value.slice(5)) < 1 || Number(value.slice(5)) > 12) throw new Error('每月拜訪月份不正確。');
+    return value;
+  }
+  return attendanceTaipeiDate(value).slice(0, 7);
+}
+export function shiftMonthlyVisitMonth(month, delta) {
+  month = monthlyVisitMonth(month);
+  if (!Number.isSafeInteger(delta) || Math.abs(delta) > 120000) throw new Error('每月拜訪月份位移不正確。');
+  const ordinal = (Number(month.slice(0, 4)) - 1) * 12 + Number(month.slice(5)) - 1 + delta;
+  if (ordinal < 0 || ordinal >= 9999 * 12) throw new Error('每月拜訪月份超出支援範圍。');
+  return `${String(Math.floor(ordinal / 12) + 1).padStart(4, '0')}-${String(ordinal % 12 + 1).padStart(2, '0')}`;
+}
+const validMonthlyVisitMonth = value => {
+  try { return typeof value === 'string' && /^\d{4}-\d\d$/.test(value) && monthlyVisitMonth(value) === value; } catch { return false; }
+};
+function validMonthlyVisits(entries) {
+  return Array.isArray(entries) && entries.length <= 1000 && new Set(entries.map(entry => entry?.month)).size === entries.length
+    && entries.every(entry => plain(entry) && Object.keys(entry).sort().join(',') === 'active,month,updatedAt'
+      && validMonthlyVisitMonth(entry.month) && typeof entry.active === 'boolean' && attendanceInstant(entry.updatedAt));
+}
+export function monthlyVisitForStore(store, month) {
+  month = monthlyVisitMonth(month);
+  const entries = store?.monthlyVisits;
+  if (entries === undefined || !validMonthlyVisits(entries)) return null;
+  const entry = entries.find(entry => entry.month === month);
+  return entry ? structuredClone(entry) : null;
+}
+function monthlyVisitUnavailable(store) {
+  if (store.mergedInto) return '門市已整併，每月名單歸屬需另行核對';
+  if (store.deleted) return '門市已在回收桶，保留每月名單供核對';
+  if (store.conflict) return '門市有同步衝突，請先核對版本';
+  if (store.csvIdentityPending) return '門市身分待確認，暫不判定本月完成';
+  return '';
+}
+function historicalMonthlyVisit(store, month) {
+  // Walk parent links instead of trusting clocks: two saves can share one
+  // timestamp, and a device clock may move backwards. The first surviving
+  // membership on each ancestry branch is the nearest historical decision.
+  const index = new Map(store.versions.map(op => [op.id, op])), queue = [...store.heads], seen = new Set(), entries = [];
+  for (let i = 0; i < queue.length; i++) {
+    const op = queue[i];
+    if (!op || seen.has(op.id)) continue;
+    seen.add(op.id);
+    const entry = monthlyVisitForStore(op.data, month);
+    if (entry) entries.push(entry);
+    else queue.push(...op.parents.map(id => index.get(id)));
+  }
+  const conflicting = new Set(entries.map(entry => entry.active)).size > 1;
+  return { entry: entries.find(entry => entry.active) || entries[0] || null, conflicting };
+}
+export function monthlyVisitOverview(bundle, month, now = Date.now()) {
+  month = monthlyVisitMonth(month);
+  const today = attendanceTaipeiDate(now), past = month < today.slice(0, 7), stores = [], removedStores = [];
+  for (const store of project(bundle).filter(record => record.type === 'store')) {
+    let entry = monthlyVisitForStore(store, month), historical = false, historicalConflict = false;
+    // A restored older store version cannot erase the evidence of past rosters.
+    // Current/future memberships use current heads only, never a historical guess.
+    if (!entry && past) {
+      const previous = historicalMonthlyVisit(store, month);
+      entry = previous.entry; historical = !!entry; historicalConflict = previous.conflicting;
+    }
+    // Any active conflicting head keeps a visible warning row. Do not quietly
+    // choose the removed branch or claim completion while identity is uncertain.
+    if (!entry?.active && store.conflict) {
+      const active = store.heads.map(head => monthlyVisitForStore(head.data, month)).find(candidate => candidate?.active);
+      if (active) { entry = active; historical = false; }
+    }
+    if (!entry) continue;
+    const unavailableReason = monthlyVisitUnavailable(store) || (historicalConflict ? '保留的每月名單歷史不一致，請先核對版本' : ''), available = !unavailableReason;
+    const dates = visitAttendanceForStore(bundle, store.id, now).history.map(item => item.date).filter(date => date.slice(0, 7) === month && date <= today);
+    const row = { storeId: store.id, name: store.name, district: store.district, channel: store.channel,
+      available, unavailableReason, active: entry.active, historical, dates, completed: available && dates.length > 0 };
+    (entry.active ? stores : removedStores).push(row);
+  }
+  const compare = (a, b) => a.district.localeCompare(b.district, 'zh-Hant') || a.name.localeCompare(b.name, 'zh-Hant') || a.storeId.localeCompare(b.storeId);
+  stores.sort(compare); removedStores.sort(compare);
+  const completed = stores.filter(row => row.completed), pending = stores.filter(row => !row.completed);
+  return { month, today, past, stores, removedStores, pending, completed, total: stores.length, completedCount: completed.length };
+}
+// Include all store heads: an open picker must not write over a newly changed
+// store, even if that store was not yet selected for this month.
+export function monthlyVisitBasis(records, month) {
+  month = monthlyVisitMonth(month);
+  return JSON.stringify({ month, stores: records.filter(record => record.type === 'store').map(store => [store.id, store.heads.map(head => head.id).sort()]).sort((a, b) => a[0].localeCompare(b[0])) });
+}
+export function applyMonthlyVisitAction(bundle, request, device, at = new Date().toISOString()) {
+  validateBundle(bundle);
+  if (!attendanceInstant(at) || !str(device, 100) || !device.trim() || !plain(request)
+    || Object.keys(request).sort().join(',') !== 'action,expectedBasis,month,storeId'
+    || !validMonthlyVisitMonth(request.month) || !str(request.storeId, 100) || !request.storeId.trim()
+    || typeof request.expectedBasis !== 'string' || !['add', 'remove'].includes(request.action)) throw new Error('每月名單修改資料不完整，尚未寫入。');
+  const { month, storeId, action, expectedBasis } = request, records = project(bundle);
+  if (month < monthlyVisitMonth(at)) throw new Error('過去月份保留歷史，不能新增或移除必訪門市。');
+  if (monthlyVisitBasis(records, month) !== expectedBasis) throw new Error('門市或每月名單已有新版本，請重新開啟名單；尚未寫入。');
+  const store = records.find(record => record.type === 'store' && record.id === storeId);
+  if (!store || monthlyVisitUnavailable(store)) throw new Error('每月名單門市不存在、已刪除、整併、身分待確認或有衝突；請先核對。');
+  const before = monthlyVisitForStore(store, month), active = action === 'add';
+  if (before?.active === active || !before && !active) return bundle;
+  const data = structuredClone(store.heads[0].data);
+  data.monthlyVisits = [...(data.monthlyVisits || []).filter(entry => entry.month !== month), { month, active, updatedAt: at }].sort((a, b) => a.month.localeCompare(b.month));
+  if (!validMonthlyVisits(data.monthlyVisits)) throw new Error('每月名單超過安全上限，全部歷史保留，本次尚未寫入。');
+  const next = structuredClone(bundle), op = revision('store', storeId, data, store.heads.map(head => head.id), device);
+  op.at = at; next.ops.push(op); validateBundle(next);
+  if (enc.encode(JSON.stringify(next)).length > MAX_BYTES) throw new Error('每月名單儲存後資料超過 24 MB 上限；全部原資料保留，本次尚未寫入。');
+  return next;
+}
 function validReminderTasks(d) {
   const tasks = d.nextRememberTasks;
   if (tasks !== undefined && (!Array.isArray(tasks) || tasks.length > 1000 || !tasks.every(t => plain(t) && str(t.id, 100) && t.id && str(t.text, 2000) && t.text.trim() && taskTime(t.createdAt) && (t.completedAt === '' || taskTime(t.completedAt))) || new Set(tasks.map(t => t.id)).size !== tasks.length)) return false;
@@ -466,6 +578,7 @@ export function applyDayPlanChanges(bundle, changes, device, at = new Date().toI
 }
 export function validData(type, d) {
   if (!plain(d)) return false;
+  if (d.monthlyVisits !== undefined && (type !== 'store' || !validMonthlyVisits(d.monthlyVisits))) return false;
   if (d.datePlans !== undefined && (type !== 'store' || !validDatePlans(d.datePlans))) return false;
   if (d.datePlanOrder !== undefined && (type !== 'store' || !validDatePlanOrder(d.datePlanOrder))) return false;
   if (d.storeMergeHistory !== undefined && (type !== 'store' || !validStoreMergeHistory(d.storeMergeHistory))) return false;
@@ -1227,6 +1340,7 @@ export async function planStoreMerge(bundle, request) {
   const records = project(bundle).sort((a, b) => (a.type + ':' + a.id).localeCompare(b.type + ':' + b.id)), index = new Map(records.map(item => [item.type + ':' + item.id, item]));
   if (records.some(item => item.conflict)) throw new Error('資料庫有同步衝突，請先核對後再預覽門市整併。');
   const keeper = index.get('store:' + request.keeperId), donor = index.get('store:' + request.donorId);
+  if ([keeper, donor].some(store => store?.monthlyVisits?.length || store?.versions?.some(op => op.data.monthlyVisits?.length))) throw new Error('門市保有每月拜訪名單歷史，須另行核對各月份的歸屬；本次不自動搬移或整併。');
   if ([keeper, donor].some(store => store?.datePlans?.length || store?.datePlanOrder?.length || store?.versions?.some(op => op.data.datePlans?.length || op.data.datePlanOrder?.length))) throw new Error('門市保有行程與準備紀錄，須另行核對日期、備品與已帶上狀態的歸屬；本次不自動搬移或整併。');
   for (const store of [keeper, donor]) if (!safeInsightStore(store) || store.storeMergeHistory?.length) throw new Error('門市已刪除、待確認、已有整併歷史或來源未核對；本次不合併。');
   const selected = new Set([keeper.id, donor.id]);

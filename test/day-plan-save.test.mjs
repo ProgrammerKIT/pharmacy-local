@@ -33,7 +33,7 @@ function fixture() {
     return elements.get(id);
   }
   const sandbox = vm.createContext({
-    dayPlanContext: null, dayPlanSelectedDate: date, dayPlanViewBasis: '', dayPlanSorting: false, dayPlanNotice: '', dayPlanUndo: null,
+    dayPlanContext: null, monthlyVisitContext: null, dayPlanSelectedDate: date, dayPlanViewBasis: '', dayPlanSorting: false, dayPlanNotice: '', dayPlanUndo: null,
     key, meta, localRevision: 4, syncEpoch: 8, payload: { bundle, device: 'synthetic', dirty: false }, records: project(bundle),
     document: { hidden: false, querySelector() { return node('day-plan-dialog').open ? node('day-plan-dialog') : null; } },
     pendingLock: false, updateHolding: false, autoFetching: false, syncInProgress: false, busy: false,
@@ -189,7 +189,7 @@ test('locking clears private itinerary and note displays using only DOM IDs that
     syncScheduler: { pause() {}, reset() {} }, forgetBriefSearchQuery() {}, captureTransientResumeState() {}, clearNearbyPosition() {},
     resetStoreFilters() {}, resetReminderOptionGroup() {}, showGate() {}, clearTimeout() {}, clearInterval() {},
     busy: false, backupPreview: null, insightsPreview: null, storeMergePreview: null, storeMergeSetup: null,
-    editorContext: null, inlineTextContext: null, reminderContext: null, dayPlanContext: null,
+    editorContext: null, inlineTextContext: null, reminderContext: null, dayPlanContext: null, monthlyVisitContext: null,
     payload: { bundle: emptyBundle('synthetic-lock') }, key: {}, meta: {}, records: [{ name: 'synthetic private store' }],
     pendingLock: false, syncEpoch: 1, csvImport: { hasPending() { return false; }, reset() {} },
     reminderDraftTimer: null, inlineDraftTimer: null, autoTimer: null, objectURLs: [],
