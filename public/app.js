@@ -1,4 +1,4 @@
-import { newMeta, checkEnvelope, derive, seal, unseal, planBackupImport, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates, buildStoreEnrichmentRequest, planStoreEnrichment, applyStoreEnrichment, readonlyHealthAudit, dataSafetySummary, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, addReminderTasks, convertReminderTasks, completeReminderTask, reminderTaskHistory, searchStoreVisitText, storeInsightDisplayForStore, storeInsightEvidenceForEntry, insightReviewForEntry, storeInsightReviewHistory, planInsightReview, applyInsightReview, planStoreInsights, applyStoreInsights, buildStoreInsightsSource, planStoreMerge, applyStoreMerge } from './core.js';
+import { newMeta, checkEnvelope, derive, seal, unseal, planBackupImport, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates, buildStoreEnrichmentRequest, planStoreEnrichment, applyStoreEnrichment, readonlyHealthAudit, dataSafetySummary, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, addReminderTasks, convertReminderTasks, completeReminderTask, reminderTaskHistory, searchStoreVisitText, storeInsightDisplayForStore, storeInsightEvidenceForEntry, insightReviewForEntry, insightSharedReviewForEntry, storeInsightReviewHistory, planInsightReview, applyInsightReview, planStoreInsights, applyStoreInsights, planStoreInsightRelations, applyStoreInsightRelations, buildStoreInsightsSource, planStoreMerge, applyStoreMerge } from './core.js';
 import { readLocal, writeLocal, archiveAndReplaceLocal, listLocalArchives, readLocalArchive } from './db.js';
 import { dayPlanDate, shiftDayPlanDate, dayPlanForStore, dayPlanOverview, dayItineraryBasis, applyDayItineraryAction } from './core.js';
 import { monthlyVisitMonth, shiftMonthlyVisitMonth, monthlyVisitForStore, monthlyVisitOverview, monthlyVisitBasis, applyMonthlyVisitAction } from './core.js';
@@ -1415,38 +1415,52 @@ function assertInsightsIdle() {
   if (pendingLock || document.hidden) throw new Error('請回到 App 後重新操作。');
 }
 const INSIGHT_REVIEW_LABELS = { confirmed: 'Kit已確認', pending: '待查核', rejected: '不符合' };
+function insightDisplayReview(store, entry) {
+  // Only the core's read-only projection supplies shared display state. Plans
+  // and writes independently revalidate the saved card and current decisions.
+  return entry.review || insightReviewForEntry(store, entry);
+}
+function insightSharedProvenanceHTML(review) {
+  if (!review.sharedFrom) return '';
+  return `<p class="muted" data-insight-shared-from="${esc(review.sharedFrom.storeId)}">沿用 ${esc(review.sharedFrom.storeName)} 的 Kit 確認 · ${esc(dateText(review.sharedFrom.reviewedAt))}。這是同一人物關係的共享顯示，沒有新增本店的審核紀錄。</p>${review.relation?.claim ? `<p class="muted">共同關係：${esc(review.relation.claim)}</p>` : ''}`;
+}
 function insightReviewControlsHTML(store, entry) {
-  const review = insightReviewForEntry(store, entry);
-  if (entry.sourceCurrent === false) return `<div class="insight-human-review"><p><strong class="insight-review-status" data-status="${esc(review.status)}">${INSIGHT_REVIEW_LABELS[review.status]}</strong><small>Kit · ${esc(dateText(review.reviewedAt))}</small></p><p class="muted">來源已有變動，保留原確認；重新核對來源前不變更這張卡的審核。</p></div>`;
+  const review = insightDisplayReview(store, entry);
+  if (entry.sourceCurrent === false) {
+    const reviewer = review.reviewedAt ? `<small>Kit · ${esc(dateText(review.reviewedAt))}</small>` : '<small>尚未人工審核</small>';
+    const retained = review.reviewedAt ? review.status === 'confirmed' ? '保留原確認' : '保留既有審核' : '這張線索尚未人工審核';
+    return `<div class="insight-human-review"><p><strong class="insight-review-status" data-status="${esc(review.status)}">${INSIGHT_REVIEW_LABELS[review.status]}</strong>${reviewer}</p><p class="muted">來源已有變動，${retained}；重新核對來源前不變更這張卡的審核。</p></div>`;
+  }
   return `<div class="insight-human-review"><p><strong class="insight-review-status" data-status="${esc(review.status)}">${INSIGHT_REVIEW_LABELS[review.status]}</strong>${review.reviewedAt ? `<small>${review.carriedFrom ? '沿用既有審核（同店整併）' : 'Kit'} · ${esc(dateText(review.reviewedAt))}</small>` : '<small>尚未人工審核</small>'}</p><div class="insight-review-options" role="group" aria-label="人工審核這張線索">${Object.entries(INSIGHT_REVIEW_LABELS).map(([status, label]) => `<button type="button" data-insight-review="${status}" data-insight-store="${esc(store.id)}" data-insight-entry="${esc(entry.id)}" data-insight-head="${esc(store.heads[0].id)}" aria-pressed="${review.status === status}" ${review.status === status ? 'disabled' : ''}>${label}</button>`).join('')}</div></div>`;
 }
 function insightEntryHTML(entry, sourceAsOf, prefix = '', reviewStore = null) {
+  const review = reviewStore ? insightDisplayReview(reviewStore, entry) : null;
   const level = { source: '原文有記載', inference: '分析推論', counter: '反向線索' }[entry.level];
   const labels = `<div class="store-insight-labels"><span>${entry.kind === 'relationship' ? '人物連結' : '客群與需求'}</span><span class="pill ${entry.level === 'source' ? '' : 'warn'}">${level}</span></div>`;
   const body = `${entry.sourceReasons?.length ? `<ul class="insight-source-reasons">${entry.sourceReasons.map(reason => `<li>${esc(reason)}</li>`).join('')}</ul>` : ''}<p class="store-insight-question"><strong>這次可以問</strong>${esc(entry.question)}</p>${entry.caution ? `<p class="store-insight-caution">${esc(entry.caution)}</p>` : ''}<details data-insight-detail="${esc(prefix + entry.id)}"><summary>查看原文依據與限制</summary><p class="muted">來源核對日 ${esc(sourceAsOf)}。原文記載與分析推論是證據類別，不代表 Kit 已確認關係；現況仍可能改變。</p>${entry.limitations.length ? `<ul>${entry.limitations.map(text => `<li>${esc(text)}</li>`).join('')}</ul>` : ''}${entry.evidence.map((source, i) => `<section class="store-insight-evidence"><strong>${esc(source.storeName || JSON.parse(source.storeIdentityKey).name)}${source.role === 'counter' ? ' · 反向證據' : ''}</strong><blockquote>${esc(source.quote)}</blockquote><details data-insight-detail="${esc(prefix + entry.id + ':' + i)}" data-insight-source="${esc(source.visitId)}" data-insight-revision="${esc(source.revisionId)}" data-insight-store="${esc(source.storeId)}"${reviewStore && entry.sourceCurrent === false ? ` data-insight-owner="${esc(reviewStore.id)}" data-insight-entry="${esc(entry.id)}" data-insight-evidence="${i}"` : ''}><summary>${entry.sourceCurrent === false ? '展開當時引用的完整原文（歷史版本）' : '展開這筆完整原文'}</summary><p class="muted">${esc(source.sourceLabel || '審核時來源')} · 來源版本 ${esc(source.revisionId)}</p><pre></pre></details></section>`).join('')}</details>${reviewStore ? insightReviewControlsHTML(reviewStore, entry) : ''}`;
-  // A current, content-matching human approval alone enables the compact view.
-  // Preview/history snapshots have no reviewStore and retain their full content.
-  if (reviewStore && insightReviewForEntry(reviewStore, entry).status === 'confirmed') {
-    return `<article class="store-insight-card store-insight-confirmed" data-store-insight="${esc(entry.id)}"><details class="insight-confirmed-details" data-insight-confirmed="${esc(prefix + entry.id)}"><summary><span class="insight-confirmed-headline">${esc(entry.headline)}</span><span class="insight-confirmed-badge">Kit已確認</span></summary><div class="insight-confirmed-content">${labels}${body}</div></details>${entry.sourceCurrent === false ? `<p class="insight-source-notice" role="note">${esc(entry.sourceNotice)}</p>` : ''}</article>`;
+  // Compact display uses current exact approval or its validated relation
+  // projection. Preview/history snapshots never acquire a shared decision.
+  if (review?.status === 'confirmed') {
+    return `<article class="store-insight-card store-insight-confirmed" data-store-insight="${esc(entry.id)}"><details class="insight-confirmed-details" data-insight-confirmed="${esc(prefix + entry.id)}"><summary><span class="insight-confirmed-headline">${esc(entry.headline)}</span><span class="insight-confirmed-badge">Kit已確認</span></summary><div class="insight-confirmed-content">${insightSharedProvenanceHTML(review)}${labels}${body}</div></details>${entry.sourceCurrent === false ? `<p class="insight-source-notice" role="note">${esc(entry.sourceNotice)}</p>` : ''}${review.sharedConflict ? `<p class="insight-source-notice" role="note">${esc(review.sharedConflict)}</p>` : ''}</article>`;
   }
-  return `<article class="store-insight-card" data-store-insight="${esc(entry.id)}">${labels}<h3>${esc(entry.headline)}</h3>${body}</article>`;
+  return `<article class="store-insight-card" data-store-insight="${esc(entry.id)}">${labels}<h3>${esc(entry.headline)}</h3>${entry.sourceCurrent === false && entry.sourceNotice ? `<p class="insight-source-notice" role="note">${esc(entry.sourceNotice)}</p>` : ''}${review?.sharedConflict ? `<p class="insight-source-notice" role="note">${esc(review.sharedConflict)}</p>` : ''}${body}</article>`;
 }
 function storeInsightsHTML(storeId) {
   const selected = storeInsightDisplayForStore(payload.bundle, storeId), store = by('store', storeId);
   if (!store) return '';
   const history = storeInsightReviewHistory(store);
-  const entries = selected.entries.filter(entry => insightReviewForEntry(store, entry).status !== 'rejected');
-  const rejected = selected.entries.filter(entry => insightReviewForEntry(store, entry).status === 'rejected');
+  const entries = selected.entries.filter(entry => insightDisplayReview(store, entry).status !== 'rejected');
+  const rejected = selected.entries.filter(entry => insightDisplayReview(store, entry).status === 'rejected');
   if (!entries.length && !rejected.length && !history.length) return '';
   const sourceAsOf = store.preVisitInsights?.sourceAsOf || '';
-  const confirmed = entries.filter(entry => insightReviewForEntry(store, entry).status === 'confirmed');
-  const pending = entries.filter(entry => insightReviewForEntry(store, entry).status !== 'confirmed');
-  return `<section class="store-insights" aria-label="本店拜訪前線索"><h2>拜訪前，多一條線索</h2>${entries.some(entry => insightReviewForEntry(store, entry).status === 'pending') ? '<p class="muted">先看線索與原文，再由你人工審核。</p>' : ''}${confirmed.map(entry => insightEntryHTML(entry, sourceAsOf, '', store)).join('')}${pending.slice(0, 2).map(entry => insightEntryHTML(entry, sourceAsOf, '', store)).join('')}${pending.length > 2 ? `<details data-insight-detail="more"><summary>其他待查核線索 · ${pending.length - 2} 項</summary>${pending.slice(2).map(entry => insightEntryHTML(entry, sourceAsOf, '', store)).join('')}</details>` : ''}${insightReviewArchiveHTML(store, rejected, history)}<p id="insight-review-error" class="error" role="alert"></p></section>`;
+  const confirmed = entries.filter(entry => insightDisplayReview(store, entry).status === 'confirmed');
+  const pending = entries.filter(entry => insightDisplayReview(store, entry).status !== 'confirmed');
+  return `<section class="store-insights" aria-label="本店拜訪前線索"><h2>拜訪前，多一條線索</h2>${pending.length ? '<p class="muted">先看線索與原文，再由你人工審核。</p>' : ''}${confirmed.map(entry => insightEntryHTML(entry, sourceAsOf, '', store)).join('')}${pending.slice(0, 2).map(entry => insightEntryHTML(entry, sourceAsOf, '', store)).join('')}${pending.length > 2 ? `<details data-insight-detail="more"><summary>其他待查核線索 · ${pending.length - 2} 項</summary>${pending.slice(2).map(entry => insightEntryHTML(entry, sourceAsOf, '', store)).join('')}</details>` : ''}${insightReviewArchiveHTML(store, rejected, history)}<p id="insight-review-error" class="error" role="alert"></p></section>`;
 }
 function insightReviewArchiveHTML(store, rejected, history) {
   if (!rejected.length && !history.length) return '';
   const sourceAsOf = store.preVisitInsights?.sourceAsOf || '';
-  return `<details class="insight-review-archive" data-insight-detail="review-history"><summary>審核留存${rejected.length ? ` · 不符合 ${rejected.length} 項` : ''} · 歷史 ${history.length} 筆</summary><p class="muted">「不符合」只在這裡留存，日常線索不顯示。可將目前仍有效的卡片改回「待查核」；歷次審核與當時內容保留。只更改本店這張卡，不連動其他門市。</p>${rejected.map(entry => insightEntryHTML(entry, sourceAsOf, 'rejected:', store)).join('')}${history.length ? `<details data-insight-detail="review-events"><summary>查看歷次審核</summary>${history.map(event => `<details class="insight-review-event" data-insight-detail="review-event:${esc(event.id)}"><summary>${esc(INSIGHT_REVIEW_LABELS[event.status])} · ${esc(dateText(event.reviewedAt))} · ${esc(event.entry.headline)}</summary><p class="muted">${event.carriedFrom ? '沿用既有審核（同店整併）' : 'Kit 的審核留存'}${event.historical ? ' · 歷史門市版本，並非目前狀態' : ''}。以下是當時的分析與引句，僅供回看。</p>${insightEntryHTML(event.entry, event.sourceAsOf, 'event:' + event.id + ':')}</details>`).join('')}</details>` : ''}</details>`;
+  return `<details class="insight-review-archive" data-insight-detail="review-history"><summary>審核留存${rejected.length ? ` · 不符合 ${rejected.length} 項` : ''} · 歷史 ${history.length} 筆</summary><p class="muted">「不符合」只在這裡留存，日常線索不顯示。可將目前仍有效的卡片改回「待查核」；歷次審核與當時內容保留。本店的審核不會改寫其他門市的審核紀錄；同一人物關係的共享顯示會隨確認來源更新。</p>${rejected.map(entry => insightEntryHTML(entry, sourceAsOf, 'rejected:', store)).join('')}${history.length ? `<details data-insight-detail="review-events"><summary>查看歷次審核</summary>${history.map(event => `<details class="insight-review-event" data-insight-detail="review-event:${esc(event.id)}"><summary>${esc(INSIGHT_REVIEW_LABELS[event.status])} · ${esc(dateText(event.reviewedAt))} · ${esc(event.entry.headline)}</summary><p class="muted">${event.carriedFrom ? '沿用既有審核（同店整併）' : 'Kit 的審核留存'}${event.historical ? ' · 歷史門市版本，並非目前狀態' : ''}。以下是當時的分析與引句，僅供回看。</p>${insightEntryHTML(event.entry, event.sourceAsOf, 'event:' + event.id + ':')}</details>`).join('')}</details>` : ''}</details>`;
 }
 function assertInsightReviewReady(storeId) {
   if (!payload || !key || pendingLock || document.hidden || updateHolding || syncInProgress) throw new Error('工作階段或同步狀態已改變，請稍候重新審核。');
@@ -1458,8 +1472,15 @@ async function changeInsightReview(storeId, entryId, status, expectedHead) {
   const sessionKey = key, sessionMeta = meta, currentPayload = payload;
   const plan = planInsightReview(payload.bundle, storeId, entryId, status, expectedHead);
   if (!plan.changed) return;
+  const effectiveBefore = insightSharedReviewForEntry(payload.bundle, storeId, plan.entry);
+  const related = plan.relatedStores || [], excluded = plan.relatedExcluded || [];
+  const relatedNames = related.map(item => item.storeName || by('store', item.storeId)?.name || item.storeId).join('、');
+  const excludedNames = excluded.map(item => `${item.storeName || by('store', item.storeId)?.name || item.storeId}（${item.reason || INSIGHT_REVIEW_LABELS[item.status] || '待核對'}）`).join('、');
   const impact = status === 'rejected' ? '這張卡將從日常線索隱藏，保留在「審核留存」。' : status === 'pending' ? '這張卡將顯示為待查核，保留之前的審核歷史。' : '這張卡將標示為你親自確認，預設收合為主標題；展開仍可查看提問、原文證據與審核操作。';
-  if (!confirm(`${plan.storeName}\n${plan.entry.headline}\n\n${INSIGHT_REVIEW_LABELS[plan.beforeStatus]} → ${INSIGHT_REVIEW_LABELS[status]}\n${impact}\n\n只更新本店這張卡的人工審核，建立 1 個門市版本並加密保存、同步；不連動其他門市，也不修改拜訪原文或記錄實際拜訪日期。\n確認儲存？`)) return;
+  const relationScope = plan.relationClaim ? `\n共同人物關係：${plan.relationClaim}` : '';
+  const sharedImpact = status === 'confirmed' && excluded.length ? '\n相關門市的人工判定仍不一致；本店確認會保留，但同組尚未親自審核的門市暫不沿用確認。' : status === 'confirmed' && related.length ? `\n同一人物關係可沿用確認的門市：${relatedNames}。這些門市只更新共享顯示，不另外建立審核紀錄。` : status !== 'confirmed' && effectiveBefore.relation ? `\n${effectiveBefore.sharedFrom ? `不撤回 ${effectiveBefore.sharedFrom.storeName} 的原確認。` : ''}同組其他門市親自做過的確認仍保留；尚未親自審核的門市會停止沿用並回到待查核，直到判定一致。其他門市的審核紀錄不會被改寫。` : '';
+  const excludedImpact = excluded.length ? `\n以下門市不會被此次操作覆蓋：${excludedNames}。` : '';
+  if (!confirm(`${plan.storeName}\n${plan.entry.headline}${relationScope}\n\n${INSIGHT_REVIEW_LABELS[plan.beforeStatus]} → ${INSIGHT_REVIEW_LABELS[status]}\n${impact}${sharedImpact}${excludedImpact}\n\n只在本店建立 1 個門市審核版本並加密保存、同步；不改寫其他門市的審核、拜訪原文或實際拜訪日期。\n確認儲存？`)) return;
   assertInsightReviewReady(storeId);
   if (key !== sessionKey || meta !== sessionMeta || payload !== currentPayload) throw new Error('審核期間資料或工作階段已變更，請重新核對；尚未寫入。');
   const next = applyInsightReview(payload.bundle, plan, payload.device);
@@ -1474,14 +1495,31 @@ function exportInsightsSource() {
   if (!confirm(`將匯出目前門市識別、拜訪原文與既有分析，供私人分析核對。共 ${source.coverage.stores} 間門市、${source.coverage.visits} 筆拜訪（含回收桶／衝突狀態）。不含歷史全文、附件、CSV 或金鑰。\n這是含客戶內容的明文檔，請只存到自己的本機資料夾；不可上傳 GitHub，也不會自動傳給 AI。`)) return;
   download(JSON.stringify(source, null, 2), `pharmacy-insights-source-${source.sourceAsOf}.json`, 'application/json');
 }
+function insightRelationsPreviewHTML(plan) {
+  const ready = plan.ready, excluded = plan.excluded || [];
+  const unchangedCount = new Set((plan.relations || []).flatMap(relation => relation.members.map(member => member.storeId)).filter(id => !ready.some(item => item.storeId === id) && !excluded.some(item => item.storeId === id))).size;
+  const relations = (plan.relations || []).map(relation => `<article class="store-insight-card"><h3>${esc(relation.claim)}</h3><ul>${relation.members.map(member => { const store = by('store', member.storeId), entry = member.entry || store?.preVisitInsights?.entries.find(item => item.id === member.entryId); return `<li><strong>${esc(member.storeName || store?.name || member.storeId)}</strong>${entry ? `：${esc(entry.headline)}` : ` · ${esc(member.entryId || '')}`}</li>`; }).join('')}</ul><details><summary>查看這組關係的完整對應與證據</summary><pre>${esc(JSON.stringify(relation, null, 2))}</pre></details></article>`).join('');
+  return `<p><strong>關係對應 ${plan.relations?.length || 0} 組；可套用 ${ready.length} 間；不修改 ${excluded.length} 項；內容相同 ${unchangedCount} 間。</strong></p><p>這次只新增同一人物關係的對應資料。每間可套用門市新增 1 個版本；既有分析文字、審核紀錄、拜訪原文、實際拜訪日期、任務、CSV 與 Source Snapshot 原樣保留。</p><p>一端已有有效的 Kit 確認時，另一端可沿用同一關係，直接顯示精華標題。各店已明確選擇的「待查核」或「不符合」不會被覆蓋；同組判定不一致時，未審核門市暫停沿用確認；沿用確認不另建審核事件。取消或關閉不寫入。</p>${relations}<details><summary>逐店新增對應的完整影響 · ${ready.length} 間</summary>${ready.map(item => `<article><h3>${esc(item.storeName)}</h3><h4>目前對應</h4><pre>${esc(JSON.stringify(item.before ?? null, null, 2))}</pre><h4>套用後對應</h4><pre>${esc(JSON.stringify(item.after, null, 2))}</pre></article>`).join('')}</details>${excluded.length ? `<details><summary>不修改的 ${excluded.length} 項</summary>${excluded.map(item => `<p>${esc(item.storeName || by('store', item.storeId)?.name || item.relationId || item.storeId || item.id || '')}：${esc(item.reason)}</p>`).join('')}</details>` : ''}<p id="insights-error" class="error" role="alert"></p>${ready.length ? `<label class="check"><input id="insights-ack" type="checkbox">我已核對關係、對應門市與完整影響，同意新增這 ${ready.length} 間門市的關係對應版本。</label>` : ''}<div class="dialog-footer"><button data-close="review">取消，不修改</button>${ready.length ? '<button id="apply-store-insights" class="primary" disabled>確認套用人物關係對應</button>' : ''}</div>`;
+}
 async function previewInsightsFile(file) {
   assertInsightsIdle();
   if (file.size > 2 * 1024 * 1024) throw new Error('分析檔案超過 2 MB，未載入。');
   const sessionKey = key, input = JSON.parse(await file.text());
   if (!payload || key !== sessionKey || pendingLock || document.hidden) return;
   assertInsightsIdle();
+  if (input.format === 'pharmacy-insight-relations-import-1') {
+    const currentPayload = payload, plan = await planStoreInsightRelations(payload.bundle, input);
+    if (!payload || key !== sessionKey || pendingLock || document.hidden) return;
+    if (payload !== currentPayload) throw new Error('核對期間資料已更新；請重新載入關係對應，尚未寫入。');
+    assertInsightsIdle();
+    insightsPreview = { kind: 'relations', input, plan, sessionKey }; versionReview = null; resolutionPreview = null;
+    $('review-title').textContent = '人物關係對應 · 正式套用前核對';
+    $('review-body').innerHTML = insightRelationsPreviewHTML(plan);
+    openDialog($('review'));
+    return;
+  }
   const plan = planStoreInsights(payload.bundle, input);
-  insightsPreview = { input, plan, sessionKey }; versionReview = null; resolutionPreview = null;
+  insightsPreview = { kind: 'insights', input, plan, sessionKey }; versionReview = null; resolutionPreview = null;
   $('review-title').textContent = '拜訪前線索 · 正式套用前核對';
   $('review-body').innerHTML = `<p><strong>可套用 ${plan.ready.length} 間；不修改 ${plan.excluded.length} 間；內容相同 ${plan.unchanged.length} 間。</strong></p><p>只替每間可套用門市新增一個分析版本，保存下面的線索與來源；舊版保留。拜訪原文、門市其他欄位、任務、實際拜訪日期、CSV 與 Source Snapshot 保持原樣。套用後會隨既有加密同步與備份保存。</p><p>取消或關閉不寫入。任何來源版本不符，整間分析都不套用。</p>${plan.ready.map((item, index) => `<details class="store-insight-import" data-insight-preview="${index}"><summary>${esc(item.storeName)} · ${item.before?.entries.length || 0} → ${item.after.entries.length} 項線索</summary><div></div></details>`).join('')}${plan.excluded.length ? `<details><summary>不修改的 ${plan.excluded.length} 間</summary>${plan.excluded.map(item => `<p>${esc(by('store', item.storeId)?.name || item.storeId)}：${esc(item.reason)}</p>`).join('')}</details>` : ''}<p id="insights-error" class="error" role="alert"></p>${plan.ready.length ? `<label class="check"><input id="insights-ack" type="checkbox">我已核對上述分析與來源，同意新增這 ${plan.ready.length} 間門市的分析版本。</label>` : ''}<div class="dialog-footer"><button data-close="review">取消，不修改</button>${plan.ready.length ? '<button id="apply-store-insights" class="primary" disabled>確認套用拜訪前線索</button>' : ''}</div>`;
   openDialog($('review'));
@@ -1489,11 +1527,13 @@ async function previewInsightsFile(file) {
 async function commitInsights() {
   const ctx = insightsPreview;
   if (!ctx || !payload || ctx.sessionKey !== key || pendingLock || document.hidden || !$('review').open || !$('insights-ack')?.checked) throw new Error('請重新核對分析影響並勾選確認。');
-  const next = applyStoreInsights(payload.bundle, ctx.input, ctx.plan, payload.device);
+  const currentPayload = payload;
+  const next = ctx.kind === 'relations' ? await applyStoreInsightRelations(payload.bundle, ctx.input, ctx.plan, payload.device) : applyStoreInsights(payload.bundle, ctx.input, ctx.plan, payload.device);
+  if (!payload || payload !== currentPayload || ctx !== insightsPreview || ctx.sessionKey !== key || pendingLock || document.hidden || !$('review').open || !$('insights-ack')?.checked) throw new Error('核對期間工作階段或資料已改變；尚未寫入。');
   await persist({ ...payload, bundle: next, dirty: true });
   const count = ctx.plan.ready.length;
   insightsPreview = null; $('review').close(); render();
-  toast(`已保存 ${count} 間門市的拜訪前線索；原文與實際拜訪日期保持原樣，等待加密同步。`);
+  toast(ctx.kind === 'relations' ? `已保存 ${count} 間門市的人物關係對應；既有審核、原文與實際拜訪日期保持原樣，等待加密同步。` : `已保存 ${count} 間門市的拜訪前線索；原文與實際拜訪日期保持原樣，等待加密同步。`);
 }
 function openVisitBrief(storeId, { capture = false, restoreDraft = null, preservePosition = false } = {}) {
   const review = $('review'), reviewBody = $('review-body');
@@ -2806,13 +2846,13 @@ async function saveEditor(event) {
 }
 function describeData(type, data) {
   if (type === 'visit') return `${name('store', data.store)} · ${data.date || '原始日期未提供'}\n${data.source}\n${data.sourceMissing ? 'Google 最新匯出：備註缺少（舊文保留）\n' : ''}${data.googleUpdatePending ? `Google 最新文字：${data.googleText}\nApp 文字待人工核對\n` : ''}\n${data.text}\n\n下次跟進：${data.next}\n主題：${data.topics.map(id => name('topic', id)).join('、')}\n人物：${data.people.map(id => name('person', id)).join('、')}\n附件：${data.attachments.map(a => a.name).join('、')}`;
-  const labels = { address: '地址', mapUrl: '地圖網址', lists: '來源清單', name: '名稱', city: '縣市', district: '地區', channel: '通路', attr: '屬性', contact: '窗口', nextRemember: '下次記得（未轉換文字）', nextRememberTasks: '下次記得任務', nextRememberImports: '提醒轉換原始文字', datePlanOrder: '每日門市順序', datePlans: '行程與準備（不代表實際拜訪）', monthlyVisits: '每月必訪名單（不代表實際拜訪）', preVisitInsights: '拜訪前線索（獨立分析）', preVisitInsightReviews: '線索人工審核與留存', everyTimeMust: '每次必做、必給', desc: '備註', role: '職務', confirmed: '身分已核對', sameAs: '同一人連結', mergedInto: '已整併至門市 ID', mergeDecision: '整併裁定' };
-  const details = Object.entries(data).filter(([k]) => k !== 'csvSources' && k !== 'qualityDistinct').map(([k, v]) => `${labels[k] || k}：${k === 'sameAs' && v ? name('person', v) : ['monthlyVisits', 'datePlans', 'datePlanOrder', 'nextRememberTasks', 'nextRememberImports', 'preVisitInsights', 'preVisitInsightReviews'].includes(k) ? JSON.stringify(v, null, 2) : v}`);
+  const labels = { address: '地址', mapUrl: '地圖網址', lists: '來源清單', name: '名稱', city: '縣市', district: '地區', channel: '通路', attr: '屬性', contact: '窗口', nextRemember: '下次記得（未轉換文字）', nextRememberTasks: '下次記得任務', nextRememberImports: '提醒轉換原始文字', datePlanOrder: '每日門市順序', datePlans: '行程與準備（不代表實際拜訪）', monthlyVisits: '每月必訪名單（不代表實際拜訪）', preVisitInsights: '拜訪前線索（獨立分析）', preVisitInsightReviews: '線索人工審核與留存', preVisitInsightRelations: '共同人物關係對應', everyTimeMust: '每次必做、必給', desc: '備註', role: '職務', confirmed: '身分已核對', sameAs: '同一人連結', mergedInto: '已整併至門市 ID', mergeDecision: '整併裁定' };
+  const details = Object.entries(data).filter(([k]) => k !== 'csvSources' && k !== 'qualityDistinct').map(([k, v]) => `${labels[k] || k}：${k === 'sameAs' && v ? name('person', v) : ['monthlyVisits', 'datePlans', 'datePlanOrder', 'nextRememberTasks', 'nextRememberImports', 'preVisitInsights', 'preVisitInsightReviews', 'preVisitInsightRelations'].includes(k) ? JSON.stringify(v, null, 2) : v}`);
   if (data.qualityDistinct !== undefined) details.push('此版本保存的不同門市核對：' + data.qualityDistinct.length + ' 組（辨識資料改變後需重新核對）');
   return details.join('\n');
 }
 function reviewHeads(record) { return record.heads.map(h => h.id).sort(); }
-const SAFE_CONFLICT_BLOCKED_FIELDS = new Set(['monthlyVisits', 'datePlans', 'datePlanOrder', 'preVisitInsights', 'preVisitInsightReviews', 'nextRememberTasks', 'nextRememberImports', 'nextRemember', 'attachments', 'csvSources', 'csvIdentityRules', 'qualityDistinct', 'storeMergeHistory', 'storeMergeStaleEntries', 'mergedInto', 'mergeDecision', 'sameAs', 'confirmed', 'googleText', 'googleUpdatePending', 'sourceMissing']);
+const SAFE_CONFLICT_BLOCKED_FIELDS = new Set(['monthlyVisits', 'datePlans', 'datePlanOrder', 'preVisitInsights', 'preVisitInsightReviews', 'preVisitInsightRelations', 'nextRememberTasks', 'nextRememberImports', 'nextRemember', 'attachments', 'csvSources', 'csvIdentityRules', 'qualityDistinct', 'storeMergeHistory', 'storeMergeStaleEntries', 'mergedInto', 'mergeDecision', 'sameAs', 'confirmed', 'googleText', 'googleUpdatePending', 'sourceMissing']);
 function sameReviewValue(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
 function conflictMergeBase(record) {
   const versions = new Map(record.versions.map(version => [version.id, version]));
@@ -2857,7 +2897,7 @@ function safeConflictMerge(record) {
   return { safe: true, base, data: result, changes };
 }
 function safeMergeSummary(plan, record) {
-  const labels = { text: '拜訪文字', next: '下次跟進', store: '門市', date: '拜訪日期', source: '紀錄來源', topics: '主題連結', people: '人物連結', name: '名稱', address: '地址', mapUrl: '地圖網址', city: '縣市', district: '地區', channel: '通路', attr: '屬性', contact: '窗口', nextRemember: '下次記得（未轉換文字）', nextRememberTasks: '下次記得任務', nextRememberImports: '提醒轉換原始文字', datePlanOrder: '每日門市順序', datePlans: '行程與準備（不代表實際拜訪）', monthlyVisits: '每月必訪名單（不代表實際拜訪）', preVisitInsights: '拜訪前線索（獨立分析）', preVisitInsightReviews: '線索人工審核與留存', everyTimeMust: '每次必做、必給', desc: '備註', role: '職務' };
+  const labels = { text: '拜訪文字', next: '下次跟進', store: '門市', date: '拜訪日期', source: '紀錄來源', topics: '主題連結', people: '人物連結', name: '名稱', address: '地址', mapUrl: '地圖網址', city: '縣市', district: '地區', channel: '通路', attr: '屬性', contact: '窗口', nextRemember: '下次記得（未轉換文字）', nextRememberTasks: '下次記得任務', nextRememberImports: '提醒轉換原始文字', datePlanOrder: '每日門市順序', datePlans: '行程與準備（不代表實際拜訪）', monthlyVisits: '每月必訪名單（不代表實際拜訪）', preVisitInsights: '拜訪前線索（獨立分析）', preVisitInsightReviews: '線索人工審核與留存', preVisitInsightRelations: '共同人物關係對應', everyTimeMust: '每次必做、必給', desc: '備註', role: '職務' };
   return plan.changes.map(change => {
     const versions = change.heads.map(id => record.heads.findIndex(head => head.id === id) + 1).join('、');
     return `<li>${esc(labels[change.field] || change.field)}：取自版本 ${esc(versions)}</li>`;
@@ -2887,7 +2927,7 @@ function reviewValue(value) {
   return JSON.stringify(value, null, 2);
 }
 function reviewFields(before, after) {
-  const labels = { text: '拜訪文字', next: '下次跟進', store: '門市 ID', date: '拜訪日期', source: '紀錄來源', topics: '主題連結', people: '人物連結', attachments: '附件', name: '名稱', address: '地址', mapUrl: '地圖網址', city: '縣市', district: '地區', channel: '通路', attr: '屬性', contact: '窗口', nextRemember: '下次記得（未轉換文字）', nextRememberTasks: '下次記得任務', nextRememberImports: '提醒轉換原始文字', datePlanOrder: '每日門市順序', datePlans: '行程與準備（不代表實際拜訪）', monthlyVisits: '每月必訪名單（不代表實際拜訪）', preVisitInsights: '拜訪前線索（獨立分析）', preVisitInsightReviews: '線索人工審核與留存', everyTimeMust: '每次必做、必給', desc: '備註', role: '職務', confirmed: '身分已核對', sameAs: '人物身分連結', csvSources: 'CSV 來源證據', csvIdentityPending: '門市身分待確認', csvIdentityRules: '門市身分裁定', googleText: 'Google 來源文字', googleUpdatePending: 'Google 文字待核對', sourceMissing: '來源缺失' };
+  const labels = { text: '拜訪文字', next: '下次跟進', store: '門市 ID', date: '拜訪日期', source: '紀錄來源', topics: '主題連結', people: '人物連結', attachments: '附件', name: '名稱', address: '地址', mapUrl: '地圖網址', city: '縣市', district: '地區', channel: '通路', attr: '屬性', contact: '窗口', nextRemember: '下次記得（未轉換文字）', nextRememberTasks: '下次記得任務', nextRememberImports: '提醒轉換原始文字', datePlanOrder: '每日門市順序', datePlans: '行程與準備（不代表實際拜訪）', monthlyVisits: '每月必訪名單（不代表實際拜訪）', preVisitInsights: '拜訪前線索（獨立分析）', preVisitInsightReviews: '線索人工審核與留存', preVisitInsightRelations: '共同人物關係對應', everyTimeMust: '每次必做、必給', desc: '備註', role: '職務', confirmed: '身分已核對', sameAs: '人物身分連結', csvSources: 'CSV 來源證據', csvIdentityPending: '門市身分待確認', csvIdentityRules: '門市身分裁定', googleText: 'Google 來源文字', googleUpdatePending: 'Google 文字待核對', sourceMissing: '來源缺失' };
   const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])];
   const changed = keys.filter(k => JSON.stringify(before[k]) !== JSON.stringify(after[k]));
   const rows = changed.map(k => {
@@ -3459,7 +3499,7 @@ $('review-body').addEventListener('toggle', event => {
     // Re-resolve on every expansion; never substitute a current revision.
     const entry = storeInsightDisplayForStore(payload.bundle, detail.dataset.insightOwner).entries.find(item => item.id === detail.dataset.insightEntry);
     const store = by('store', detail.dataset.insightOwner);
-    const evidence = entry && store && insightReviewForEntry(store, entry).status === 'confirmed' ? storeInsightEvidenceForEntry(payload.bundle, entry)[Number(detail.dataset.insightEvidence)] : null;
+    const evidence = entry && store && insightDisplayReview(store, entry).status === 'confirmed' ? storeInsightEvidenceForEntry(payload.bundle, entry)[Number(detail.dataset.insightEvidence)] : null;
     const valid = evidence?.historicalAvailable && evidence.visitId === detail.dataset.insightSource && evidence.revisionId === detail.dataset.insightRevision && evidence.storeId === detail.dataset.insightStore;
     detail.querySelector('pre').textContent = valid ? evidence.rawText : '無法核實當時引用的完整原文版本；保留引句，不以其他版本替代。';
   } else if (detail.matches('[data-insight-source]')) {
@@ -3467,7 +3507,7 @@ $('review-body').addEventListener('toggle', event => {
     const valid = visit && store && !visit.deleted && !visit.conflict && !visit.sourceMissing && !visit.googleUpdatePending && visit.heads.length === 1 && visit.heads[0].id === detail.dataset.insightRevision && visit.store === store.id && !store.deleted && !store.conflict && !store.csvIdentityPending && !store.mergedInto && !store.sourceMissing && !store.googleUpdatePending;
     detail.querySelector('pre').textContent = valid ? visit.text : '來源已改變，請關閉後重新查看；這裡不顯示過時原文。';
   }
-  if (detail.matches('[data-insight-preview]') && !detail.dataset.loaded && insightsPreview) {
+  if (detail.matches('[data-insight-preview]') && !detail.dataset.loaded && insightsPreview && insightsPreview.kind !== 'relations') {
     const item = insightsPreview.plan.ready[Number(detail.dataset.insightPreview)];
     if (!item) return;
     detail.querySelector('div').innerHTML = (item.before ? `<details><summary>原分析內容（舊版本會保留）</summary><pre>${esc(JSON.stringify(item.before, null, 2))}</pre></details>` : '<p>原先沒有分析內容。</p>') + (item.after.entries.length ? item.after.entries.map(entry => insightEntryHTML({ ...entry, evidence: entry.evidence.map(source => ({ ...source, storeName: by('store', source.storeId)?.name || '', sourceLabel: by('visit', source.visitId)?.source || '現行原文' })) }, item.after.sourceAsOf, item.storeId)).join('') : '<p>這次會撤下此店線索；原分析仍保留在版本歷史。</p>');

@@ -626,6 +626,15 @@ function remappedVisitStream(visit, fromStore, toStore) {
   const source = [...(visit.csvSources || [])].reverse().find(s => s?.list);
   return source?.list ? csvStream(toStore, source.list) : '';
 }
+function relatedInsightMappingHistory(records, selectedIds) {
+  // CSV's legacy same-store merge cannot rebind shared relationship mappings.
+  // Keep both owned and externally referenced mappings, including withdrawn
+  // mappings and tombstones, until an explicit relation-aware merge is reviewed.
+  return records.some(store => store.type === 'store' && [store, ...(store.versions || []).map(version => version.data)].some(data =>
+    Array.isArray(data.preVisitInsightRelations) && data.preVisitInsightRelations.length &&
+    (selectedIds.has(store.id) || data.preVisitInsightRelations.some(relation =>
+      Array.isArray(relation.members) && relation.members.some(member => selectedIds.has(member.storeId))))));
+}
 function reviewedMergePlan(group, candidates, records) {
   const rule = group.identityRule;
   if (!rule || rule.decision !== 'same') return null;
@@ -635,6 +644,7 @@ function reviewedMergePlan(group, candidates, records) {
   if (scoped.some(s => s.conflict)) return { blocked: '已裁定同店的既有門市存在同步衝突，不能自動整併' };
   if (scoped.some(store => store.monthlyVisits?.length || store.versions?.some(version => version.data.monthlyVisits?.length))) return { blocked: '既有門市保有每月必訪名單或歷史，須先核對月份與門市歸屬，不能透過 CSV 自動整併' };
   const scopedIds = new Set(scoped.map(s => s.id));
+  if (relatedInsightMappingHistory(records, scopedIds)) return { blocked: '既有門市涉及共用人物關係或其歷史，須先核對關係成員與審核來源，不能透過 CSV 自動整併' };
   const unrelated = active.filter(s => !scopedIds.has(s.id));
   if (unrelated.length) return { blocked: '同店裁定附近仍有裁定範圍外的既有門市候選，不能自動整併' };
   const keepers = scoped.filter(s => comparisonText(s.name) === comparisonText(rule.label));

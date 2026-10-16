@@ -599,6 +599,7 @@ export function validData(type, d) {
   if (d.storeMergeStaleEntries !== undefined && (type !== 'store' || !Array.isArray(d.storeMergeStaleEntries) || d.storeMergeStaleEntries.length > 20 || !d.storeMergeStaleEntries.every(item => plain(item) && insightId(item.id) && str(item.key, 300000)))) return false;
   if (d.preVisitInsights !== undefined && (type !== 'store' || !validStoreInsights(d.preVisitInsights))) return false;
   if (d.preVisitInsightReviews !== undefined && (type !== 'store' || !validInsightReviews(d.preVisitInsightReviews))) return false;
+  if (d.preVisitInsightRelations !== undefined && (type !== 'store' || !validInsightRelations(d.preVisitInsightRelations))) return false;
   if ((d.nextRememberTasks !== undefined || d.nextRememberImports !== undefined) && (type !== 'store' || !validReminderTasks(d))) return false;
   if (d.csvIdentityPending !== undefined && (type !== 'store' || typeof d.csvIdentityPending !== 'boolean')) return false;
   if (d.mergedInto !== undefined && (type !== 'store' || !str(d.mergedInto, 100) || !d.mergedInto)) return false;
@@ -623,12 +624,17 @@ export function validData(type, d) {
 }
 export function validateBundle(b) {
   if (!plain(b) || ![1, 2].includes(b.schema) || !str(b.vaultId, 100) || !Array.isArray(b.ops) || b.ops.length > 30000 || !plain(b.blobs)) throw new Error('資料庫格式不符，或需要更新至支援此資料的程式版本。');
-  const seen = new Map(), sourceEntities = new Map(), storeEntities = new Set(), reviewEvents = new Map();
+  const seen = new Map(), sourceEntities = new Map(), storeEntities = new Set(), reviewEvents = new Map(), relationDefinitions = new Map();
   for (const o of b.ops) {
     if (!plain(o) || !str(o.id, 100) || !o.id || seen.has(o.id) || !types.includes(o.type) || !str(o.entity, 100) || !ids(o.parents) || new Set(o.parents).size !== o.parents.length || !str(o.device, 100) || !str(o.at, 40) || typeof o.deleted !== 'boolean' || !validData(o.type, o.data)) throw new Error('紀錄或版本資訊不完整。');
     if (o.type === 'source' && (o.deleted || o.parents.length || sourceEntities.has(o.entity))) throw new Error('原始來源快照只能新增一次，不能修改或刪除。');
     if (o.type === 'source') sourceEntities.set(o.entity, o);
     if (o.type === 'store') storeEntities.add(o.entity);
+    for (const relation of o.data.preVisitInsightRelations || []) {
+      const fingerprint = insightRelationKey(relation);
+      if (!relation.members.some(member => member.storeId === o.entity) || relationDefinitions.has(relation.id) && relationDefinitions.get(relation.id) !== fingerprint) throw new Error('人物關係對應識別或內容不一致；既有對應不得改寫。');
+      relationDefinitions.set(relation.id, fingerprint);
+    }
     for (const event of o.data.preVisitInsightReviews || []) {
       const fingerprint = JSON.stringify([o.entity, canonicalInsightReview(event)]);
       if (!event.entry.evidence.some(source => source.storeId === o.entity) || reviewEvents.has(event.id) && reviewEvents.get(event.id) !== fingerprint) throw new Error('分析審核歷史識別或內容不一致；尚未寫入任何資料。');
@@ -768,7 +774,15 @@ function backupReferenceWarnings(bundle) {
     const references = op.type === 'visit' ? [['store', op.data.store], ...op.data.people.map(id => ['person', id]), ...op.data.topics.map(id => ['topic', id])]
       : op.type === 'person' && op.data.sameAs ? [['person', op.data.sameAs]]
       : op.type === 'store' && op.data.mergedInto ? [['store', op.data.mergedInto]] : [];
-    if (op.type === 'store') for (const entry of [...(op.data.preVisitInsights?.entries || []), ...(op.data.preVisitInsightReviews || []).map(event => event.entry)]) for (const source of entry.evidence) {
+    if (op.type === 'store') for (const relation of op.data.preVisitInsightRelations || []) for (const member of relation.members) {
+      references.push(['store', member.storeId]);
+      if (!bundle.ops.some(other => other.type === 'store' && other.entity === member.storeId && other.data.preVisitInsights?.entries.some(entry => insightEntryKey(entry) === insightEntryKey(member.entry)))) {
+        const id = JSON.stringify(['relation-card', op.entity, relation.id, member.storeId]);
+        if (!missing.has(id)) missing.set(id, { code: 'missing-insight-relation-card', type: 'store', entity: op.entity, targetType: 'store', targetId: member.storeId, revisionIds: [] });
+        if (!missing.get(id).revisionIds.includes(op.id)) missing.get(id).revisionIds.push(op.id);
+      }
+    }
+    if (op.type === 'store') for (const entry of [...(op.data.preVisitInsights?.entries || []), ...(op.data.preVisitInsightReviews || []).map(event => event.entry), ...(op.data.preVisitInsightRelations || []).flatMap(relation => relation.members.map(member => member.entry))]) for (const source of entry.evidence) {
       references.push(['store', source.storeId], ['visit', source.visitId]);
       const revision = revisions.get(source.revisionId);
       if (!revision || revision.type !== 'visit' || revision.entity !== source.visitId || revision.data.store !== source.storeId) {
@@ -1154,6 +1168,126 @@ export function insightReviewForEntry(store, entry) {
     ? [...store.preVisitInsightReviews].reverse().find(event => insightEntryKey(event.entry) === key) : null;
   return current ? { status: current.status, reviewedAt: current.reviewedAt, reviewedBy: current.reviewedBy, ...(current.carriedFrom ? { carriedFrom: structuredClone(current.carriedFrom) } : {}), history } : { status: 'pending', history };
 }
+// Explicit private definitions bind exact existing cards to ONE verified claim.
+// No person-name, card-ID, quote similarity, or graph traversal creates a group.
+function canonicalInsightRelation(value) {
+  return { format: value.format, id: value.id, claim: value.claim, members: value.members.map(member => ({
+    storeId: member.storeId, storeIdentityKey: member.storeIdentityKey, entry: canonicalInsightEntry(member.entry)
+  })).sort((a, b) => a.storeId.localeCompare(b.storeId)) };
+}
+function validInsightRelation(value) {
+  return insightKeys(value, ['format', 'id', 'claim', 'members']) && value.format === 'pharmacy-insight-relation-1'
+    && insightId(value.id) && insightText(value.claim, 1000) && Array.isArray(value.members) && value.members.length >= 2 && value.members.length <= 20
+    && value.members.every(member => insightKeys(member, ['storeId', 'storeIdentityKey', 'entry']) && insightId(member.storeId)
+      && validInsightIdentityKey(member.storeIdentityKey) && validInsightEntry(member.entry) && member.entry.kind === 'relationship'
+      && member.entry.evidence.some(source => source.storeId === member.storeId && source.role === 'support'))
+    && new Set(value.members.map(member => member.storeId)).size === value.members.length;
+}
+function insightRelationKey(value) { return validInsightRelation(value) ? JSON.stringify(canonicalInsightRelation(value)) : ''; }
+function validInsightRelations(values) {
+  return Array.isArray(values) && values.length <= 20 && values.every(validInsightRelation)
+    && new Set(values.map(value => value.id)).size === values.length && enc.encode(JSON.stringify(values)).length <= 2 * 1024 * 1024;
+}
+function currentInsightEvent(store, entry) {
+  const key = insightEntryKey(entry);
+  return key && !store?.conflict && validInsightReviews(store?.preVisitInsightReviews)
+    ? [...store.preVisitInsightReviews].reverse().find(event => insightEntryKey(event.entry) === key) : null;
+}
+function resolveInsightRelation(context, storeId, entry) {
+  const store = context.index.get('store:' + storeId), key = insightEntryKey(entry);
+  const mappings = (store?.preVisitInsightRelations || []).filter(value => value.members.some(member => member.storeId === storeId && insightEntryKey(member.entry) === key));
+  if (!mappings.length || entry.kind !== 'relationship') return null;
+  const invalid = message => ({ members: [], notice: message });
+  if (mappings.length !== 1) return invalid('這張人物關係有多份對應，需核對；未沿用其他門市的確認。');
+  const relation = mappings[0], fingerprint = insightRelationKey(relation), members = [];
+  for (const member of relation.members) {
+    const peer = context.index.get('store:' + member.storeId);
+    if (!safeInsightStore(peer)) return invalid('相關門市有衝突、身分待確認或已停用，需核對；未沿用其他門市的確認。');
+    const exact = insightEntryKey(member.entry), card = peer.preVisitInsights?.entries.find(item => insightEntryKey(item) === exact);
+    const maps = (peer.preVisitInsightRelations || []).filter(value => value.members.some(item => item.storeId === peer.id && insightEntryKey(item.entry) === exact));
+    if (!card || maps.length !== 1 || insightRelationKey(maps[0]) !== fingerprint
+      || (peer.storeMergeStaleEntries || []).some(item => item.id === card.id && item.key === exact)) return invalid('關係對應不完整或卡片內容已改變，需核對；未沿用其他門市的確認。');
+    if (!context.identities.get(peer.id)?.has(member.storeIdentityKey)
+      || card.evidence.some(source => !resolveInsightEvidenceForDisplay(source, context).historicalAvailable)) return invalid('關係對應的原始身分或引用版本無法核實；未沿用其他門市的確認。');
+    members.push({ store: peer, entry: card, event: currentInsightEvent(peer, card) });
+  }
+  return { definition: relation, members, notice: '' };
+}
+function sharedInsightReview(context, storeId, entry) {
+  const store = context.index.get('store:' + storeId), local = insightReviewForEntry(store, entry);
+  const relation = resolveInsightRelation(context, storeId, entry);
+  if (!relation) return local;
+  if (relation.notice) return { ...local, sharedConflict: relation.notice };
+  const info = { id: relation.definition.id, claim: relation.definition.claim,
+    members: relation.members.map(member => ({ storeId: member.store.id, storeName: member.store.name, entryId: member.entry.id })) };
+  const relationSourceReasons = [...new Set(relation.members.flatMap(member => member.entry.evidence.flatMap(source =>
+    resolveInsightEvidenceForDisplay(source, context).sourceReasons.map(reason => member.store.name + ' 的關係來源：' + reason))))];
+  const sharedContext = { relation: info, relationSourceReasons };
+  const confirmed = relation.members.filter(member => member.event?.status === 'confirmed');
+  const opposed = relation.members.filter(member => member.event && member.event.status !== 'confirmed');
+  const conflict = confirmed.length && opposed.length ? '相關門市的人工判定不一致；各店原決定保留，尚未審核的門市不自動沿用，請核對。' : '';
+  // A local explicit pending/rejected is a decision, not an empty default.
+  if (currentInsightEvent(store, entry) || !confirmed.length || conflict) return { ...local, ...sharedContext, ...(conflict ? { sharedConflict: conflict } : {}) };
+  // Deterministic provenance only; never use timestamps to resolve disagreement.
+  const donor = confirmed.sort((a, b) => a.store.id.localeCompare(b.store.id))[0];
+  return { ...local, status: 'confirmed', reviewedAt: donor.event.reviewedAt, reviewedBy: donor.event.reviewedBy,
+    ...sharedContext, sharedFrom: { storeId: donor.store.id, storeName: donor.store.name, eventId: donor.event.id, reviewedAt: donor.event.reviewedAt } };
+}
+export function insightSharedReviewForEntry(bundle, storeId, entry) {
+  return sharedInsightReview(insightEvidenceContext(bundle), storeId, entry);
+}
+export function planStoreInsightRelations(bundle, input) {
+  validateBundle(bundle);
+  if (!insightKeys(input, ['format', 'vaultId', 'generatedAt', 'relations', 'expectedHeads']) || input.format !== 'pharmacy-insight-relations-import-1'
+    || input.vaultId !== bundle.vaultId || !insightInstant(input.generatedAt) || !Array.isArray(input.relations) || !input.relations.length || input.relations.length > 200
+    || !input.relations.every(validInsightRelation) || new Set(input.relations.map(value => value.id)).size !== input.relations.length
+    || !Array.isArray(input.expectedHeads) || input.expectedHeads.length > 500 || input.expectedHeads.some(item => !insightKeys(item, ['storeId', 'headId']) || !insightId(item.storeId) || !insightId(item.headId))
+    || new Set(input.expectedHeads.map(item => item.storeId)).size !== input.expectedHeads.length || enc.encode(JSON.stringify(input)).length > 2 * 1024 * 1024) throw new Error('人物關係對應格式、資料庫或大小不符；尚未寫入。');
+  const context = insightEvidenceContext(bundle), declared = new Map(), changes = new Map(), used = new Set();
+  for (const op of bundle.ops) for (const relation of op.data.preVisitInsightRelations || []) declared.set(relation.id, insightRelationKey(relation));
+  const heads = new Map(input.expectedHeads.map(item => [item.storeId, item.headId]));
+  for (const relation of input.relations) {
+    const fingerprint = insightRelationKey(relation);
+    if (declared.has(relation.id) && declared.get(relation.id) !== fingerprint) throw new Error('既有人物關係識別不能改成另一份內容；請核對新關係。');
+    for (const member of relation.members) {
+      const store = context.index.get('store:' + member.storeId), exact = insightEntryKey(member.entry);
+      if (!safeInsightStore(store) || heads.get(member.storeId) !== store.heads[0].id || storeInsightsIdentityKey(store) !== member.storeIdentityKey
+        || !store.preVisitInsights?.entries.some(entry => insightEntryKey(entry) === exact)) throw new Error('門市、關係卡或預覽版本已改變；尚未寫入。');
+      // New definitions require inspectable originals and still-present quotes.
+      // Source revisions may be newer without rewriting the approved old card.
+      for (const source of member.entry.evidence) {
+        const visit = context.index.get('visit:' + source.visitId), sourceStore = context.index.get('store:' + source.storeId);
+        if (!resolveInsightEvidenceForDisplay(source, context).historicalAvailable || !safeInsightStore(sourceStore) || !safeInsightVisit(visit, context.index)
+          || visit.store !== source.storeId || !visit.text.includes(source.quote)) throw new Error('關係對應的引用原文或現行來源無法核實；尚未寫入。');
+      }
+      const memberKey = JSON.stringify([member.storeId, exact]);
+      if (used.has(memberKey)) throw new Error('同一張卡不能同時加入不同人物關係；尚未寫入。');
+      used.add(memberKey);
+      if (!changes.has(store.id)) changes.set(store.id, { storeId: store.id, storeName: store.name, expectedHead: store.heads[0].id,
+        before: structuredClone(store.preVisitInsightRelations || []), after: structuredClone(store.preVisitInsightRelations || []) });
+      const item = changes.get(store.id);
+      if (item.after.some(value => value.id !== relation.id && value.members.some(peer => peer.storeId === store.id && insightEntryKey(peer.entry) === exact))) throw new Error('這張卡已有另一份人物關係對應，須先核對；尚未寫入。');
+      if (!item.after.some(value => value.id === relation.id)) item.after.push(canonicalInsightRelation(relation));
+      if (!validInsightRelations(item.after)) throw new Error('人物關係對應已達大小或數量上限；尚未寫入。');
+    }
+  }
+  if (heads.size !== changes.size) throw new Error('人物關係預覽的門市範圍不一致；尚未寫入。');
+  const ready = [...changes.values()].filter(item => JSON.stringify(item.before) !== JSON.stringify(item.after)).sort((a, b) => a.storeId.localeCompare(b.storeId));
+  return { vaultId: bundle.vaultId, relations: input.relations.map(value => ({ ...canonicalInsightRelation(value), members: value.members.map(member => ({ ...structuredClone(member), storeName: context.index.get('store:' + member.storeId).name })) })), ready, excluded: [],
+    baseHeads: [...context.index.values()].map(record => [record.type, record.id, record.heads.map(head => head.id)]).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))) };
+}
+export function applyStoreInsightRelations(bundle, input, plan, device) {
+  const current = planStoreInsightRelations(bundle, input);
+  if (!plain(plan) || JSON.stringify(current) !== JSON.stringify(plan)) throw new Error('人物關係對應預覽後資料已改變；請重新核對。');
+  if (!current.ready.length) return bundle;
+  if (!insightId(device)) throw new Error('裝置識別不完整；尚未寫入。');
+  const index = insightRecordIndex(bundle), next = structuredClone(bundle);
+  for (const item of current.ready) next.ops.push(revision('store', item.storeId, { ...index.get('store:' + item.storeId).heads[0].data,
+    preVisitInsightRelations: structuredClone(item.after) }, [item.expectedHead], device));
+  next.schema = Math.max(2, next.schema);
+  if (enc.encode(JSON.stringify(next)).length > MAX_BYTES) throw new Error('資料已達 24 MB 上限；尚未寫入。');
+  return validateBundle(next);
+}
 export function planInsightReview(bundle, storeId, entryId, status, expectedHead) {
   validateBundle(bundle);
   if (![storeId, entryId, expectedHead].every(insightId) || !['confirmed', 'pending', 'rejected'].includes(status)) throw new Error('分析審核選項或識別不完整；尚未寫入任何資料。');
@@ -1161,9 +1295,31 @@ export function planInsightReview(bundle, storeId, entryId, status, expectedHead
   if (!safeInsightStore(store) || store.heads[0].id !== expectedHead) throw new Error('門市版本已改變或需要先核對衝突／身分；尚未寫入任何資料。');
   const profile = store.preVisitInsights, entry = profile?.entries.find(item => item.id === entryId);
   if (!entry || !resolveInsightEntry(entry, storeId, index)) throw new Error('這張分析的原文來源已變更或不再有效；請重新核對，尚未寫入任何資料。');
-  const beforeStatus = insightReviewForEntry(store, entry).status;
+  const localBeforeStatus = insightReviewForEntry(store, entry).status, effective = insightSharedReviewForEntry(bundle, storeId, entry), beforeStatus = effective.status;
+  if (effective.relationSourceReasons?.length) throw new Error('共同關係的原文來源已變更或不再有效；請重新核對，尚未寫入任何資料。');
+  // Bind every declared member's current source heads, even when an incomplete
+  // group cannot currently share a review. A source-only edit must invalidate
+  // the preview without requiring any peer store metadata to change.
+  const entryKey = insightEntryKey(entry), relationVisitIds = new Set((store.preVisitInsightRelations || [])
+    .filter(relation => relation.members.some(member => member.storeId === storeId && insightEntryKey(member.entry) === entryKey))
+    .flatMap(relation => relation.members.flatMap(member => member.entry.evidence.map(source => source.visitId))));
+  const relationEvidenceBasis = [...relationVisitIds].sort().map(visitId => [visitId,
+    (index.get('visit:' + visitId)?.heads || []).map(head => head.id).sort()]);
+  const relatedStores = [], relatedExcluded = [];
+  const peerDisagreement = status === 'confirmed' && (effective.relation?.members || []).some(member => {
+    if (member.storeId === storeId) return false;
+    const peer = index.get('store:' + member.storeId), card = peer.preVisitInsights.entries.find(item => item.id === member.entryId), event = currentInsightEvent(peer, card);
+    return event && event.status !== 'confirmed';
+  });
+  const relationBasis = (effective.relation?.members || []).map(member => {
+    const peer = index.get('store:' + member.storeId), card = peer.preVisitInsights.entries.find(item => item.id === member.entryId), event = currentInsightEvent(peer, card);
+    if (peer.id !== storeId) (event && event.status !== 'confirmed' || peerDisagreement && !event ? relatedExcluded : relatedStores).push({ storeId: peer.id, storeName: peer.name, status: event?.status || 'pending',
+      ...(peerDisagreement && !event ? { reason: '其他門市已有不同判定，暫不共用' } : {}) });
+    return [peer.id, peer.heads[0].id];
+  });
   return { vaultId: bundle.vaultId, storeId, storeName: store.name, entryId, status, beforeStatus, expectedHead,
-    sourceAsOf: profile.sourceAsOf, entry: structuredClone(entry), changed: beforeStatus !== status };
+    sourceAsOf: profile.sourceAsOf, entry: structuredClone(entry), localBeforeStatus, relatedStores, relatedExcluded, relationBasis, relationEvidenceBasis,
+    relationClaim: effective.relation?.claim || '', changed: beforeStatus !== status };
 }
 export function applyInsightReview(bundle, plan, device) {
   if (!plain(plan)) throw new Error('分析審核預覽不完整；尚未寫入任何資料。');
@@ -1277,14 +1433,15 @@ export function storeInsightDisplayForStore(bundle, storeId) {
   let staleCount = 0, confirmedStaleCount = 0;
   for (const entry of saved.entries) {
     const strict = safeInsightStore(store) ? resolveInsightEntry(entry, storeId, index) : null;
-    const confirmed = insightReviewForEntry(store, entry).status === 'confirmed';
+    const review = sharedInsightReview(context, storeId, entry), confirmed = review.status === 'confirmed';
     if (!strict && !confirmed) { staleCount++; continue; }
     const evidence = entry.evidence.map(source => resolveInsightEvidenceForDisplay(source, context));
-    const sourceReasons = [...new Set(evidence.flatMap(source => source.sourceReasons))];
+    const sourceReasons = [...new Set([...evidence.flatMap(source => source.sourceReasons), ...(review.relationSourceReasons || [])])];
     if (!strict && !sourceReasons.length) sourceReasons.push('本店分析來源或整併身分需要重新核對。');
-    if (!strict) confirmedStaleCount++;
-    entries.push({ ...structuredClone(entry), evidence, sourceCurrent: !!strict, sourceReasons,
-      sourceNotice: strict ? '' : '來源已更新，需核對；Kit 已確認的紀錄仍保留。' });
+    const sourceCurrent = !!strict && !(review.relationSourceReasons?.length);
+    if (!sourceCurrent && confirmed) confirmedStaleCount++;
+    entries.push({ ...structuredClone(entry), evidence, review, sourceCurrent, sourceReasons,
+      sourceNotice: sourceCurrent ? '' : confirmed ? '來源已更新，需核對；Kit 已確認的紀錄仍保留。' : '共同關係的來源已更新，需重新核對。' });
   }
   return { entries, staleCount, confirmedStaleCount };
 }
@@ -1425,6 +1582,8 @@ export async function planStoreMerge(bundle, request) {
   const records = project(bundle).sort((a, b) => (a.type + ':' + a.id).localeCompare(b.type + ':' + b.id)), index = new Map(records.map(item => [item.type + ':' + item.id, item]));
   if (records.some(item => item.conflict)) throw new Error('資料庫有同步衝突，請先核對後再預覽門市整併。');
   const keeper = index.get('store:' + request.keeperId), donor = index.get('store:' + request.donorId);
+  if (bundle.ops.some(op => (op.data.preVisitInsightRelations || []).some(relation => [request.keeperId, request.donorId].includes(op.entity)
+    || relation.members.some(member => [request.keeperId, request.donorId].includes(member.storeId))))) throw new Error('門市保有人物關係對應或被其他店引用，須另行核對所有關係與審核歸屬；本次不自動整併。');
   if ([keeper, donor].some(store => store?.monthlyVisits?.length || store?.versions?.some(op => op.data.monthlyVisits?.length))) throw new Error('門市保有每月拜訪名單歷史，須另行核對各月份的歸屬；本次不自動搬移或整併。');
   if ([keeper, donor].some(store => store?.datePlans?.length || store?.datePlanOrder?.length || store?.versions?.some(op => op.data.datePlans?.length || op.data.datePlanOrder?.length))) throw new Error('門市保有行程與準備紀錄，須另行核對日期、備品與已帶上狀態的歸屬；本次不自動搬移或整併。');
   for (const store of [keeper, donor]) if (!safeInsightStore(store) || store.storeMergeHistory?.length) throw new Error('門市已刪除、待確認、已有整併歷史或來源未核對；本次不合併。');

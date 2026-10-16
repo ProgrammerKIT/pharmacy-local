@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import * as core from '../public/core.js';
+import { makeUnmappedFixture, mappingInput } from './qa/shared-relation-fixture.mjs';
 
 // Real review UI and encrypted persistence, with synthetic records and an
 // in-memory disk. No customer database, browser session or network is used.
@@ -241,5 +242,167 @@ test('source changes preserve only current confirmed cards; rejected cards remai
   assert.match(current, /data-insight-confirmed="entry-0"/); assert.match(current, /來源已更新/);
   assert.doesNotMatch(current, /Synthetic inference|Synthetic counter|data-insight-review=/);
   assert.match(history, /Synthetic inference/); assert.match(history, /不符合/);
+  assert.equal(JSON.stringify(h.c.payload), before); assert.equal(h.state.writes.length, writes);
+});
+
+async function sharedHarness({ mapped = true } = {}) {
+  const h = await harness(), original = await makeUnmappedFixture(core), input = mappingInput(core, original);
+  h.c.payload.bundle = mapped ? core.applyStoreInsightRelations(original, input, core.planStoreInsightRelations(original, input), 'synthetic-ui-mapping') : original;
+  h.c.meta.vaultId = original.vaultId;
+  h.$('review').dataset.singleStoreId = 'qa-shared-b';
+  const change = async (id, status) => {
+    const storeId = 'qa-shared-' + id, store = h.c.by('store', storeId);
+    h.$('review').dataset.singleStoreId = storeId;
+    return h.c.changeInsightReview(storeId, 'qa-shared-relation-' + id, status, store.heads[0].id);
+  };
+  return { ...h, original, input, change };
+}
+
+test('shared confirmation shows the exact peer headline directly, keeping provenance inside details and own history only', async () => {
+  const h = await sharedHarness(), before = JSON.stringify(h.c.payload), html = h.c.storeInsightsHTML('qa-shared-b');
+  const boundary = html.indexOf('<details class="insight-review-archive"'), current = html.slice(0, boundary), history = html.slice(boundary);
+  const summary = current.match(/<summary>([\s\S]*?)<\/summary>/)[1];
+  assert.match(summary, /陳示範的舊同事是林測試與王合成/); assert.match(summary, /Kit已確認/);
+  assert.doesNotMatch(summary, /沿用|青禾|這次可以問/);
+  assert.match(current, /data-insight-shared-from="qa-shared-a"/); assert.match(current, /沒有新增本店的審核紀錄/);
+  assert.doesNotMatch(current.match(/<details class="insight-confirmed-details"[^>]*>/)[0], /\bopen\b/);
+  assert.match(current, /門市展示需求仍待查核/); assert.doesNotMatch(current, /已否認的共同採購/);
+  assert.match(history, /歷史 1 筆/); assert.match(history, /已否認的共同採購/); assert.doesNotMatch(history, /陳示範的舊同事/);
+  assert.equal(core.insightReviewForEntry(h.c.by('store', 'qa-shared-b'), h.c.by('store', 'qa-shared-b').preVisitInsights.entries[0]).status, 'pending');
+  assert.equal(JSON.stringify(h.c.payload), before); assert.equal(h.state.writes.length, 0);
+  assert.doesNotMatch(h.c.storeInsightsHTML('qa-shared-d'), /data-insight-confirmed=/, 'matching card IDs never establish UI approval');
+});
+
+test('shared confirmed source-update notices remain visible outside collapsed details without inventing local review', async () => {
+  const h = await sharedHarness(), visit = h.c.by('visit', 'qa-shared-note-a');
+  h.c.payload.bundle.ops.push(core.revision('visit', visit.id, { ...visit.heads[0].data, text: visit.text + '\n合成新版' }, [visit.heads[0].id], 'synthetic-ui-new-source'));
+  const before = JSON.stringify(h.c.payload), entry = core.storeInsightDisplayForStore(h.c.payload.bundle, 'qa-shared-b').entries.find(item => item.id === 'qa-shared-relation-b');
+  const html = h.c.insightEntryHTML(entry, '2026-10-16', '', h.c.by('store', 'qa-shared-b'));
+  assert.match(html, /data-insight-confirmed="qa-shared-relation-b"/);
+  assert.match(html.slice(html.lastIndexOf('</details>')), /來源已更新/);
+  assert.match(html, /data-insight-owner="qa-shared-b"/); assert.doesNotMatch(html, /data-insight-review=/);
+  assert.equal(core.storeInsightReviewHistory(h.c.by('store', 'qa-shared-b')).length, 1);
+  assert.equal(JSON.stringify(h.c.payload), before); assert.equal(h.state.writes.length, 0);
+});
+
+test('an explicit local pending keeps the original donor confirmation, visibly warns, and stops third-party inheritance', async () => {
+  const h = await sharedHarness(), previous = structuredClone(h.c.payload.bundle);
+  await h.change('b', 'pending');
+  assert.equal(h.state.writes.length, 1); assert.equal(h.c.payload.bundle.ops.length, previous.ops.length + 1);
+  assert.deepEqual(h.c.payload.bundle.ops.slice(0, previous.ops.length), previous.ops);
+  assert.match(h.state.confirms.at(-1), /不撤回 虛構青禾藥局 的原確認/); assert.match(h.state.confirms.at(-1), /尚未親自審核的門市會停止沿用/);
+  const donorEntry = core.storeInsightDisplayForStore(h.c.payload.bundle, 'qa-shared-a').entries[0];
+  const donorHTML = h.c.insightEntryHTML(donorEntry, '2026-10-16', '', h.c.by('store', 'qa-shared-a'));
+  assert.match(donorHTML, /data-insight-confirmed="qa-shared-relation-a"/);
+  assert.match(donorHTML.slice(donorHTML.lastIndexOf('</details>')), /人工判定不一致/);
+  for (const id of ['b', 'c']) {
+    const html = h.c.storeInsightsHTML('qa-shared-' + id);
+    assert.doesNotMatch(html, /data-insight-confirmed=/); assert.match(html, /人工判定不一致/);
+  }
+  assert.equal(core.storeInsightReviewHistory(h.c.by('store', 'qa-shared-c')).length, 0);
+});
+
+test('confirmation preview discloses excluded explicit decisions and does not promise inheritance during disagreement', async () => {
+  const h = await sharedHarness(); await h.change('b', 'pending');
+  h.state.confirmed = false; const before = JSON.stringify(h.c.payload), writes = h.state.writes.length;
+  await h.change('c', 'confirmed');
+  const prompt = h.state.confirms.at(-1);
+  assert.match(prompt, /共同人物關係：林測試、陳示範、王合成曾在同一間虛構藥局共事/);
+  assert.match(prompt, /人工判定仍不一致/); assert.match(prompt, /尚未親自審核的門市暫不沿用/);
+  assert.match(prompt, /不會被此次操作覆蓋：虛構晨光藥局/); assert.doesNotMatch(prompt, /可沿用確認的門市/);
+  assert.equal(JSON.stringify(h.c.payload), before); assert.equal(h.state.writes.length, writes);
+});
+
+test('relationship file import shows complete named mapping and waits for checked confirmation before encrypted persistence', async () => {
+  const h = await sharedHarness({ mapped: false }), before = structuredClone(h.c.payload.bundle);
+  h.$('review').close();
+  await h.c.previewInsightsFile({ size: 1000, text: async () => JSON.stringify(h.input) });
+  const html = h.$('review-body').innerHTML;
+  assert.equal(h.c.insightsPreview.kind, 'relations'); assert.match(h.$('review-title').textContent, /人物關係對應/);
+  for (const name of ['虛構青禾藥局', '虛構晨光藥局', '虛構雲杉藥局']) assert.ok(html.includes(name));
+  assert.match(html, /陳示範的舊同事是林測試與王合成/); assert.doesNotMatch(html, /undefined/);
+  assert.match(html, /id="insights-ack" type="checkbox"/); assert.match(html, /id="apply-store-insights" class="primary" disabled/);
+  assert.deepEqual(h.c.payload.bundle, before); assert.equal(h.state.writes.length, 0);
+  await assert.rejects(h.c.commitInsights(), /勾選確認/); assert.equal(h.state.writes.length, 0);
+  h.$('insights-ack').checked = true; await h.c.commitInsights();
+  assert.equal(h.state.writes.length, 1);
+  const saved = await core.unseal(h.state.disk.envelope, h.c.key, 'device');
+  assert.deepEqual(saved.bundle.ops.slice(0, before.ops.length), before.ops);
+  assert.equal(saved.bundle.ops.length, before.ops.length + 3);
+  for (const oldStore of core.project(before).filter(row => row.type === 'store')) {
+    const now = core.project(saved.bundle).find(row => row.type === 'store' && row.id === oldStore.id);
+    assert.deepEqual(core.storeInsightReviewHistory(now), core.storeInsightReviewHistory(oldStore));
+    assert.deepEqual(now.preVisitInsights, oldStore.preVisitInsights);
+  }
+  assert.equal(h.$('review').open, false); assert.equal(h.c.insightsPreview, null);
+  assert.match(h.state.notices.at(-1), /人物關係對應/);
+});
+
+test('relationship import rejects stale heads, lost sessions and unchecked confirmation after asynchronous validation', async () => {
+  for (const disrupt of [
+    h => { const peer = h.c.by('store', 'qa-shared-c'); h.c.payload.bundle.ops.push(core.revision('store', peer.id, { ...peer.heads[0].data }, [peer.heads[0].id], 'synthetic-peer-race')); },
+    h => { h.c.key = {}; }, h => { h.$('review').close(); }, h => { h.$('insights-ack').checked = false; }
+  ]) {
+    const h = await sharedHarness({ mapped: false }); h.$('review').close();
+    await h.c.previewInsightsFile({ size: 1000, text: async () => JSON.stringify(h.input) }); h.$('insights-ack').checked = true;
+    disrupt(h); const before = JSON.stringify(h.c.payload);
+    await assert.rejects(h.c.commitInsights());
+    assert.equal(JSON.stringify(h.c.payload), before); assert.equal(h.state.writes.length, 0); assert.equal(h.state.notices.length, 0);
+  }
+  const h = await sharedHarness({ mapped: false }); h.$('review').close();
+  await h.c.previewInsightsFile({ size: 1000, text: async () => JSON.stringify(h.input) }); h.$('insights-ack').checked = true;
+  h.c.applyStoreInsightRelations = async (...args) => { const result = core.applyStoreInsightRelations(...args); h.$('insights-ack').checked = false; return result; };
+  const before = JSON.stringify(h.c.payload); await assert.rejects(h.c.commitInsights(), /尚未寫入/);
+  assert.equal(JSON.stringify(h.c.payload), before); assert.equal(h.state.writes.length, 0);
+});
+
+test('unchanged relationship import shows no write action and counts existing member mappings accurately', async () => {
+  const h = await sharedHarness(), before = JSON.stringify(h.c.payload), input = mappingInput(core, h.c.payload.bundle);
+  h.$('review').close(); await h.c.previewInsightsFile({ size: 1000, text: async () => JSON.stringify(input) });
+  const html = h.$('review-body').innerHTML;
+  assert.match(html, /可套用 0 間/); assert.match(html, /內容相同 3 間/);
+  assert.doesNotMatch(html, /id="insights-ack"|id="apply-store-insights"/);
+  assert.equal(JSON.stringify(h.c.payload), before); assert.equal(h.state.writes.length, 0);
+});
+
+test('relationship definitions are readable as full JSON and blocked from automatic safe conflict merging', async () => {
+  const h = await sharedHarness(), store = h.c.by('store', 'qa-shared-b'), base = store.heads[0];
+  vm.runInContext(source('function diffSegmentsHTML(', 'function renderQuickTextDialog(') + source('function describeData(', 'function openReview('), h.c);
+  const description = h.c.describeData('store', base.data);
+  assert.match(description, /共同人物關係對應/); assert.match(description, /"format": "pharmacy-insight-relation-1"/);
+  assert.doesNotMatch(description, /\[object Object\]/);
+  h.c.payload.bundle.ops.push(core.revision('store', store.id, { ...base.data, preVisitInsightRelations: [] }, [base.id], 'synthetic-relation-branch'));
+  h.c.payload.bundle.ops.push(core.revision('store', store.id, { ...base.data, contact: '虛構新窗口' }, [base.id], 'synthetic-contact-branch'));
+  const current = h.c.by('store', store.id), before = JSON.stringify(h.c.payload);
+  const plan = h.c.safeConflictMerge(current);
+  assert.equal(plan.safe, false); assert.ok(plan.blocked.some(item => item.field === 'preVisitInsightRelations' && item.kind === 'protected'));
+  assert.match(h.c.reviewFields(base.data, { ...base.data, preVisitInsightRelations: [] }), /共同人物關係對應/);
+  assert.equal(JSON.stringify(h.c.payload), before); assert.equal(h.state.writes.length, 0);
+});
+
+test('peer source updates never invent a Kit confirmation or date on explicit-pending and never-reviewed cards', async () => {
+  const h = await sharedHarness({ mapped: false });
+  // B and C cite only their own current note; the changed source belongs to A.
+  for (const id of ['b', 'c']) {
+    const store = h.c.by('store', 'qa-shared-' + id), profile = structuredClone(store.preVisitInsights);
+    profile.entries[0].evidence = profile.entries[0].evidence.filter(source => source.storeId === store.id);
+    h.c.payload.bundle.ops.push(core.revision('store', store.id, { ...store.heads[0].data, preVisitInsights: profile }, [store.heads[0].id], 'synthetic-peer-evidence'));
+  }
+  const input = mappingInput(core, h.c.payload.bundle);
+  h.c.payload.bundle = core.applyStoreInsightRelations(h.c.payload.bundle, input, core.planStoreInsightRelations(h.c.payload.bundle, input), 'synthetic-peer-mapping');
+  await h.change('b', 'pending');
+  const visit = h.c.by('visit', 'qa-shared-note-a');
+  h.c.payload.bundle.ops.push(core.revision('visit', visit.id, { ...visit.heads[0].data, text: visit.text + '\n合成來源更新' }, [visit.heads[0].id], 'synthetic-source-update'));
+  const before = JSON.stringify(h.c.payload), writes = h.state.writes.length;
+  for (const id of ['b', 'c']) {
+    const store = h.c.by('store', 'qa-shared-' + id), entry = core.storeInsightDisplayForStore(h.c.payload.bundle, store.id).entries.find(item => item.id === 'qa-shared-relation-' + id);
+    assert.ok(entry); assert.equal(entry.sourceCurrent, false); assert.equal(entry.review.status, 'pending');
+    const html = h.c.insightEntryHTML(entry, '2026-10-16', '', store);
+    assert.match(html, /共同關係的來源已更新，需重新核對/);
+    assert.match(html, /data-status="pending">待查核/);
+    assert.doesNotMatch(html, /data-insight-confirmed=|保留原確認|Kit 已確認的紀錄|undefined|data-insight-review=/);
+    if (id === 'b') { assert.match(html, /保留既有審核/); assert.match(html, /Kit · /); }
+    else { assert.match(html, /尚未人工審核/); assert.doesNotMatch(html, /Kit · |保留既有審核/); }
+  }
   assert.equal(JSON.stringify(h.c.payload), before); assert.equal(h.state.writes.length, writes);
 });
