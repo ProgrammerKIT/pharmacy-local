@@ -864,6 +864,25 @@ export async function planBackupImport(currentBundle, incomingBundle) {
   return freezeBackupPlan({ bundle, summary, changes });
 }
 
+// Independent recovery export: keep the complete bundle and vault identity unchanged.
+// A fresh salt/key belongs only to this file, never to the paired live database.
+export async function createRecoveryBackup(bundle, password, confirmation) {
+  if (typeof password !== 'string' || password.length < 12 || password.length > 1024) throw new Error('新備份密碼需為 12 至 1024 個字元。');
+  if (password !== confirmation) throw new Error('兩次新密碼不同。');
+  const copy = structuredClone(bundle), original = JSON.stringify(copy);
+  const plan = await planBackupImport(null, copy); // Includes source/attachment hashes.
+  const recoveryMeta = { ...newMeta(), vaultId: copy.vaultId };
+  let recoveryKey;
+  try {
+    recoveryKey = await derive(password, recoveryMeta);
+    password = confirmation = '';
+    const envelope = await seal(copy, recoveryKey, recoveryMeta);
+    if (JSON.stringify(await unseal(envelope, recoveryKey)) !== original) throw new Error('新備份完整性驗證失敗；未產生下載。');
+    const text = JSON.stringify({ format: 'pharmacy-backup-1', envelope });
+    return { text, sha256: await hashBytes(enc.encode(text)), summary: plan.summary.incoming, warnings: plan.summary.warnings.length };
+  } finally { password = confirmation = ''; recoveryKey = null; }
+}
+
 // Nearby-store calculations are read-only. Map viewports and opaque place IDs are
 // not coordinates of a store, and must never be guessed into distance rankings.
 export function mobileLocationDevice(nav = {}) {
