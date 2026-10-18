@@ -1,4 +1,4 @@
-import { newMeta, checkEnvelope, derive, seal, unseal, planBackupImport, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates, buildStoreEnrichmentRequest, planStoreEnrichment, applyStoreEnrichment, readonlyHealthAudit, dataSafetySummary, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, addReminderTasks, convertReminderTasks, completeReminderTask, reminderTaskHistory, searchStoreVisitText, storeInsightDisplayForStore, storeInsightEvidenceForEntry, insightReviewForEntry, insightSharedReviewForEntry, storeInsightReviewHistory, planInsightReview, applyInsightReview, planStoreInsights, applyStoreInsights, planStoreInsightRelations, applyStoreInsightRelations, buildStoreInsightsSource, planStoreMerge, applyStoreMerge } from './core.js';
+import { createRecoveryBackup, newMeta, checkEnvelope, derive, seal, unseal, planBackupImport, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates, buildStoreEnrichmentRequest, planStoreEnrichment, applyStoreEnrichment, readonlyHealthAudit, dataSafetySummary, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, addReminderTasks, convertReminderTasks, completeReminderTask, reminderTaskHistory, searchStoreVisitText, storeInsightDisplayForStore, storeInsightEvidenceForEntry, insightReviewForEntry, insightSharedReviewForEntry, storeInsightReviewHistory, planInsightReview, applyInsightReview, planStoreInsights, applyStoreInsights, planStoreInsightRelations, applyStoreInsightRelations, buildStoreInsightsSource, planStoreMerge, applyStoreMerge } from './core.js';
 import { readLocal, writeLocal, archiveAndReplaceLocal, listLocalArchives, readLocalArchive } from './db.js';
 import { dayPlanDate, shiftDayPlanDate, dayPlanForStore, dayPlanOverview, dayItineraryBasis, applyDayItineraryAction } from './core.js';
 import { monthlyVisitMonth, shiftMonthlyVisitMonth, monthlyVisitForStore, monthlyVisitOverview, monthlyVisitBasis, applyMonthlyVisitAction } from './core.js';
@@ -342,6 +342,7 @@ let regionalCity = '', regionalDistrict = '';
 let updateHolding = false, macProgram = null, lastSyncFailure = null, syncWarning = '';
 let draftTimer = null, draftSaveChain = Promise.resolve(), discardingDraft = false, singleStoreContext = null, quickTextContext = null, inlineTextContext = null, inlineDraftTimer = null, inlineDraftSaveChain = Promise.resolve(), reminderContext = null, transientResumeState = null;
 let versionReview = null, resolutionPreview = null;
+let recoveryExportContext = null;
 let coordinatePreview = null, enrichmentPreview = null, backupPreview = null, insightsPreview = null;
 let storeMergePreview = null, storeMergeSetup = null;
 let dayPlanSelectedDate = '', dayPlanContext = null, dayPlanSorting = false, dayPlanViewBasis = '', dayPlanNotice = '', dayPlanUndo = null;
@@ -984,7 +985,7 @@ function createSyncScheduler({ ready, attempt, now = Date.now, setTimer = setTim
 }
 function canAutoSync(ignoreFetching = false) {
   return !!(key && payload?.token) && navigator.onLine !== false && !document.hidden && !pendingLock && !updateHolding && !busy && !gateOpening &&
-    (ignoreFetching || !autoFetching) && !syncInProgress && !backupPreview && !editorContext && !singleStoreContext && !inlineTextContext && !reminderContext && !dayPlanContext && !monthlyVisitContext && !attendancePrompt && !payload.inlineTextDraft &&
+    (ignoreFetching || !autoFetching) && !syncInProgress && !recoveryExportContext && !backupPreview && !editorContext && !singleStoreContext && !inlineTextContext && !reminderContext && !dayPlanContext && !monthlyVisitContext && !attendancePrompt && !payload.inlineTextDraft &&
     !['review', 'editor', 'quick-text-dialog', 'store-reminder-dialog', 'rebuild-dialog', 'backup-review', 'visit-attendance-dialog', 'day-plan-dialog', 'monthly-visit-dialog'].some(id => $(id)?.open) && !csvImport.hasPending();
 }
 function syncSession() { return { key, meta, token: payload?.token, device: payload?.device, epoch: syncEpoch, inline: inlineTextContext, editor: editorContext, reminder: reminderContext, dayPlan: dayPlanContext, monthly: monthlyVisitContext, single: singleStoreContext, attendance: attendancePrompt }; }
@@ -1018,6 +1019,8 @@ async function autoSync() {
   return result;
 }
 function lockNow(reopen = !document.hidden) {
+  clearRecoveryExport();
+  $('recovery-export-dialog').close();
   syncScheduler.pause();
   forgetBriefSearchQuery();
   if (!busy && backupPreview) { clearBackupPreview(); $('backup-review').close(); }
@@ -3023,6 +3026,54 @@ async function removeEntity(type, id) {
 }
 function download(bytes, filename, type) { const url = URL.createObjectURL(new Blob([bytes], { type })); objectURLs.push(url); const a = document.createElement('a'); a.href = url; a.download = filename; document.body.append(a); a.click(); a.remove(); setTimeout(() => { URL.revokeObjectURL(url); objectURLs = objectURLs.filter(u => u !== url); }, 60000); }
 async function exportBackup() { const envelope = await seal(payload.bundle, key, meta); download(JSON.stringify({ format: 'pharmacy-backup-1', envelope }), `pharmacy-${new Date().toISOString().slice(0, 10)}.pharmabackup`, 'application/octet-stream'); await persist({ ...payload, lastBackupExport: new Date().toISOString() }); renderHealthAudit(); toast('已產生加密備份，請儲存到本機或外接碟。'); }
+function clearRecoveryExport() {
+  recoveryExportContext = null;
+  $('recovery-export-form').reset();
+  $('recovery-password').value = ''; $('recovery-password-again').value = '';
+  $('recovery-export-ack').checked = false;
+  $('recovery-export-error').textContent = ''; $('recovery-export-result').textContent = '';
+  $('recovery-export-basis').textContent = '';
+}
+async function openRecoveryExport() {
+  assertBackupIdle();
+  if (!payload || !key || backupPreview || recoveryExportContext || syncInProgress || updateHolding) throw new Error('請先解鎖並完成目前同步或備份核對。');
+  clearRecoveryExport();
+  syncEpoch++; syncScheduler.pause(); // Invalidate any in-flight read-only sync probe.
+  const ctx = { payload, key, meta, revision: localRevision, epoch: syncEpoch, baseline: JSON.stringify(payload) };
+  recoveryExportContext = ctx;
+  try {
+    await assertRecoveryExportCurrent(ctx, false);
+    $('recovery-export-basis').textContent = `範圍：這台裝置目前保存的全部正式版本，共 ${payload.bundle.ops.length} 個版本。${payload.dirty ? '仍有尚待 Mac 確認的本機資料；本副本不代表雙端已同步。' : '其他裝置未同步的內容不包含在內。'}`;
+    openDialog($('recovery-export-dialog'));
+  } catch (error) { clearRecoveryExport(); throw error; }
+}
+async function assertRecoveryExportCurrent(ctx, requireOpen = true) {
+  const check = () => {
+    if (!ctx || recoveryExportContext !== ctx || payload !== ctx.payload || key !== ctx.key || meta !== ctx.meta || localRevision !== ctx.revision || syncEpoch !== ctx.epoch || JSON.stringify(payload) !== ctx.baseline || document.hidden || pendingLock || updateHolding || syncInProgress || (requireOpen && !$('recovery-export-dialog').open)) throw new Error('資料或工作階段已變更，請重新開啟另存備份；尚未下載。');
+    assertBackupIdle();
+  };
+  check();
+  const disk = await readLocal();
+  check();
+  if (!disk || disk.revision !== ctx.revision) throw new Error('另一個視窗已更新資料，請重新開啟另存備份；尚未下載。');
+}
+async function exportRecoveryBackup() {
+  const ctx = recoveryExportContext;
+  let password = $('recovery-password').value, confirmation = $('recovery-password-again').value;
+  const acknowledged = $('recovery-export-ack').checked;
+  $('recovery-password').value = ''; $('recovery-password-again').value = ''; $('recovery-export-ack').checked = false;
+  try {
+    if (!acknowledged) throw new Error('請先確認獨立復原副本的用途。');
+    await assertRecoveryExportCurrent(ctx);
+    const pending = createRecoveryBackup(ctx.payload.bundle, password, confirmation);
+    password = confirmation = '';
+    const output = await pending;
+    await assertRecoveryExportCurrent(ctx);
+    const filename = `pharmacy-recovery-new-password-${new Date().toISOString().replace(/[:.]/g, '-')}.pharmabackup`;
+    download(output.text, filename, 'application/octet-stream');
+    $('recovery-export-result').textContent = `已產生新密碼備份下載，並在記憶體完成解密比對及來源／附件完整性檢查。共 ${output.summary.revisions} 個版本；一般歷史引用警告 ${output.warnings} 項（未補正）。請確認檔案實際存好，再於空白隔離環境手動輸入新密碼驗證。SHA256：${output.sha256}。未改動正式資料、配對或原密碼；下載不等於檔案已保存或還原驗收通過。`;
+  } finally { password = confirmation = ''; $('recovery-password').value = ''; $('recovery-password-again').value = ''; }
+}
 function assertBackupIdle() {
   if (editorContext || singleStoreContext || inlineTextContext || reminderContext || dayPlanContext || monthlyVisitContext || payload?.draft || payload?.inlineTextDraft || storedReminderDrafts().length || csvImport.hasPending() || $('review').open || $('quick-text-dialog').open || $('store-reminder-dialog').open || $('rebuild-dialog').open) throw new Error('請先完成或取消目前的編輯、草稿或核對，再檢查備份；原輸入保持不變。');
   if (pendingLock || document.hidden) throw new Error('App 已離開前景，請返回後重新選取備份。');
@@ -3323,6 +3374,7 @@ document.addEventListener('click', event => {
   }
   if (b.id === 'check-connection') return run(checkConnection);
   if (b.id === 'run-health-audit') return run(async () => { await runPeriodicHealthAudit(true); toast('唯讀健檢已重新完成；沒有修改任何客戶紀錄。'); });
+  if (b.id === 'export-recovery-backup') return run(openRecoveryExport);
   if (b.id === 'export-backup') return run(exportBackup);
   if (b.id === 'import-backup') return $('backup-file').click();
   if (b.id === 'repair-pair') return openRepairPair();
@@ -3444,6 +3496,9 @@ $('review').addEventListener('input', event => { if (singleStoreContext && event
 $('review').addEventListener('change', event => { if (singleStoreContext && event.target.closest('#single-store-capture-form') && event.target.id !== 'single-store-files') scheduleVisitDraftSave(); });
 $('quality-content').addEventListener('change', e => { if (e.target.id === 'quality-field') { qualityField = e.target.value; qualityPage = 0; renderQuality(); } });
 $('gate-restore').addEventListener('click', () => { if (!$('password').value) { $('gate-error').textContent = '請先在密碼欄填寫備份密碼。'; return; } $('backup-file').click(); });
+$('recovery-export-form').addEventListener('submit', event => { event.preventDefault(); void run(exportRecoveryBackup, 'recovery-export-error'); });
+$('recovery-export-dialog').addEventListener('cancel', () => { clearRecoveryExport(); });
+$('recovery-export-dialog').addEventListener('close', () => { clearRecoveryExport(); });
 $('backup-file').addEventListener('change', () => { const f = $('backup-file').files[0]; if (f) run(() => importBackup(f), payload ? null : 'gate-error'); $('backup-file').value = ''; });
 $('backup-review-body').addEventListener('click', event => {
   if (busy) return;
@@ -3471,7 +3526,7 @@ new ResizeObserver(drawGraph).observe($('graph-wrap'));
 if (!isSecureContext || !crypto.subtle) { $('gate-error').textContent = '需要受信任的 HTTPS 連線。請完成 Mac 與 iPhone 憑證設定，不要略過憑證警告。'; $('gate-submit').disabled = true; }
 else {
   showGate();
-  const draftBusy = () => busy || gateOpening || !!backupPreview || !!editorContext || !!inlineTextContext || !!reminderContext || !!dayPlanContext || !!monthlyVisitContext || !!payload?.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('store-reminder-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending() || (!$('gate').hidden && [...$('gate-form').querySelectorAll('input')].some(el => el.value && !['device-name'].includes(el.id)));
+  const draftBusy = () => busy || gateOpening || !!recoveryExportContext || !!backupPreview || !!editorContext || !!inlineTextContext || !!reminderContext || !!dayPlanContext || !!monthlyVisitContext || !!payload?.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('store-reminder-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending() || (!$('gate').hidden && [...$('gate-form').querySelectorAll('input')].some(el => el.value && !['device-name'].includes(el.id)));
   for (const name of ['click', 'submit', 'keydown', 'beforeinput']) document.addEventListener(name, event => { if (updateHolding && event.target.closest('button,input,select,textarea,form,a')) { event.preventDefault(); event.stopImmediatePropagation(); } }, true);
   startUpdates({ api, hasToken: () => !!payload?.token, isBusy: draftBusy, setHold: held => { updateHolding = held; if (held) { syncEpoch++; syncScheduler.pause(); } else syncScheduler.wake(); document.body.classList.toggle('update-holding', held); }, notify: toast, onOfflineReady: () => { offlineReady = true; $('secure-state').textContent = '離線介面已備妥。iPhone 請先加入主畫面，再從主畫面進行配對。'; status(); } });
   if (location.hostname === 'localhost') $('secure-state').textContent = '請使用 Mac 顯示的 .local 網址開啟 App，管理頁才使用 localhost。';

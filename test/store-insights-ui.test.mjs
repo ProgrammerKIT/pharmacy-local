@@ -42,7 +42,7 @@ async function harness() {
     }
     return nodes.get(id);
   };
-  c = vm.createContext({ $, structuredClone, JSON, Set, Date, storeInsightsForStore, storeInsightDisplayForStore, storeInsightEvidenceForEntry, planStoreInsights, applyStoreInsights, buildStoreInsightsSource, insightReviewForEntry, storeInsightReviewHistory, planInsightReview, applyInsightReview,
+  c = vm.createContext({ recoveryExportContext: null, clearRecoveryExport() {}, $, structuredClone, JSON, Set, Date, storeInsightsForStore, storeInsightDisplayForStore, storeInsightEvidenceForEntry, planStoreInsights, applyStoreInsights, buildStoreInsightsSource, insightReviewForEntry, storeInsightReviewHistory, planInsightReview, applyInsightReview,
     key: fixture.key, meta: structuredClone(fixture.meta), payload: { device: 'synthetic-ui-device', token: 'synthetic-token', bundle: structuredClone(fixture.bundle), dirty: false },
     localRevision: 7, slot: state.disk, localSaveState: 'saved', syncInProgress: false, pendingLock: false, busy: false, updateHolding: false,
     insightsPreview: null, storeMergePreview: null, storeMergeSetup: null, backupPreview: null, versionReview: null, resolutionPreview: null, editorContext: null, singleStoreContext: null, inlineTextContext: null, reminderContext: null, dayPlanContext: null, monthlyVisitContext: null, attendancePrompt: null,
