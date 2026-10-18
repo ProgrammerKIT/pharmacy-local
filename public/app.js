@@ -1,5 +1,5 @@
-import { createRecoveryBackup, newMeta, checkEnvelope, derive, seal, unseal, planBackupImport, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates, buildStoreEnrichmentRequest, planStoreEnrichment, applyStoreEnrichment, readonlyHealthAudit, dataSafetySummary, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, addReminderTasks, convertReminderTasks, completeReminderTask, reminderTaskHistory, searchStoreVisitText, storeInsightDisplayForStore, storeInsightEvidenceForEntry, insightReviewForEntry, insightSharedReviewForEntry, storeInsightReviewHistory, planInsightReview, applyInsightReview, planStoreInsights, applyStoreInsights, planStoreInsightRelations, applyStoreInsightRelations, buildStoreInsightsSource, planStoreMerge, applyStoreMerge } from './core.js';
-import { readLocal, writeLocal, archiveAndReplaceLocal, listLocalArchives, readLocalArchive } from './db.js';
+import { setupWeeklyRecovery, prepareWeeklyRecovery, createRecoveryBackup, newMeta, checkEnvelope, derive, seal, unseal, planBackupImport, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates, buildStoreEnrichmentRequest, planStoreEnrichment, applyStoreEnrichment, readonlyHealthAudit, dataSafetySummary, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, addReminderTasks, convertReminderTasks, completeReminderTask, reminderTaskHistory, searchStoreVisitText, storeInsightDisplayForStore, storeInsightEvidenceForEntry, insightReviewForEntry, insightSharedReviewForEntry, storeInsightReviewHistory, planInsightReview, applyInsightReview, planStoreInsights, applyStoreInsights, planStoreInsightRelations, applyStoreInsightRelations, buildStoreInsightsSource, planStoreMerge, applyStoreMerge } from './core.js';
+import { readWeeklyRecovery, writeWeeklyRecovery, readLocal, writeLocal, archiveAndReplaceLocal, listLocalArchives, readLocalArchive } from './db.js';
 import { dayPlanDate, shiftDayPlanDate, dayPlanForStore, dayPlanOverview, dayItineraryBasis, applyDayItineraryAction } from './core.js';
 import { monthlyVisitMonth, shiftMonthlyVisitMonth, monthlyVisitForStore, monthlyVisitOverview, monthlyVisitBasis, applyMonthlyVisitAction } from './core.js';
 import { createCSVImport } from './csv-ui.js';
@@ -343,6 +343,7 @@ let updateHolding = false, macProgram = null, lastSyncFailure = null, syncWarnin
 let draftTimer = null, draftSaveChain = Promise.resolve(), discardingDraft = false, singleStoreContext = null, quickTextContext = null, inlineTextContext = null, inlineDraftTimer = null, inlineDraftSaveChain = Promise.resolve(), reminderContext = null, transientResumeState = null;
 let versionReview = null, resolutionPreview = null;
 let recoveryExportContext = null;
+let weeklyContext = null, weeklyState = null, weeklyRunning = false, weeklyRetryAt = 0;
 let coordinatePreview = null, enrichmentPreview = null, backupPreview = null, insightsPreview = null;
 let storeMergePreview = null, storeMergeSetup = null;
 let dayPlanSelectedDate = '', dayPlanContext = null, dayPlanSorting = false, dayPlanViewBasis = '', dayPlanNotice = '', dayPlanUndo = null;
@@ -476,7 +477,7 @@ function buttons(disabled) {
     if (disabled) { el.dataset.busyDisabled = el.disabled ? '1' : '0'; el.disabled = true; }
     else if (el.dataset.busyDisabled !== undefined) { el.disabled = el.dataset.busyDisabled === '1'; delete el.dataset.busyDisabled; }
   });
-  if (!disabled) { updateBackupControls(); refreshBriefSearch(); if (typeof updateStoreMergeControls === 'function') updateStoreMergeControls(); }
+  if (!disabled) { if ($('weekly-download')) $('weekly-download').disabled = !weeklyState?.lastSuccess; updateBackupControls(); refreshBriefSearch(); if (typeof updateStoreMergeControls === 'function') updateStoreMergeControls(); }
 }
 async function run(fn, errorTarget) {
   if (busy || updateHolding) return;
@@ -913,13 +914,14 @@ async function openWorkspace() {
   document.body.classList.toggle('privacy-veil', pendingLock);
   try { storagePersistent = await navigator.storage?.persist?.() || false; } catch {}
   restoreTransientResumeState(); renderBackupResult(); await runPeriodicHealthAudit(); clearInterval(autoTimer);
-  autoTimer = setInterval(() => syncScheduler.request('poll'), 15000);
+  autoTimer = setInterval(() => { syncScheduler.request('poll'); setTimeout(() => void weeklyTick(), 1500); }, 15000);
+  setTimeout(() => void weeklyTick(), 3000);
   syncScheduler.request('foreground');
   requestNearbyPosition();
 }
 function currentHealthAudit() {
   const pending = pendingSyncSummary();
-  return readonlyHealthAudit({ pendingCount: pending.count, pendingUnknown: pending.unknown, conflicts: records.filter(record => record.conflict).length, identityPending: all('store').filter(storeIdentityPending).length, lastSync: payload.lastSync, lastBackup: payload.lastBackupExport, appVersion: APP_VERSION, macVersion: macProgram?.version || '', now: Date.now() });
+  return readonlyHealthAudit({ pendingCount: pending.count, pendingUnknown: pending.unknown, conflicts: records.filter(record => record.conflict).length, identityPending: all('store').filter(storeIdentityPending).length, lastSync: payload.lastSync, lastBackup: payload.lastBackupExport, weeklyBackup: weeklyState?.config?.vaultId === payload.bundle?.vaultId ? weeklyState : null, appVersion: APP_VERSION, macVersion: macProgram?.version || '', now: Date.now() });
 }
 function renderHealthAudit() {
   if (!payload || !$('health-audit-list')) return;
@@ -985,7 +987,7 @@ function createSyncScheduler({ ready, attempt, now = Date.now, setTimer = setTim
 }
 function canAutoSync(ignoreFetching = false) {
   return !!(key && payload?.token) && navigator.onLine !== false && !document.hidden && !pendingLock && !updateHolding && !busy && !gateOpening &&
-    (ignoreFetching || !autoFetching) && !syncInProgress && !recoveryExportContext && !backupPreview && !editorContext && !singleStoreContext && !inlineTextContext && !reminderContext && !dayPlanContext && !monthlyVisitContext && !attendancePrompt && !payload.inlineTextDraft &&
+    (ignoreFetching || !autoFetching) && !syncInProgress && !recoveryExportContext && !weeklyContext && !weeklyRunning && !backupPreview && !editorContext && !singleStoreContext && !inlineTextContext && !reminderContext && !dayPlanContext && !monthlyVisitContext && !attendancePrompt && !payload.inlineTextDraft &&
     !['review', 'editor', 'quick-text-dialog', 'store-reminder-dialog', 'rebuild-dialog', 'backup-review', 'visit-attendance-dialog', 'day-plan-dialog', 'monthly-visit-dialog'].some(id => $(id)?.open) && !csvImport.hasPending();
 }
 function syncSession() { return { key, meta, token: payload?.token, device: payload?.device, epoch: syncEpoch, inline: inlineTextContext, editor: editorContext, reminder: reminderContext, dayPlan: dayPlanContext, monthly: monthlyVisitContext, single: singleStoreContext, attendance: attendancePrompt }; }
@@ -1019,6 +1021,7 @@ async function autoSync() {
   return result;
 }
 function lockNow(reopen = !document.hidden) {
+  clearWeeklySetup(); $('weekly-dialog')?.close(); weeklyState = null; if ($('weekly-status')) $('weekly-status').textContent = '解鎖後檢查自動備份狀態。';
   clearRecoveryExport();
   $('recovery-export-dialog').close();
   syncScheduler.pause();
@@ -1131,7 +1134,7 @@ function renderDataSafetyEntry() {
   const drafts = (payload.draft?.format === 'visit-draft-1' ? 1 : 0) + (payload.inlineTextDraft?.format === 'inline-text-draft-1' ? 1 : 0) + reminders;
   const summary = dataSafetySummary({ localState: localSaveState, paired: !!payload.token, syncing: autoFetching || syncInProgress,
     dirty: payload.dirty, pending: pendingSyncSummary(), lastSync: payload.lastSync, conflicts: records.filter(r => r.conflict).length,
-    syncError: lastError, backupWarning: syncWarning || currentHealthAudit().checks.some(check => check.code === 'backup-age' && check.level === 'warning'), drafts, reminderDrafts: reminders });
+    syncError: lastError, backupWarning: syncWarning || currentHealthAudit().checks.some(check => ['backup-age','weekly-backup'].includes(check.code) && ['warning','action'].includes(check.level)), drafts, reminderDrafts: reminders });
   entry.dataset.state = summary.state;
   $('data-safety-title').textContent = summary.title;
   $('data-safety-detail').textContent = summary.detail;
@@ -3026,6 +3029,119 @@ async function removeEntity(type, id) {
 }
 function download(bytes, filename, type) { const url = URL.createObjectURL(new Blob([bytes], { type })); objectURLs.push(url); const a = document.createElement('a'); a.href = url; a.download = filename; document.body.append(a); a.click(); a.remove(); setTimeout(() => { URL.revokeObjectURL(url); objectURLs = objectURLs.filter(u => u !== url); }, 60000); }
 async function exportBackup() { const envelope = await seal(payload.bundle, key, meta); download(JSON.stringify({ format: 'pharmacy-backup-1', envelope }), `pharmacy-${new Date().toISOString().slice(0, 10)}.pharmabackup`, 'application/octet-stream'); await persist({ ...payload, lastBackupExport: new Date().toISOString() }); renderHealthAudit(); toast('已產生加密備份，請儲存到本機或外接碟。'); }
+// Weekly recovery settings and jobs never persist the customer payload or pairing.
+function clearWeeklySetup() {
+  weeklyContext = null;
+  $('weekly-form')?.reset();
+  if ($('weekly-password')) $('weekly-password').value = '';
+  if ($('weekly-proof')) $('weekly-proof').value = '';
+}
+function assertWeeklyIdle() {
+  if (document.hidden || pendingLock || updateHolding || syncInProgress || editorContext || singleStoreContext || inlineTextContext || reminderContext || dayPlanContext || monthlyVisitContext || attendancePrompt || backupPreview || recoveryExportContext || csvImport.hasPending() || ['review','editor','quick-text-dialog','store-reminder-dialog','rebuild-dialog','backup-review'].some(id => $(id)?.open)) throw new Error('等待目前編輯或核對完成後，自動補做正式資料備份。');
+}
+function weeklyReady() {
+  if (!payload?.token || !key || navigator.onLine === false || busy || gateOpening || autoFetching || weeklyContext || weeklyRunning) return false;
+  try { assertWeeklyIdle(); return true; } catch { return false; }
+}
+function weeklySession() { return { payload, key, meta, revision: localRevision, epoch: syncEpoch }; }
+async function assertWeeklyCurrent(ctx) {
+  const check = () => {
+    if (!ctx || payload !== ctx.payload || key !== ctx.key || meta !== ctx.meta || localRevision !== ctx.revision || syncEpoch !== ctx.epoch || document.hidden || pendingLock || updateHolding || syncInProgress) throw new Error('資料或工作階段已變更；保留原資料，下次安全時補做備份。');
+    assertWeeklyIdle();
+  };
+  check(); const disk = await readLocal(); check();
+  if (!disk || disk.revision !== ctx.revision) throw new Error('另一個視窗更新了資料；下次安全時補做備份。');
+}
+function renderWeeklyStatus(state = weeklyState, notice = '') {
+  const target = $('weekly-status'); if (!target) return;
+  const labels = { unconfigured: '尚未設定', 'waiting-current-copy': '等待最新資料加密，恢復後補做', ready: '已備妥，等待排程', success: '最近排程已成功保存', failed: '備份失敗，會再補做' };
+  let text = notice || labels[state?.status] || '尚待連線檢查';
+  if (state?.config) text += `\n排程：每週${'日一二三四五六'[state.config.weekday]} ${String(state.config.hour).padStart(2,'0')}:${String(state.config.minute).padStart(2,'0')}（台北時間）`;
+  if (state?.lastSuccess) text += `\n最近成功：${dateText(state.lastSuccess.at)}；Mac 資料版本 ${state.lastSuccess.sourceVersion}\n檔案：${state.lastSuccess.name}\nSHA256：${state.lastSuccess.sha256}`;
+  if (state?.sourceVersion != null) text += `\nMac 目前資料版本：${state.sourceVersion}。${state.lastSuccess && state.lastSuccess.sourceVersion !== state.sourceVersion ? '最近成功備份尚未涵蓋此版本。' : ''}`;
+  if (state?.nextDueAt) text += `\n下次排程：${dateText(state.nextDueAt)}`;
+  if (state?.lastError) text += `\n最近失敗：${dateText(state.lastError.at)} · ${state.lastError.message}`;
+  if (payload?.dirty) text += '\n此裝置仍有未同步資料，尚未包含在 Mac 備份內。';
+  text += '\n只涵蓋 Mac 已收到的正式資料；手機尚未同步及未完成草稿不在內。同一 Mac 保存不等於離機備份。';
+  target.textContent = text;
+  $('weekly-download').disabled = !state?.lastSuccess;
+  if (typeof renderHealthAudit === 'function') renderHealthAudit();
+  if (typeof renderDataSafetyEntry === 'function') renderDataSafetyEntry();
+}
+async function openWeeklySetup() {
+  assertWeeklyIdle();
+  if (!payload?.token || !key || weeklyRunning || recoveryExportContext || backupPreview || syncInProgress) throw new Error('請先完成配對與同步，再設定自動備份。');
+  clearWeeklySetup(); syncEpoch++; syncScheduler.pause();
+  const ctx = weeklySession(); weeklyContext = ctx;
+  try { weeklyState = await api('/api/recovery-backup/status'); await assertWeeklyCurrent(ctx); } catch (error) { clearWeeklySetup(); throw error; }
+  if (weeklyContext !== ctx) throw new Error('設定已關閉。');
+  ctx.config = weeklyState.config;
+  $('weekly-weekday').value = String(ctx.config?.weekday ?? 5);
+  $('weekly-time').value = `${String(ctx.config?.hour ?? 21).padStart(2,'0')}:${String(ctx.config?.minute ?? 0).padStart(2,'0')}`;
+  $('weekly-error').textContent = ''; renderWeeklyStatus(); openDialog($('weekly-dialog'));
+}
+async function saveWeeklySetup() {
+  const ctx = weeklyContext, proofFile = $('weekly-proof').files?.[0];
+  let password = $('weekly-password').value; $('weekly-password').value = '';
+  try {
+    if (!ctx || !$('weekly-dialog').open || !$('weekly-ack').checked) throw new Error('請閱讀並勾選自動備份設定。');
+    if (!proofFile || proofFile.size > 36 * 1024 * 1024) throw new Error('請選取已驗證的新密碼備份（上限36MB）。');
+    await assertWeeklyCurrent(ctx);
+    const proof = await proofFile.text();
+    const pending = setupWeeklyRecovery(proof,password,ctx.meta); password = '';
+    const config = await pending; await assertWeeklyCurrent(ctx);
+    if (weeklyContext !== ctx || !$('weekly-dialog').open) throw new Error('設定已取消。');
+    const weekday = Number($('weekly-weekday').value), time = $('weekly-time').value;
+    if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(time) || !Number.isInteger(weekday) || weekday < 0 || weekday > 6) throw new Error('請選擇有效的台北星期與時間。');
+    const [hour,minute] = time.split(':').map(Number);
+    const same = ctx.config && ctx.config.weekday === weekday && ctx.config.hour === hour && ctx.config.minute === minute;
+    if (same && ctx.config.recoveryMeta && (ctx.config.recoveryMeta.salt !== config.meta.salt || ctx.config.recoveryMeta.iterations !== config.meta.iterations)) throw new Error('請選取與目前自動備份設定相同的原始驗證檔。');
+    const id = same ? ctx.config.id : uuid();
+    const prior = await readWeeklyRecovery(id); await assertWeeklyCurrent(ctx);
+    if (prior && (prior.sourceVaultId !== ctx.meta.vaultId || prior.meta.salt !== config.meta.salt || prior.meta.iterations !== config.meta.iterations)) throw new Error('此裝置的備份金鑰與排程不一致，已停止設定。');
+    if (!prior) await writeWeeklyRecovery(id,{...config,sourceVaultId:ctx.meta.vaultId});
+    await assertWeeklyCurrent(ctx);
+    if (weeklyContext !== ctx || !$('weekly-dialog').open) throw new Error('設定已取消；未變更排程。');
+    if (!same) weeklyState = await api('/api/recovery-backup/config',{method:'POST',body:{expectedConfigId:ctx.config?.id || null,configId:id,weekday,hour,minute,vaultId:ctx.meta.vaultId,recoveryMeta:{salt:config.meta.salt,iterations:config.meta.iterations},enabled:true}});
+    clearWeeklySetup(); $('weekly-dialog').close();
+    renderWeeklyStatus(weeklyState,'設定已保存；等待安全同步後，先建立第一份完整備份。');
+    weeklyRetryAt = 0; setTimeout(()=>void weeklyTick(),1000);
+  } finally { password=''; $('weekly-password').value=''; $('weekly-proof').value=''; }
+}
+async function weeklyTick(force = false) {
+  if (weeklyRunning || weeklyContext || !weeklyReady() || recoveryExportContext || (Date.now() < weeklyRetryAt && !force)) return;
+  try { assertWeeklyIdle(); } catch { return; }
+  weeklyRunning = true; syncScheduler.pause();
+  try {
+    await run(async () => {
+      const ctx = weeklySession();
+      weeklyState = await api('/api/recovery-backup/status'); await assertWeeklyCurrent(ctx); renderWeeklyStatus();
+      if (!weeklyState.config) return;
+      if (payload.dirty || payload.serverVersion !== weeklyState.sourceVersion) syncScheduler.request('foreground');
+      const config = await readWeeklyRecovery(weeklyState.config.id); await assertWeeklyCurrent(ctx);
+      if (!config) { renderWeeklyStatus(weeklyState,'此裝置尚未設定備份金鑰。請完成一次設定，或開啟已設定的裝置補做。'); return; }
+      if (weeklyState.status !== 'failed' && weeklyState.stage?.sourceVersion === weeklyState.sourceVersion && weeklyState.stage?.sourceSha256 === weeklyState.sourceSha256) return;
+      const remote = await api('/api/snapshot'); await assertWeeklyCurrent(ctx);
+      if (remote.version !== weeklyState.sourceVersion) throw new Error('Mac 資料已更新；等待同步後補做。');
+      const sourceSha256 = await hashBytes(new TextEncoder().encode(JSON.stringify(remote.envelope)));
+      if (sourceSha256 !== weeklyState.sourceSha256) throw new Error('Mac 資料已更新；等待同步後補做。');
+      renderWeeklyStatus(weeklyState,'正在核對全部版本與附件，準備新密碼加密副本…');
+      const output = await prepareWeeklyRecovery(remote.envelope,ctx.key,config); await assertWeeklyCurrent(ctx);
+      weeklyState = await api('/api/recovery-backup/stage',{method:'POST',body:{configId:weeklyState.config.id,expectedVersion:remote.version,sourceSha256,envelope:output.envelope,sha256:output.sha256}});
+      await assertWeeklyCurrent(ctx); renderWeeklyStatus(); weeklyRetryAt = Date.now()+15000;
+    },'weekly-status');
+  } catch (error) { renderWeeklyStatus(weeklyState,'自動備份尚未完成：'+error.message); }
+  finally { weeklyRunning=false; weeklyRetryAt=Math.max(weeklyRetryAt,Date.now()+30000); syncScheduler.wake(); }
+}
+async function downloadWeeklyBackup() {
+  if (!weeklyState?.lastSuccess) throw new Error('尚無可下載的成功備份。');
+  const success = weeklyState.lastSuccess;
+  const backup = await api('/api/recovery-backup/file?name='+encodeURIComponent(success.name));
+  const text = JSON.stringify(backup);
+  if (await hashBytes(new TextEncoder().encode(text)) !== success.sha256) throw new Error('下載內容雜湊不符，已停止。');
+  download(text,success.name,'application/octet-stream');
+}
+
 function clearRecoveryExport() {
   recoveryExportContext = null;
   $('recovery-export-form').reset();
@@ -3036,7 +3152,7 @@ function clearRecoveryExport() {
 }
 async function openRecoveryExport() {
   assertBackupIdle();
-  if (!payload || !key || backupPreview || recoveryExportContext || syncInProgress || updateHolding) throw new Error('請先解鎖並完成目前同步或備份核對。');
+  if (!payload || !key || backupPreview || recoveryExportContext || syncInProgress || updateHolding || weeklyContext || weeklyRunning) throw new Error('請先解鎖並完成目前同步或備份核對。');
   clearRecoveryExport();
   syncEpoch++; syncScheduler.pause(); // Invalidate any in-flight read-only sync probe.
   const ctx = { payload, key, meta, revision: localRevision, epoch: syncEpoch, baseline: JSON.stringify(payload) };
@@ -3526,7 +3642,7 @@ new ResizeObserver(drawGraph).observe($('graph-wrap'));
 if (!isSecureContext || !crypto.subtle) { $('gate-error').textContent = '需要受信任的 HTTPS 連線。請完成 Mac 與 iPhone 憑證設定，不要略過憑證警告。'; $('gate-submit').disabled = true; }
 else {
   showGate();
-  const draftBusy = () => busy || gateOpening || !!recoveryExportContext || !!backupPreview || !!editorContext || !!inlineTextContext || !!reminderContext || !!dayPlanContext || !!monthlyVisitContext || !!payload?.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('store-reminder-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending() || (!$('gate').hidden && [...$('gate-form').querySelectorAll('input')].some(el => el.value && !['device-name'].includes(el.id)));
+  const draftBusy = () => busy || gateOpening || !!recoveryExportContext || !!weeklyContext || weeklyRunning || !!backupPreview || !!editorContext || !!inlineTextContext || !!reminderContext || !!dayPlanContext || !!monthlyVisitContext || !!payload?.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('store-reminder-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending() || (!$('gate').hidden && [...$('gate-form').querySelectorAll('input')].some(el => el.value && !['device-name'].includes(el.id)));
   for (const name of ['click', 'submit', 'keydown', 'beforeinput']) document.addEventListener(name, event => { if (updateHolding && event.target.closest('button,input,select,textarea,form,a')) { event.preventDefault(); event.stopImmediatePropagation(); } }, true);
   startUpdates({ api, hasToken: () => !!payload?.token, isBusy: draftBusy, setHold: held => { updateHolding = held; if (held) { syncEpoch++; syncScheduler.pause(); } else syncScheduler.wake(); document.body.classList.toggle('update-holding', held); }, notify: toast, onOfflineReady: () => { offlineReady = true; $('secure-state').textContent = '離線介面已備妥。iPhone 請先加入主畫面，再從主畫面進行配對。'; status(); } });
   if (location.hostname === 'localhost') $('secure-state').textContent = '請使用 Mac 顯示的 .local 網址開啟 App，管理頁才使用 localhost。';
@@ -3575,3 +3691,10 @@ $('review').addEventListener('change', event => {
   if (['store-merge-ack', 'store-merge-devices'].includes(event.target.id)) updateStoreMergeControls();
   if (event.target.id === 'store-merge-backup-file') { const file = event.target.files[0]; event.target.value = ''; if (file) void run(() => verifyStoreMergeBackup(file), 'store-merge-error'); }
 });
+
+$('weekly-setup')?.addEventListener('click',()=>run(openWeeklySetup,'weekly-status'));
+$('weekly-form')?.addEventListener('submit',event=>{event.preventDefault();void run(saveWeeklySetup,'weekly-error');});
+$('weekly-dialog')?.addEventListener('close',clearWeeklySetup);
+$('weekly-dialog')?.addEventListener('cancel',clearWeeklySetup);
+$('weekly-refresh')?.addEventListener('click',()=>void weeklyTick(true));
+$('weekly-download')?.addEventListener('click',()=>run(downloadWeeklyBackup,'weekly-status'));

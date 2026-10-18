@@ -753,8 +753,36 @@ export function readonlyHealthAudit(input) {
   checks.push(input.identityPending > 0 ? { code: 'identity', level: 'action', text: `${input.identityPending} 間門市身分待確認。` } : { code: 'identity', level: 'ok', text: '沒有門市身分待確認。' });
   const syncAge = age(input.lastSync);
   checks.push(syncAge === null ? { code: 'sync-age', level: 'warning', text: '這台裝置尚未完成成功同步。' } : syncAge > week ? { code: 'sync-age', level: 'warning', text: '最近成功同步已超過 7 天。' } : { code: 'sync-age', level: 'ok', text: '最近 7 天內曾成功同步。' });
+  // The caller only supplies weekly state after checking its vault identity.
+  // Manual exports, scheduled Mac files and off-device copies remain distinct.
+  const weekly = input.weeklyBackup && input.weeklyBackup.status !== 'unconfigured'
+    && (input.weeklyBackup.config || ['ready', 'success', 'waiting-current-copy', 'failed'].includes(input.weeklyBackup.status)) ? input.weeklyBackup : null;
+  const weeklyAge = weekly?.lastSuccess ? age(weekly.lastSuccess.at) : null;
+  const sameWeeklyConfig = !weekly?.config?.id || !weekly?.lastSuccess?.configId || weekly.config.id === weekly.lastSuccess.configId;
+  const recentWeekly = !!weekly && sameWeeklyConfig && weekly.status !== 'failed' && weeklyAge !== null && weeklyAge >= 0 && weeklyAge <= week;
   const backupAge = age(input.lastBackup);
-  checks.push(backupAge === null ? { code: 'backup-age', level: 'warning', text: '這台裝置尚無由 App 匯出加密備份的紀錄。' } : backupAge > week ? { code: 'backup-age', level: 'warning', text: '最近由 App 匯出加密備份已超過 7 天。' } : { code: 'backup-age', level: 'ok', text: '最近 7 天內曾由 App 匯出加密備份。' });
+  const manualBackup = backupAge === null ? { code: 'backup-age', level: 'warning', text: '這台裝置尚無由 App 匯出加密備份的紀錄。' } : backupAge > week ? { code: 'backup-age', level: 'warning', text: '最近由 App 匯出加密備份已超過 7 天。' } : { code: 'backup-age', level: 'ok', text: '最近 7 天內曾由 App 匯出加密備份。' };
+  if (recentWeekly && manualBackup.level === 'warning') {
+    manualBackup.level = 'info';
+    manualBackup.text = (backupAge === null ? '這台裝置尚無手動匯出加密備份的紀錄。' : '最近手動匯出加密備份已超過 7 天。') + '最近 7 天內另有每週自動備份成功紀錄；不代表已另存離機副本。';
+  }
+  checks.push(manualBackup);
+  if (weekly) {
+    let level = 'ok', text;
+    if (weekly.status === 'failed') { level = 'warning'; text = '每週自動備份最近一次失敗，請查看失敗原因；先前成功紀錄不代表本次已完成。'; }
+    else if (!sameWeeklyConfig || !weekly.lastSuccess) { level = 'warning'; text = '目前每週自動備份設定尚無成功保存紀錄，等待可執行時補做。'; }
+    else if (weeklyAge === null || weeklyAge < 0) { level = 'warning'; text = '每週自動備份成功時間不正確或晚於目前時間，尚無法確認最近備份。'; }
+    else if (weeklyAge > week) { level = 'warning'; text = '最近成功的每週自動備份已超過 7 天，請查看服務與補做狀態。'; }
+    else if (weekly.due === true || (weekly.status === 'waiting-current-copy' && weekly.due !== false)) { level = 'warning'; text = '本次每週自動備份已到期，等待最新正式資料加密後補做；先前成功備份仍保留。'; }
+    else {
+      const lastVersion = weekly.lastSuccess.sourceVersion, versionKnown = Number.isSafeInteger(lastVersion) && lastVersion >= 0;
+      text = `最近 7 天內每週自動備份已在 Mac 保存成功${versionKnown ? `（資料版本 ${lastVersion}）` : ''}。`;
+      if (versionKnown && Number.isSafeInteger(weekly.sourceVersion) && weekly.sourceVersion > lastVersion) {
+        level = 'info'; text += `Mac 目前版本 ${weekly.sourceVersion} 較新，等待下一次排程；最近成功備份尚未涵蓋此版本。`;
+      }
+    }
+    checks.push({ code: 'weekly-backup', level, text: text + 'Mac 上的保存不等於離機備份，也不代表未同步的手機資料已包含。' });
+  }
   if (!input.macVersion) checks.push({ code: 'program', level: 'info', text: 'Mac 程式版本尚待連線確認。' });
   else checks.push(input.macVersion === input.appVersion ? { code: 'program', level: 'ok', text: `本機與 Mac 程式版本一致（v${input.appVersion}）。` } : { code: 'program', level: 'warning', text: `版本不一致：本機 v${input.appVersion}，Mac v${input.macVersion}。` });
   const attention = checks.filter(check => ['action', 'warning'].includes(check.level)).length;
@@ -881,6 +909,57 @@ export async function createRecoveryBackup(bundle, password, confirmation) {
     const text = JSON.stringify({ format: 'pharmacy-backup-1', envelope });
     return { text, sha256: await hashBytes(enc.encode(text)), summary: plan.summary.incoming, warnings: plan.summary.warnings.length };
   } finally { password = confirmation = ''; recoveryKey = null; }
+}
+
+function weeklyRecoveryMeta(value) {
+  let salt;
+  try { salt = typeof value?.salt === 'string' ? unb64(value.salt) : null; } catch {}
+  if (!value || typeof value.vaultId !== 'string' || !value.vaultId || value.vaultId.length > 100 || value.iterations !== ITERATIONS || salt?.length !== 16 || b64(salt) !== value.salt) throw new Error('每週備份的加密設定不正確。');
+  return { vaultId: value.vaultId, salt: value.salt, iterations: value.iterations };
+}
+function weeklyRecoveryKey(key) {
+  if (typeof CryptoKey === 'undefined' || !(key instanceof CryptoKey) || key.type !== 'secret' || key.extractable !== false || key.algorithm?.name !== 'AES-GCM' || key.algorithm.length !== 256 || !key.usages.includes('encrypt') || !key.usages.includes('decrypt')) throw new Error('每週備份需要此裝置安全保存的備份金鑰，請重新驗證備份密碼。');
+  return key;
+}
+function separateWeeklyRecoveryMeta(source, backup) {
+  if (source.vaultId !== backup.vaultId) throw new Error('這份復原備份屬於不同資料庫；每週備份設定未變更。');
+  if (source.salt === backup.salt) throw new Error('請選取使用新備份密碼另存的復原備份，不能沿用正式資料庫的加密設定。');
+}
+// Prove the privately entered password against an existing recovery file. Only
+// its nonextractable key and public encryption metadata leave this function.
+export async function setupWeeklyRecovery(proofText, password, sourceMeta) {
+  let key;
+  try {
+    if (typeof proofText !== 'string' || proofText.length > 36 * 1024 * 1024 || enc.encode(proofText).length > 36 * 1024 * 1024) throw new Error('請選取大小不超過 36 MB 的復原備份。');
+    if (typeof password !== 'string' || !password.length || password.length > 1024) throw new Error('請自行輸入這份復原備份的密碼。');
+    const source = weeklyRecoveryMeta(sourceMeta);
+    let proof;
+    try { proof = JSON.parse(proofText); } catch { throw new Error('復原備份不是有效的 JSON 檔案。'); }
+    if (proof?.format !== 'pharmacy-backup-1') throw new Error('請選取已驗證的新密碼復原備份。');
+    checkEnvelope(proof.envelope);
+    const meta = weeklyRecoveryMeta(proof.envelope);
+    separateWeeklyRecoveryMeta(source, meta);
+    key = weeklyRecoveryKey(await derive(password, meta));
+    password = '';
+    const bundle = validateBundle(await unseal(proof.envelope, key));
+    if (bundle.vaultId !== meta.vaultId) throw new Error('復原備份內容與資料庫身分不符。');
+    await planBackupImport(null, bundle);
+    return { key, meta, proofSha256: await hashBytes(enc.encode(proofText)) };
+  } finally { password = ''; key = null; }
+}
+// Encrypt precisely the shared snapshot supplied by the caller. Device payloads,
+// drafts, pairing tokens and database writes are deliberately outside this API.
+export async function prepareWeeklyRecovery(sourceEnvelope, sourceKey, backupConfig) {
+  const source = structuredClone(sourceEnvelope), meta = weeklyRecoveryMeta(backupConfig?.meta), key = weeklyRecoveryKey(backupConfig?.key);
+  checkEnvelope(source);
+  separateWeeklyRecoveryMeta(weeklyRecoveryMeta(source), meta);
+  weeklyRecoveryKey(sourceKey);
+  const bundle = validateBundle(await unseal(source, sourceKey));
+  if (bundle.vaultId !== source.vaultId) throw new Error('來源快照內容與資料庫身分不符。');
+  const original = JSON.stringify(bundle), plan = await planBackupImport(null, bundle);
+  const envelope = await seal(bundle, key, meta);
+  if (JSON.stringify(await unseal(envelope, key)) !== original) throw new Error('每週備份完整性驗證失敗；尚未交付保存。');
+  return { envelope, sha256: await hashBytes(enc.encode(JSON.stringify({ format: 'pharmacy-backup-1', envelope }))), summary: plan.summary.incoming, warnings: plan.summary.warnings.length };
 }
 
 // Nearby-store calculations are read-only. Map viewports and opaque place IDs are

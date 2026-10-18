@@ -32,7 +32,7 @@ function fakeClock() {
   };
 }
 function schedulerHarness() {
-  const clock = fakeClock(), calls = [], notices = [], c = vm.createContext({ recoveryExportContext: null, clearRecoveryExport() {}, Date, Math, Promise });
+  const clock = fakeClock(), calls = [], notices = [], c = vm.createContext({ recoveryExportContext: null, clearRecoveryExport() {}, weeklyContext: null, weeklyRunning: false, weeklyState: null, clearWeeklySetup() {}, Date, Math, Promise });
   vm.runInContext(section('function createSyncScheduler(', 'function canAutoSync('), c);
   const control = { ready: true, result: 'success', implementation: null };
   const scheduler = c.createSyncScheduler({ ready: () => control.ready,
@@ -181,7 +181,7 @@ async function appHarness() {
   const initial = { schema: 1, device: 'synthetic-phone', deviceName: 'Synthetic phone', token: 'synthetic-token', bundle: structuredClone(baseBundle), dirty: false, serverVersion: 1, lastSync: OLD, pendingSync: { entities: [], unknown: false } };
   const local = { revision: 1, envelope: await seal(initial, syntheticKey, syntheticMeta, 'device') };
   const $ = id => { if (!elements.has(id)) elements.set(id, { textContent: '', open: false, dataset: {}, hidden: false }); return elements.get(id); };
-  const c = vm.createContext({ recoveryExportContext: null, clearRecoveryExport() {}, Math, Promise, Error, Set, key: syntheticKey, meta: syntheticMeta, payload: initial, localRevision: 1, slot: null,
+  const c = vm.createContext({ recoveryExportContext: null, clearRecoveryExport() {}, weeklyContext: null, weeklyRunning: false, weeklyState: null, clearWeeklySetup() {}, Math, Promise, Error, Set, key: syntheticKey, meta: syntheticMeta, payload: initial, localRevision: 1, slot: null,
     localSaveState: 'saved', syncInProgress: false, syncEpoch: 0, autoFetching: false, updateHolding: false, pendingLock: false, gateOpening: false, busy: false,
     backupPreview: null, editorContext: null, singleStoreContext: null, inlineTextContext: null, reminderContext: null, dayPlanContext: null, monthlyVisitContext: null, attendancePrompt: null,
     document: { hidden: false }, navigator: { onLine: true }, csvImport: { hasPending: () => false }, records: project(initial.bundle),
