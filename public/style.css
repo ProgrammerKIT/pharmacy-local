@@ -355,3 +355,5 @@ dialog:focus{outline:none}
 
 /* Source filenames wrap without shrinking the download control. */
 button[data-csv-source-snapshot]{flex:none;min-height:44px}
+
+#weekly-status { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }

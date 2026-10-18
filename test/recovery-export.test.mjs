@@ -33,7 +33,7 @@ async function harness(){
  const {meta,bundle}=await fixture(),nodes=new Map(),calls={downloads:[],diskReads:0,pauses:0};
  const $=id=>{if(!nodes.has(id))nodes.set(id,{value:'',checked:false,open:false,textContent:'',reset(){},close(){this.open=false;}});return nodes.get(id);};
  const payload={bundle,device:'synthetic-device',token:'synthetic-token',dirty:true};
- const c=vm.createContext({$,payload,key:{synthetic:true},meta,localRevision:7,syncEpoch:0,recoveryExportContext:null,backupPreview:null,syncInProgress:false,updateHolding:false,pendingLock:false,document:{hidden:false},JSON,Date,
+ const c=vm.createContext({$,payload,key:{synthetic:true},meta,localRevision:7,syncEpoch:0,recoveryExportContext:null,weeklyContext:null,weeklyRunning:false,backupPreview:null,syncInProgress:false,updateHolding:false,pendingLock:false,document:{hidden:false},JSON,Date,
   syncScheduler:{pause(){calls.pauses++;}},assertBackupIdle(){if(c.draftBlocked)throw Error('draft blocked');},
   readLocal:async()=>{calls.diskReads++;if(c.onRead)c.onRead();return {revision:c.diskRevision};},diskRevision:7,
   createRecoveryBackup:core.createRecoveryBackup,download:(...args)=>calls.downloads.push(args),openDialog:node=>node.open=true,

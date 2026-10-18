@@ -24,7 +24,7 @@ async function fixture() {
 async function client(f, device = 'phone') {
   const elements = new Map(), calls = [], local = { envelope: null };
   const $ = id => { if (!elements.has(id)) elements.set(id, { textContent: '', hidden: false, open: false, dataset: {} }); return elements.get(id); };
-  const c = vm.createContext({ recoveryExportContext: null, clearRecoveryExport() {},
+  const c = vm.createContext({ recoveryExportContext: null, clearRecoveryExport() {}, weeklyContext: null, weeklyRunning: false, weeklyState: null, clearWeeklySetup() {},
     localSaveState: 'saved', syncInProgress: false, syncEpoch: 0, pendingLock: false, gateOpening: false,
     singleStoreContext: null, dayPlanContext: null, monthlyVisitContext: null, attendancePrompt: null, navigator: { onLine: true }, dataSafetySummary,
     currentHealthAudit: () => ({ checks: [] }),

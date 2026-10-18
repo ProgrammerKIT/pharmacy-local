@@ -50,3 +50,35 @@ export async function readLocalArchive(id) {
   const db = await open();
   return new Promise((resolve, reject) => { const r = db.transaction('vault').objectStore('vault').get(id); r.onsuccess = () => resolve(r.result || null); r.onerror = () => reject(r.error); });
 }
+
+function weeklyRecoveryId(id) {
+  if (typeof id !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(id)) throw new Error('每週備份設定識別不正確。');
+  return 'weekly-recovery:' + id;
+}
+function weeklyRecoveryRecord(value) {
+  const key = value?.key, meta = value?.meta;
+  if (typeof CryptoKey === 'undefined' || !(key instanceof CryptoKey) || key.type !== 'secret' || key.extractable !== false || key.algorithm?.name !== 'AES-GCM' || key.algorithm.length !== 256 || !key.usages.includes('encrypt') || !key.usages.includes('decrypt')) throw new Error('每週備份金鑰不正確，請重新驗證備份密碼。');
+  let salt;
+  try { salt = typeof meta?.salt === 'string' ? atob(meta.salt) : null; } catch {}
+  if (!meta || typeof meta.vaultId !== 'string' || !meta.vaultId || meta.vaultId.length > 100 || meta.iterations !== 600000 || salt?.length !== 16 || btoa(salt) !== meta.salt || value.sourceVaultId !== meta.vaultId || typeof value.proofSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(value.proofSha256)) throw new Error('每週備份設定內容不正確。');
+  return { key, meta: { vaultId: meta.vaultId, salt: meta.salt, iterations: meta.iterations }, sourceVaultId: value.sourceVaultId, proofSha256: value.proofSha256 };
+}
+export async function readWeeklyRecovery(id) {
+  const recordId = weeklyRecoveryId(id), db = await open();
+  return new Promise((resolve, reject) => {
+    const r = db.transaction('vault').objectStore('vault').get(recordId);
+    r.onsuccess = () => { try { resolve(r.result == null ? null : weeklyRecoveryRecord(r.result)); } catch (error) { reject(error); } };
+    r.onerror = () => reject(r.error);
+  });
+}
+export async function writeWeeklyRecovery(id, value) {
+  const recordId = weeklyRecoveryId(id), record = weeklyRecoveryRecord(value), db = await open();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('vault', 'readwrite');
+    // Configuration IDs are immutable: changing configuration preserves old keys
+    // and never replaces the live vault/main record or its unlock key.
+    tx.objectStore('vault').add(record, recordId);
+    tx.oncomplete = () => resolve();
+    tx.onabort = tx.onerror = () => reject(new Error('每週備份設定無法保存，或此設定已存在；原資料與既有設定保持原樣。'));
+  });
+}
