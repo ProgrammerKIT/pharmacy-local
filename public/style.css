@@ -357,3 +357,11 @@ dialog:focus{outline:none}
 button[data-csv-source-snapshot]{flex:none;min-height:44px}
 
 #weekly-status { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+
+/* Compact confirmed history; only substantive unread changes get a badge. */
+.confirmed-insights-group>summary{cursor:pointer;padding:8px 0;font-size:.88rem;color:var(--muted)}
+.confirmed-insights-group .store-insight-card{margin-top:8px}
+.insight-change-badge{display:inline-block;min-height:32px;padding:4px 10px;margin:4px 0;border-radius:18px;font-size:.8rem;background:#fff5df;color:#79530b;border:1px solid #dfc997}
+.insight-change-item{padding:12px 0;border-top:1px solid var(--line);overflow-wrap:anywhere}
+.insight-change-item blockquote{margin:8px 0;padding:10px 14px;border-left:3px solid var(--teal);white-space:pre-wrap;background:var(--pale)}
+#insight-changes-dialog{width:min(760px,calc(100vw - 24px))}

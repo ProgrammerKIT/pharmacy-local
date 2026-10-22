@@ -181,7 +181,7 @@ test('opening a confirmed wrapper does not load original text; source expansion 
   assert.equal(JSON.stringify(h.context.payload.bundle), afterConcurrentUpdate); assert.equal(h.state.writes, 0);
 });
 
-test('updated sources keep confirmed headlines visible with an external notice and lazy exact historical text', () => {
+test('updated sources retain confirmed history with source notices inside collapsed details', () => {
   const h = harness(), storeId = 'qa-insight-a', entryId = 'qa-confirmed-relationship';
   const current = h.context.by('visit', 'qa-insight-note-a'), original = current.text;
   h.context.payload.bundle.ops.push(core.revision('visit', current.id, { ...current.heads[0].data, text: 'Synthetic replacement with no quoted evidence.' }, current.heads.map(head => head.id), 'synthetic-update'));
@@ -189,7 +189,9 @@ test('updated sources keep confirmed headlines visible with an external notice a
   h.open(storeId);
   const html = h.$('review-body').innerHTML, outer = h.find('data-insight-confirmed', entryId);
   assert.equal(outer.open, false);
-  assert.match(html, /<\/details><p class="insight-source-notice" role="note">來源已更新/);
+  assert.equal(h.find('data-insight-detail', 'confirmed-group').open, false);
+  assert.match(html, /<p class="insight-source-notice" role="note">來源已更新/);
+  assert.doesNotMatch(html, /<\/details><p class="insight-source-notice" role="note">來源已更新/);
   const currentCards = html.slice(html.indexOf('<section class="store-insights"'), html.indexOf('<details class="insight-review-archive"'));
   assert.doesNotMatch(currentCards, /data-insight-review=/);
   assert.match(currentCards, /歷史版本/);
