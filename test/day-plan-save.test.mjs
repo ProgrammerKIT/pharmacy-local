@@ -28,7 +28,7 @@ function fixture() {
   bundle.ops.push(revision('visit', 'note', { store: 'a', date: '', text: '保留原文\r\n 與空白 ', next: '', source: 'synthetic', people: [], topics: [], attachments: [] }, [], 'synthetic'));
   const original = structuredClone(bundle), key = {}, meta = {}, elements = new Map(), writes = [];
   const { node } = uiNodeFixture();
-  const sandbox = vm.createContext({ recoveryExportContext: null, clearRecoveryExport() {}, weeklyContext: null, weeklyRunning: false, weeklyState: null, clearWeeklySetup() {},
+  const sandbox = vm.createContext({ resetInsightScan() {}, recoveryExportContext: null, clearRecoveryExport() {}, weeklyContext: null, weeklyRunning: false, weeklyState: null, clearWeeklySetup() {},
     dayPlanContext: null, monthlyVisitContext: null, dayPlanSelectedDate: date, dayPlanViewBasis: '', dayPlanSorting: false, dayPlanNotice: '', dayPlanUndo: null,
     key, meta, localRevision: 4, syncEpoch: 8, payload: { bundle, device: 'synthetic', dirty: false }, records: project(bundle),
     document: { hidden: false, querySelector() { return node('day-plan-dialog').open ? node('day-plan-dialog') : null; } },
@@ -180,7 +180,7 @@ test('locking clears private itinerary and note displays using only DOM IDs that
   for (const id of ['day-plan-content', 'day-plan-entry', 'day-plan-fields', 'visit-list', 'review-body']) {
     assert.ok(strictNode(id), id + ' must exist'); strictNode(id).textContent = 'synthetic private content';
   }
-  const c = vm.createContext({ recoveryExportContext: null, clearRecoveryExport() {}, weeklyContext: null, weeklyRunning: false, weeklyState: null, clearWeeklySetup() {},
+  const c = vm.createContext({ resetInsightScan() {}, recoveryExportContext: null, clearRecoveryExport() {}, weeklyContext: null, weeklyRunning: false, weeklyState: null, clearWeeklySetup() {},
     $: strictNode, document: { hidden: false, body: { classList: { add() {}, remove() {} } }, querySelectorAll: selector => selector === 'dialog' ? [...nodes.values()].filter(node => node.tag === 'dialog') : [] },
     syncScheduler: { pause() {}, reset() {} }, forgetBriefSearchQuery() {}, captureTransientResumeState() {}, clearNearbyPosition() {},
     resetStoreFilters() {}, resetReminderOptionGroup() {}, showGate() {}, clearTimeout() {}, clearInterval() {},

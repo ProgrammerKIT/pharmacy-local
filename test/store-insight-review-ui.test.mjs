@@ -258,10 +258,12 @@ async function sharedHarness({ mapped = true } = {}) {
   return { ...h, original, input, change };
 }
 
-test('shared confirmation shows the exact peer headline directly, keeping provenance inside details and own history only', async () => {
+test('shared confirmation retains the exact peer headline inside a collapsed group with provenance and own history only', async () => {
   const h = await sharedHarness(), before = JSON.stringify(h.c.payload), html = h.c.storeInsightsHTML('qa-shared-b');
   const boundary = html.indexOf('<details class="insight-review-archive"'), current = html.slice(0, boundary), history = html.slice(boundary);
-  const summary = current.match(/<summary>([\s\S]*?)<\/summary>/)[1];
+  assert.match(current, /<details class="confirmed-insights-group"[^>]*><summary>已確認線索 · 1 項<\/summary>/);
+  assert.doesNotMatch(current.match(/<details class="confirmed-insights-group"[^>]*>/)[0], /\bopen\b/);
+  const summary = current.match(/<details class="insight-confirmed-details"[^>]*><summary>([\s\S]*?)<\/summary>/)[1];
   assert.match(summary, /陳示範的舊同事是林測試與王合成/); assert.match(summary, /Kit已確認/);
   assert.doesNotMatch(summary, /沿用|青禾|這次可以問/);
   assert.match(current, /data-insight-shared-from="qa-shared-a"/); assert.match(current, /沒有新增本店的審核紀錄/);
@@ -273,19 +275,20 @@ test('shared confirmation shows the exact peer headline directly, keeping proven
   assert.doesNotMatch(h.c.storeInsightsHTML('qa-shared-d'), /data-insight-confirmed=/, 'matching card IDs never establish UI approval');
 });
 
-test('shared confirmed source-update notices remain visible outside collapsed details without inventing local review', async () => {
+test('shared confirmed source-update notices remain available inside collapsed details without inventing local review', async () => {
   const h = await sharedHarness(), visit = h.c.by('visit', 'qa-shared-note-a');
   h.c.payload.bundle.ops.push(core.revision('visit', visit.id, { ...visit.heads[0].data, text: visit.text + '\n合成新版' }, [visit.heads[0].id], 'synthetic-ui-new-source'));
   const before = JSON.stringify(h.c.payload), entry = core.storeInsightDisplayForStore(h.c.payload.bundle, 'qa-shared-b').entries.find(item => item.id === 'qa-shared-relation-b');
   const html = h.c.insightEntryHTML(entry, '2026-10-16', '', h.c.by('store', 'qa-shared-b'));
   assert.match(html, /data-insight-confirmed="qa-shared-relation-b"/);
-  assert.match(html.slice(html.lastIndexOf('</details>')), /來源已更新/);
+  assert.match(html.slice(0, html.lastIndexOf('</details>')), /來源已更新/);
+  assert.doesNotMatch(html.slice(html.lastIndexOf('</details>')), /來源已更新/);
   assert.match(html, /data-insight-owner="qa-shared-b"/); assert.doesNotMatch(html, /data-insight-review=/);
   assert.equal(core.storeInsightReviewHistory(h.c.by('store', 'qa-shared-b')).length, 1);
   assert.equal(JSON.stringify(h.c.payload), before); assert.equal(h.state.writes.length, 0);
 });
 
-test('an explicit local pending keeps the original donor confirmation, visibly warns, and stops third-party inheritance', async () => {
+test('an explicit local pending keeps the original donor confirmation, retains its detailed warning, and stops third-party inheritance', async () => {
   const h = await sharedHarness(), previous = structuredClone(h.c.payload.bundle);
   await h.change('b', 'pending');
   assert.equal(h.state.writes.length, 1); assert.equal(h.c.payload.bundle.ops.length, previous.ops.length + 1);
@@ -294,7 +297,8 @@ test('an explicit local pending keeps the original donor confirmation, visibly w
   const donorEntry = core.storeInsightDisplayForStore(h.c.payload.bundle, 'qa-shared-a').entries[0];
   const donorHTML = h.c.insightEntryHTML(donorEntry, '2026-10-16', '', h.c.by('store', 'qa-shared-a'));
   assert.match(donorHTML, /data-insight-confirmed="qa-shared-relation-a"/);
-  assert.match(donorHTML.slice(donorHTML.lastIndexOf('</details>')), /人工判定不一致/);
+  assert.match(donorHTML.slice(0, donorHTML.lastIndexOf('</details>')), /人工判定不一致/);
+  assert.doesNotMatch(donorHTML.slice(donorHTML.lastIndexOf('</details>')), /人工判定不一致/);
   for (const id of ['b', 'c']) {
     const html = h.c.storeInsightsHTML('qa-shared-' + id);
     assert.doesNotMatch(html, /data-insight-confirmed=/); assert.match(html, /人工判定不一致/);

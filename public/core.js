@@ -1543,6 +1543,197 @@ export function storeInsightDisplayForStore(bundle, storeId) {
   }
   return { entries, staleCount, confirmedStaleCount };
 }
+// Read-only, deliberately narrow change detection. These rules only compare
+// explicit named-subject statements in formal visit text; they are not a general
+// language model or a claim that the real-world relationship has been verified.
+// Unsupported wording, ambiguity, uncertain identities and clock/date ambiguity
+// are omitted. No elapsed-time expiry, source-version-only alert, or write occurs.
+const insightScanName = "(?:[\\p{Script=Han}]{2,4}?|[A-Za-z][A-Za-z'-]{1,29}?)";
+const insightScanLead = '^\\s*(?:(?:經確認|本次確認|確認|更正)[，,:：]?\\s*)?';
+const insightScanEmployment = new RegExp(insightScanLead + '(' + insightScanName + ')(目前|現在|現已|已經|已|正式|曾經|曾|當時|仍然|仍)?(從[^，,。]{1,40}?(?:調到|調至|轉到)[^，,。]{1,40}|(?:在|於|任職於)[^，,。]{1,40}?(?:工作|任職|服務)|(?:是|擔任)[^，,。]{0,30}?(?:店長|藥師|負責人|採購|店員|主管|助理|經理)|離職(?:了)?|退休(?:了)?|離開本店(?:了)?|(?:調到|調至|轉到|轉任|改任|轉職至|轉調至)[^，,。]{1,40}|不再擔任[^，,。]{1,30})(?=[，,。!！;；]|$)', 'u');
+const insightScanRelation = new RegExp(insightScanLead + '(' + insightScanName + ')(?:與|和|跟)(' + insightScanName + ')(目前|現在|曾經|曾|當時|已經|已|原本)?(是同一人|為同一人|是同一位|不是同一人|並非同一人|是不同人|不是朋友|並非朋友|已不再是朋友|不再是朋友|已不再聯絡|不再聯絡|已結束合作|結束合作|已離婚|離婚|是朋友|為朋友|是同事|為同事|是夫妻|為夫妻|共事)(?=[，,。!！;；]|$)', 'u');
+const insightScanUncertain = /[?？]|是否|是不是|不知|不確定|待確認|待查|聽說|據說|可能|也許|好像|疑似|如果|假如|假設|若|計畫|打算|預計|準備|將會|將於|即將|想要|考慮|明年|明天|下週|下周|下月|尚未|還未|並未|沒有|未曾|否認|不是說|沒說|不會|誤傳|謠言|不實|假的|不是真的|不代表|不能證明|未證實|未確認|待核實|不可信|無法確認|不一定|不可能|似乎|搞錯|記錯|口誤|誤記|誤會|假消息|舉例/;
+const insightScanPast = /曾經|以前|過去|當年|去年|前年|多年前|上次已|之前已|早已|早就|舊聞|回顧|歷史|補記|補登/;
+const insightScanText = value => String(value).normalize('NFKC').replace(/[\p{P}\p{Z}\s]/gu, '').toLowerCase();
+function insightScanClauses(text) {
+  return String(text || '').match(/[^。！？!?\n；;]+[。！？!?；;]?/gu) || [];
+}
+function insightScanFacts(text, incoming = false) {
+  // Reject the entire incoming note when surrounding sentences disclaim the
+  // event. Splitting off '已離職' must not discard a later '這是誤傳／舊紀錄'.
+  // This intentionally misses mixed/complex notes rather than guessing scope.
+  if (incoming && (insightScanUncertain.test(text) || insightScanPast.test(text)
+    || /這是(?:當時|之前|舊|早期)|(?:假設|範例|演練|情境)[^\n]{0,80}[:：]/.test(text))) return [];
+  const facts = [];
+  for (const raw of insightScanClauses(text)) {
+    const quote = raw.trim(), clause = quote.normalize('NFKC').replace(/[\t ]+/g, '');
+    if (!clause || clause.length > 600 || insightScanUncertain.test(clause) || incoming && insightScanPast.test(clause)) continue;
+    const relation = insightScanRelation.exec(clause), employment = insightScanEmployment.exec(clause);
+    if (relation) {
+      const [, first, second, when = '', action] = relation;
+      if (first === second || incoming && /曾|當時|原本/.test(when)) continue;
+      const subjects = [first, second].sort(), historical = /曾|當時|原本/.test(when),
+        identity = /同一|不同人/.test(action), correction = /不是|並非|不同人/.test(action),
+        changed = correction || /不再|結束|離婚/.test(action),
+        state = identity ? correction ? 'different-people' : 'same-person' : /不再聯絡|結束合作/.test(action) ? 'contact-ended'
+          : /離婚/.test(action) ? 'divorced' : /不再是朋友|不是朋友|並非朋友/.test(action) ? 'not-friends'
+            : /朋友/.test(action) ? 'friends' : /夫妻/.test(action) ? 'married' : 'colleagues';
+      // A plain negative can concern the present or the past. Only a recorded
+      // correction has enough scope to compare a non-change statement.
+      if (incoming && (!changed || correction && !/經確認|本次確認|更正/.test(clause))) continue;
+      facts.push({ subjects, domain: identity ? 'identity' : 'relationship', state, historical, correction, quote,
+        signature: JSON.stringify([subjects, identity ? 'identity' : 'relationship', state]) });
+    } else if (employment) {
+      const [, subject, when = '', action] = employment;
+      if (incoming && /曾|當時/.test(when)) continue;
+      const historical = /曾|當時/.test(when) || /^從/.test(action) && !/已|現在|目前/.test(when),
+        moving = /調到|調至|轉到|轉任|改任|轉職至|轉調至/.test(action),
+        target = moving ? action.replace(/^.*?(?:調到|調至|轉到|轉任|改任|轉職至|轉調至)/, '').replace(/(?:工作|任職|服務|上班)$/, '') : '',
+        roleMatch = /(?:店長|藥師|負責人|採購|店員|主管|助理|經理)$/.exec(moving ? target : /^(?:是|擔任)/.test(action) ? action : ''),
+        role = roleMatch?.[0] || '',
+        place = moving ? (role ? target.slice(0, -role.length).replace(/(?:擔任|任)$/, '') : target)
+          : /^(?:在|於|任職於)/.test(action) ? action.replace(/^(?:任職於|在|於)/, '').replace(/(?:工作|任職|服務)$/, '')
+            : role ? action.replace(/^(?:是|擔任)/, '').slice(0, -role.length) : '',
+        state = /^離職|^離開本店/.test(action) ? 'left' : /^退休/.test(action) ? 'retired'
+          : /^不再擔任/.test(action) ? 'role-ended:' + insightScanText(action.replace(/^不再擔任/, ''))
+            : moving ? 'moved' : 'working';
+      if (incoming && (state === 'working' || historical || !(when || /了$|^(?:調|轉|改)/.test(action)))) continue;
+      facts.push({ subjects: [subject], domain: 'employment', state, place: insightScanText(place), role, historical, correction: false, quote,
+        signature: JSON.stringify([[subject], 'employment', state, insightScanText(place), role]) });
+    }
+  }
+  return facts;
+}
+function insightScanHeadlineSupports(headline, original) {
+  const matches = claim => claim.domain === original.domain && JSON.stringify(claim.subjects) === JSON.stringify(original.subjects);
+  if (insightScanFacts(headline).some(matches)) return true;
+  // Analysis headlines often wrap a literal named statement in a short source
+  // attribution. Recognize only these explicit wrappers, not arbitrary mentions
+  // of the name near a job keyword (e.g. a friendship claim quoting a job note).
+  if (insightScanUncertain.test(headline)) return false;
+  const subject = original.subjects.length === 1 ? original.subjects[0] : '';
+  const transfer = subject && new RegExp('^' + subject + '(?:目前|現在|當時|曾經|曾|已經|已)?(?:由|從)[^，,。；;]{1,40}?(?:調來|(?:調到|調至|轉到|轉任)[^，,。；;的]{1,40})(?=[，,。；;]|$)', 'u');
+  for (const raw of insightScanClauses(headline)) {
+    const clause = raw.normalize('NFKC').replace(/[\t ]+/g, ''),
+      attributed = clause.replace(/^(?:(?:本店|本次|舊|原|拜訪)?(?:紀錄|記錄|筆記)(?:記載|提到|寫到|寫|顯示)?)[：:]?/, '');
+    if (attributed === clause) continue;
+    if (insightScanFacts(attributed).some(matches)) return true;
+    if (original.domain === 'employment' && transfer && transfer.test(attributed)) return true;
+  }
+  return false;
+}
+function insightScanPeople(visitData, subject, index) {
+  const people = (visitData.people || []).map(id => index.get('person:' + id)).filter(person => person
+    && (person.name === subject || person.versions.some(op => op.data.name === subject)));
+  return { ids: people.map(person => person.id), unsafe: people.some(person => person.name !== subject || person.confirmed !== true
+    || person.deleted || person.conflict || person.sameAs || person.heads.length !== 1) };
+}
+function insightScanSameSubjects(original, source, candidate, context) {
+  if (original.domain !== candidate.fact.domain || JSON.stringify(original.subjects) !== JSON.stringify(candidate.fact.subjects)) return false;
+  const oldVisit = context.revisions.get(source.revisionId)?.data;
+  if (!oldVisit) return false;
+  for (const subject of original.subjects) {
+    const oldPeople = insightScanPeople(oldVisit, subject, context.index), newPeople = insightScanPeople(candidate.visit, subject, context.index),
+      oldIds = oldPeople.ids, newIds = newPeople.ids;
+    if (oldPeople.unsafe || newPeople.unsafe) return false;
+    // Same names across stores are never identities. An explicit, safe confirmed
+    // person ID on both source and new note is the only cross-store path.
+    if (source.storeId !== candidate.visit.store && (oldIds.length !== 1 || newIds.length !== 1 || oldIds[0] !== newIds[0])) return false;
+    if (oldIds.length > 1 || newIds.length > 1 || oldIds.length && newIds.length && oldIds[0] !== newIds[0]) return false;
+  }
+  return true;
+}
+function insightScanComparison(original, incoming) {
+  if (original.signature === incoming.signature) return null;
+  if (incoming.domain === 'identity') {
+    if (original.state !== 'same-person' || incoming.state !== 'different-people') return null;
+    return { kind: 'possible-contradiction', reason: '新筆記明確更正同一人判斷，可能與原線索矛盾；原確認及歷史仍保留。' };
+  }
+  if (incoming.domain === 'relationship') {
+    const comparable = incoming.state === 'not-friends' && original.state === 'friends'
+      || incoming.state === 'divorced' && original.state === 'married'
+      || incoming.state === 'contact-ended' && ['friends', 'colleagues'].includes(original.state);
+    if (!comparable) return null;
+    return { kind: incoming.correction && !original.historical ? 'possible-contradiction' : 'important-change',
+      reason: original.historical ? '新筆記記載同一主體的關係現況變化；這不否定原線索記載的歷史。'
+        : incoming.correction ? '新筆記明確更正原關係說法，可能與原線索矛盾；尚未取代原確認。'
+          : '新筆記明確記載同一主體的關係變化，可能影響後續互動；原確認仍保留。' };
+  }
+  // Another departure is not new information simply because its wording or
+  // record ID changed. Employment changes cannot contradict a past transfer.
+  if (['left', 'retired'].includes(original.state) && ['left', 'retired'].includes(incoming.state)) return null;
+  if (incoming.state === 'moved' && ['working', 'moved'].includes(original.state)
+    && (incoming.role && incoming.role === original.role && (!incoming.place || !original.place || incoming.place === original.place)
+      || !incoming.role && incoming.place && incoming.place === original.place)) return null;
+  return { kind: 'important-change', reason: original.historical
+    ? '新筆記記載同一主體的任職現況變化；這不否定原線索記載的歷史。'
+    : '新筆記明確記載同一主體的離職、調任或職務變化，可能影響後續互動；原確認仍保留。' };
+}
+export async function scanInsightChanges(bundle) {
+  validateBundle(bundle);
+  const context = insightEvidenceContext(bundle), bySubject = new Map(), factsByRevision = new Map(), stores = [];
+  const revisionFacts = op => {
+    if (!factsByRevision.has(op.id)) factsByRevision.set(op.id, insightScanFacts(op.data.text));
+    return factsByRevision.get(op.id);
+  };
+  for (const visit of context.index.values()) {
+    if (visit.type !== 'visit' || !safeInsightVisit(visit, context.index)) continue;
+    const head = visit.heads[0];
+    if (!insightInstant(head.at)) continue;
+    for (const fact of insightScanFacts(visit.text, true)) {
+      const key = JSON.stringify([fact.subjects, fact.domain]), list = bySubject.get(key) || [];
+      list.push({ fact, visit, head }); bySubject.set(key, list);
+    }
+  }
+  for (const store of context.index.values()) {
+    if (store.type !== 'store' || !safeInsightStore(store) || !validStoreInsights(store.preVisitInsights)) continue;
+    const changes = [];
+    for (const entry of store.preVisitInsights.entries) {
+      const review = sharedInsightReview(context, store.id, entry), local = currentInsightEvent(store, entry);
+      if (review.status !== 'confirmed' || review.sharedConflict || !insightInstant(review.reviewedAt)) continue;
+      const event = local || context.index.get('store:' + review.sharedFrom?.storeId)?.preVisitInsightReviews?.find(item => item.id === review.sharedFrom.eventId);
+      if (!event || event.status !== 'confirmed' || (store.storeMergeStaleEntries || []).some(item => item.id === entry.id && item.key === insightEntryKey(entry))) continue;
+      const resolved = entry.evidence.map(source => resolveInsightEvidenceForDisplay(source, context));
+      // Source safety is not reclassified as a semantic contradiction. Keep the
+      // strict sourceCurrent write gate independent from these display hints.
+      if (resolved.some(source => !source.historicalAvailable || !safeInsightStore(context.index.get('store:' + source.storeId))
+        || storeInsightsIdentityKey(context.index.get('store:' + source.storeId)) !== source.storeIdentityKey
+        || !safeInsightVisit(context.index.get('visit:' + source.visitId), context.index)
+        || context.index.get('visit:' + source.visitId).store !== source.storeId)) continue;
+      const seen = new Set();
+      for (const source of entry.evidence.filter(item => item.role === 'support')) for (const original of insightScanFacts(source.quote)) {
+        // A quoted incidental person is insufficient: the card's actual claim
+        // must name every compared subject. Questions/limitations are not claims.
+        if (!original.subjects.every(subject => entry.headline.includes(subject))
+          || !insightScanHeadlineSupports(entry.headline, original)) continue;
+        const candidates = bySubject.get(JSON.stringify([original.subjects, original.domain])) || [];
+        for (const candidate of candidates) {
+          const { fact, visit, head } = candidate;
+          if (head.at <= review.reviewedAt || !insightScanSameSubjects(original, source, candidate, context)) continue;
+          // A newly imported old diary entry is not a newly occurring event.
+          if (visit.date && visit.date < attendanceTaipeiDate(review.reviewedAt)
+            && !(visit.id === source.visitId && /目前|現在|本次確認|經確認|更正/.test(fact.quote))) continue;
+          if (entry.evidence.some(old => insightScanText(old.quote).includes(insightScanText(fact.quote)))) continue;
+          if (visit.versions.some(op => insightInstant(op.at) && op.at <= review.reviewedAt
+            && revisionFacts(op).some(old => old.signature === fact.signature))) continue;
+          const comparison = insightScanComparison(original, fact);
+          if (!comparison) continue;
+          const semantic = JSON.stringify([visit.store, visit.id, fact.signature, comparison.kind]);
+          if (seen.has(semantic)) continue;
+          seen.add(semantic);
+          const id = await hashBytes(enc.encode(JSON.stringify(['insight-change-1', bundle.vaultId, store.id,
+            canonicalInsightEntry(entry), canonicalInsightReview(event), semantic, comparison.reason])));
+          changes.push({ id, entryId: entry.id, ...comparison,
+            originalEvidence: entry.evidence.map(old => ({ storeId: old.storeId, visitId: old.visitId, revisionId: old.revisionId, quote: old.quote })),
+            newEvidence: { storeId: visit.store, visitId: visit.id, revisionId: head.id, quote: fact.quote } });
+        }
+      }
+    }
+    if (changes.length) stores.push({ storeId: store.id, changes: changes.sort((a, b) => a.id.localeCompare(b.id)) });
+  }
+  return { stores: stores.sort((a, b) => a.storeId.localeCompare(b.storeId)) };
+}
+
 // Explicitly downloaded private analysis source: current heads only, with a
 // fixed field allowlist. Never include CSV, snapshots, blobs or full history.
 export function buildStoreInsightsSource(bundle, at = new Date().toISOString()) {

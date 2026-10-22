@@ -1,4 +1,4 @@
-import { setupWeeklyRecovery, prepareWeeklyRecovery, createRecoveryBackup, newMeta, checkEnvelope, derive, seal, unseal, planBackupImport, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates, buildStoreEnrichmentRequest, planStoreEnrichment, applyStoreEnrichment, readonlyHealthAudit, dataSafetySummary, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, addReminderTasks, convertReminderTasks, completeReminderTask, reminderTaskHistory, searchStoreVisitText, storeInsightDisplayForStore, storeInsightEvidenceForEntry, insightReviewForEntry, insightSharedReviewForEntry, storeInsightReviewHistory, planInsightReview, applyInsightReview, planStoreInsights, applyStoreInsights, planStoreInsightRelations, applyStoreInsightRelations, buildStoreInsightsSource, planStoreMerge, applyStoreMerge } from './core.js';
+import { setupWeeklyRecovery, prepareWeeklyRecovery, createRecoveryBackup, newMeta, checkEnvelope, derive, seal, unseal, planBackupImport, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates, buildStoreEnrichmentRequest, planStoreEnrichment, applyStoreEnrichment, readonlyHealthAudit, dataSafetySummary, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, addReminderTasks, convertReminderTasks, completeReminderTask, reminderTaskHistory, searchStoreVisitText, scanInsightChanges, storeInsightDisplayForStore, storeInsightEvidenceForEntry, insightReviewForEntry, insightSharedReviewForEntry, storeInsightReviewHistory, planInsightReview, applyInsightReview, planStoreInsights, applyStoreInsights, planStoreInsightRelations, applyStoreInsightRelations, buildStoreInsightsSource, planStoreMerge, applyStoreMerge } from './core.js';
 import { readWeeklyRecovery, writeWeeklyRecovery, readLocal, writeLocal, archiveAndReplaceLocal, listLocalArchives, readLocalArchive } from './db.js';
 import { dayPlanDate, shiftDayPlanDate, dayPlanForStore, dayPlanOverview, dayItineraryBasis, applyDayItineraryAction } from './core.js';
 import { monthlyVisitMonth, shiftMonthlyVisitMonth, monthlyVisitForStore, monthlyVisitOverview, monthlyVisitBasis, applyMonthlyVisitAction } from './core.js';
@@ -914,10 +914,10 @@ async function openWorkspace() {
   document.body.classList.toggle('privacy-veil', pendingLock);
   try { storagePersistent = await navigator.storage?.persist?.() || false; } catch {}
   restoreTransientResumeState(); renderBackupResult(); await runPeriodicHealthAudit(); clearInterval(autoTimer);
-  autoTimer = setInterval(() => { syncScheduler.request('poll'); setTimeout(() => void weeklyTick(), 1500); }, 15000);
+  autoTimer = setInterval(() => { void insightReviewTick(); syncScheduler.request('poll'); setTimeout(() => void weeklyTick(), 1500); }, 15000);
   setTimeout(() => void weeklyTick(), 3000);
   syncScheduler.request('foreground');
-  requestNearbyPosition();
+  queueInsightScan(); requestNearbyPosition();
 }
 function currentHealthAudit() {
   const pending = pendingSyncSummary();
@@ -988,7 +988,7 @@ function createSyncScheduler({ ready, attempt, now = Date.now, setTimer = setTim
 function canAutoSync(ignoreFetching = false) {
   return !!(key && payload?.token) && navigator.onLine !== false && !document.hidden && !pendingLock && !updateHolding && !busy && !gateOpening &&
     (ignoreFetching || !autoFetching) && !syncInProgress && !recoveryExportContext && !weeklyContext && !weeklyRunning && !backupPreview && !editorContext && !singleStoreContext && !inlineTextContext && !reminderContext && !dayPlanContext && !monthlyVisitContext && !attendancePrompt && !payload.inlineTextDraft &&
-    !['review', 'editor', 'quick-text-dialog', 'store-reminder-dialog', 'rebuild-dialog', 'backup-review', 'visit-attendance-dialog', 'day-plan-dialog', 'monthly-visit-dialog'].some(id => $(id)?.open) && !csvImport.hasPending();
+    !['review', 'editor', 'quick-text-dialog', 'store-reminder-dialog', 'rebuild-dialog', 'backup-review', 'visit-attendance-dialog', 'day-plan-dialog', 'monthly-visit-dialog', 'insight-changes-dialog'].some(id => $(id)?.open) && !csvImport.hasPending();
 }
 function syncSession() { return { key, meta, token: payload?.token, device: payload?.device, epoch: syncEpoch, inline: inlineTextContext, editor: editorContext, reminder: reminderContext, dayPlan: dayPlanContext, monthly: monthlyVisitContext, single: singleStoreContext, attendance: attendancePrompt }; }
 function assertSyncSession(session, bundle) {
@@ -1017,10 +1017,11 @@ async function autoSync() {
     });
   } catch (e) {
     if (e.code !== 'sync-paused' && payload && key === session.key && meta === session.meta && payload.token === session.token && syncEpoch === session.epoch) { recordSyncFailure(e); result = 'failure'; }
-  } finally { autoFetching = false; renderDataSafetyEntry(); }
+  } finally { autoFetching = false; queueInsightScan(); renderDataSafetyEntry(); }
   return result;
 }
 function lockNow(reopen = !document.hidden) {
+  resetInsightScan();
   clearWeeklySetup(); $('weekly-dialog')?.close(); weeklyState = null; if ($('weekly-status')) $('weekly-status').textContent = '解鎖後檢查自動備份狀態。';
   clearRecoveryExport();
   $('recovery-export-dialog').close();
@@ -1420,6 +1421,82 @@ function assertInsightsIdle() {
   if (!payload || editorContext || singleStoreContext || inlineTextContext || reminderContext || dayPlanContext || monthlyVisitContext || payload.draft || payload.inlineTextDraft || storedReminderDrafts().length || csvImport.hasPending() || backupPreview || $('review').open || $('quick-text-dialog').open || $('store-reminder-dialog').open || $('rebuild-dialog').open || attendancePrompt) throw new Error('請先完成目前編輯、草稿或核對，再處理拜訪前線索。');
   if (pendingLock || document.hidden) throw new Error('請回到 App 後重新操作。');
 }
+// Local, read-only monitoring. No timer writes customer data or review events.
+const INSIGHT_SCAN_INTERVAL = 15 * 60 * 1000;
+let insightScanCache = null, insightScanRunning = false, insightScanGeneration = 0, insightScanTimer = null, insightScanError = '', insightChangesContext = null;
+function insightScanBasis() { return payload ? payload.bundle.vaultId + ':' + payload.bundle.ops.map(op => op.id).sort().join('|') : ''; }
+function canScanInsights(allowBusy = false) {
+  return !!(payload && key) && !document.hidden && !pendingLock && !updateHolding && (allowBusy || !busy) && !autoFetching && !syncInProgress && !gateOpening &&
+    !editorContext && !singleStoreContext && !inlineTextContext && !reminderContext && !dayPlanContext && !monthlyVisitContext && !attendancePrompt && !backupPreview && !insightsPreview && !storeMergePreview && !storeMergeSetup && !recoveryExportContext && !weeklyContext && !weeklyRunning && !csvImport.hasPending() &&
+    !['editor', 'quick-text-dialog', 'store-reminder-dialog', 'rebuild-dialog', 'backup-review', 'visit-attendance-dialog', 'day-plan-dialog', 'monthly-visit-dialog'].some(id => $(id)?.open) &&
+    (!$('review')?.open || $('review').classList.contains('visit-brief-dialog'));
+}
+function queueInsightScan() {
+  if (insightScanTimer || !payload) return;
+  insightScanTimer = setTimeout(() => { insightScanTimer = null; void insightReviewTick(); }, 1800);
+}
+function resetInsightScan() {
+  insightScanGeneration++; clearTimeout(insightScanTimer); insightScanTimer = null; insightScanCache = null; insightScanRunning = false; insightScanError = ''; insightChangesContext = null;
+  $('insight-changes-body')?.replaceChildren();
+  if ($('insight-changes-title')) $('insight-changes-title').textContent = '線索新變化';
+  if ($('insight-changes-error')) $('insight-changes-error').textContent = '';
+  if ($('insight-scan-status')) $('insight-scan-status').textContent = '';
+}
+async function insightReviewTick({ force = false, allowBusy = false } = {}) {
+  if (!canScanInsights(allowBusy) || insightScanRunning) return false;
+  const basis = insightScanBasis(), now = Date.now();
+  if (!force && insightScanCache?.basis === basis && now - insightScanCache.at < INSIGHT_SCAN_INTERVAL) return true;
+  const session = { key, meta, bundle: payload.bundle, epoch: syncEpoch, generation: insightScanGeneration };
+  insightScanRunning = true;
+  try {
+    const result = await scanInsightChanges(session.bundle);
+    if (!canScanInsights(allowBusy) || key !== session.key || meta !== session.meta || payload.bundle !== session.bundle || syncEpoch !== session.epoch || insightScanGeneration !== session.generation) return false;
+    insightScanCache = { basis, at: Date.now(), result }; insightScanError = '';
+    refreshInsightChangeBadges(); return true;
+  } catch {
+    if (canScanInsights(allowBusy) && key === session.key && meta === session.meta && payload.bundle === session.bundle && syncEpoch === session.epoch && insightScanGeneration === session.generation) { insightScanError = '本次線索檢視未完成，稍後會重試；原確認保留。'; refreshInsightChangeBadges(); }
+    return false;
+  } finally { if (insightScanGeneration === session.generation) insightScanRunning = false; }
+}
+function currentInsightChanges(storeId) {
+  if (!insightScanCache || insightScanCache.basis !== insightScanBasis()) return [];
+  return insightScanCache.result.stores.find(store => store.storeId === storeId)?.changes || [];
+}
+function insightReadIds() {
+  const state = payload?.insightChangeRead;
+  return new Set(state?.vaultId === payload?.bundle.vaultId && Array.isArray(state.ids) ? state.ids.filter(id => typeof id === 'string' && /^[a-f0-9]{64}$/.test(id)) : []);
+}
+function refreshInsightChangeBadges() {
+  document.querySelectorAll('[data-insight-change-slot]').forEach(node => { node.innerHTML = insightChangeBadgeHTML(node.dataset.insightChangeSlot); });
+  const node = $('insight-scan-status');
+  if (node) node.textContent = insightScanError || (insightScanCache?.basis === insightScanBasis() ? `最近檢視：${dateText(new Date(insightScanCache.at).toISOString())}。只提示有明確新證據的可能變化，不代表已證實或涵蓋所有語意。` : '新資料將在可檢視時補查；原確認維持。');
+}
+function renderInsightChanges() {
+  const ctx = insightChangesContext; if (!ctx) return;
+  const changes = currentInsightChanges(ctx.storeId), seen = insightReadIds();
+  $('insight-changes-title').textContent = (by('store', ctx.storeId)?.name || '本店') + ' · 線索新變化';
+  const evidenceHTML = source => `<section><p class="muted">${esc(by('store', source.storeId)?.name || source.storeId)} · 來源版本 ${esc(source.revisionId)}</p><blockquote>${esc(source.quote)}</blockquote></section>`;
+  $('insight-changes-body').innerHTML = '<p>以下是新筆記中可能影響原線索的內容。原確認、完整筆記和歷史仍保留；這裡不會替你改寫或撤銷確認。</p>' + (changes.map(change => `<article class="insight-change-item"><h3>${esc(change.reason)}</h3><h4>原來的依據</h4>${change.originalEvidence.map(evidenceHTML).join('')}<h4>新筆記</h4>${evidenceHTML(change.newEvidence)}${seen.has(change.id) ? '<p class="muted">已讀；相同變化不再顯示提醒。</p>' : `<button type="button" data-insight-change-read="${esc(change.id)}">已讀，不再提醒本項</button>`}</article>`).join('') || '<p>目前沒有可列出的實質新變化。沒有提示不代表已重新證實所有關係。</p>') + '<p class="muted">已讀只保存在這台裝置，不改變「Kit已確認」或「待查核」，也不刪除證據。其他裝置需各自閱讀。</p>';
+}
+async function openInsightChanges(storeId) {
+  if (!canScanInsights(true)) throw new Error('請先完成目前編輯或核對，再查看新變化。');
+  if (!await insightReviewTick({ force: true, allowBusy: true })) throw new Error('目前尚未完成最新檢視，請稍候再開啟。');
+  insightChangesContext = { storeId, key, meta, payload, revision: localRevision, epoch: syncEpoch, basis: insightScanBasis() };
+  $('insight-changes-error').textContent = ''; renderInsightChanges(); openDialog($('insight-changes-dialog'));
+}
+async function readInsightChange(id) {
+  const ctx = insightChangesContext;
+  const guard = () => {
+    if (!ctx || !canScanInsights(true) || !$('insight-changes-dialog').open || ctx !== insightChangesContext || key !== ctx.key || meta !== ctx.meta || payload !== ctx.payload || localRevision !== ctx.revision || syncEpoch !== ctx.epoch || insightScanBasis() !== ctx.basis || !currentInsightChanges(ctx.storeId).some(change => change.id === id)) throw new Error('資料或畫面已改變，請關閉後重新查看；尚未標記已讀。');
+  };
+  guard(); const ids = insightReadIds(); ids.add(id);
+  if (ids.size > 20000) throw new Error('本機已讀紀錄已達上限，既有紀錄保留；請另行處理。');
+  await persist({ ...payload, insightChangeRead: { vaultId: payload.bundle.vaultId, ids: [...ids] } }, { guard });
+  if (ctx !== insightChangesContext || !$('insight-changes-dialog').open || document.hidden || pendingLock || key !== ctx.key || meta !== ctx.meta || syncEpoch !== ctx.epoch) return;
+  insightChangesContext = { ...ctx, payload, revision: localRevision };
+  renderInsightChanges(); refreshInsightChangeBadges();
+}
+
 const INSIGHT_REVIEW_LABELS = { confirmed: 'Kit已確認', pending: '待查核', rejected: '不符合' };
 function insightDisplayReview(store, entry) {
   // Only the core's read-only projection supplies shared display state. Plans
@@ -1447,9 +1524,15 @@ function insightEntryHTML(entry, sourceAsOf, prefix = '', reviewStore = null) {
   // Compact display uses current exact approval or its validated relation
   // projection. Preview/history snapshots never acquire a shared decision.
   if (review?.status === 'confirmed') {
-    return `<article class="store-insight-card store-insight-confirmed" data-store-insight="${esc(entry.id)}"><details class="insight-confirmed-details" data-insight-confirmed="${esc(prefix + entry.id)}"><summary><span class="insight-confirmed-headline">${esc(entry.headline)}</span><span class="insight-confirmed-badge">Kit已確認</span></summary><div class="insight-confirmed-content">${insightSharedProvenanceHTML(review)}${labels}${body}</div></details>${entry.sourceCurrent === false ? `<p class="insight-source-notice" role="note">${esc(entry.sourceNotice)}</p>` : ''}${review.sharedConflict ? `<p class="insight-source-notice" role="note">${esc(review.sharedConflict)}</p>` : ''}</article>`;
+    return `<article class="store-insight-card store-insight-confirmed" data-store-insight="${esc(entry.id)}"><details class="insight-confirmed-details" data-insight-confirmed="${esc(prefix + entry.id)}"><summary><span class="insight-confirmed-headline">${esc(entry.headline)}</span><span class="insight-confirmed-badge">Kit已確認</span></summary><div class="insight-confirmed-content">${insightSharedProvenanceHTML(review)}${labels}${body}${entry.sourceCurrent === false ? `<p class="insight-source-notice" role="note">${esc(entry.sourceNotice)}</p>` : ''}${review.sharedConflict ? `<p class="insight-source-notice" role="note">${esc(review.sharedConflict)}</p>` : ''}</div></details></article>`;
   }
   return `<article class="store-insight-card" data-store-insight="${esc(entry.id)}">${labels}<h3>${esc(entry.headline)}</h3>${entry.sourceCurrent === false && entry.sourceNotice ? `<p class="insight-source-notice" role="note">${esc(entry.sourceNotice)}</p>` : ''}${review?.sharedConflict ? `<p class="insight-source-notice" role="note">${esc(review.sharedConflict)}</p>` : ''}${body}</article>`;
+}
+function insightChangeBadgeHTML(storeId) {
+  // Pure renderers can run without the monitoring lifecycle (previews/tests).
+  if (typeof currentInsightChanges !== 'function') return '';
+  const allChanges = currentInsightChanges(storeId), seen = insightReadIds(), unread = allChanges.filter(change => !seen.has(change.id));
+  return unread.length ? `<button type="button" class="insight-change-badge" data-insight-changes="${esc(storeId)}">有 ${unread.length} 項新變化</button>` : '';
 }
 function storeInsightsHTML(storeId) {
   const selected = storeInsightDisplayForStore(payload.bundle, storeId), store = by('store', storeId);
@@ -1461,7 +1544,7 @@ function storeInsightsHTML(storeId) {
   const sourceAsOf = store.preVisitInsights?.sourceAsOf || '';
   const confirmed = entries.filter(entry => insightDisplayReview(store, entry).status === 'confirmed');
   const pending = entries.filter(entry => insightDisplayReview(store, entry).status !== 'confirmed');
-  return `<section class="store-insights" aria-label="本店拜訪前線索"><h2>拜訪前，多一條線索</h2>${pending.length ? '<p class="muted">先看線索與原文，再由你人工審核。</p>' : ''}${confirmed.map(entry => insightEntryHTML(entry, sourceAsOf, '', store)).join('')}${pending.slice(0, 2).map(entry => insightEntryHTML(entry, sourceAsOf, '', store)).join('')}${pending.length > 2 ? `<details data-insight-detail="more"><summary>其他待查核線索 · ${pending.length - 2} 項</summary>${pending.slice(2).map(entry => insightEntryHTML(entry, sourceAsOf, '', store)).join('')}</details>` : ''}${insightReviewArchiveHTML(store, rejected, history)}<p id="insight-review-error" class="error" role="alert"></p></section>`;
+  return `<section class="store-insights" aria-label="本店拜訪前線索"><h2>拜訪前，多一條線索</h2>${pending.length ? '<p class="muted">先看線索與原文，再由你人工審核。</p>' : ''}<span data-insight-change-slot="${esc(storeId)}">${insightChangeBadgeHTML(storeId)}</span>${confirmed.length ? `<details class="confirmed-insights-group" data-insight-detail="confirmed-group"><summary>已確認線索 · ${confirmed.length} 項</summary>${confirmed.map(entry => insightEntryHTML(entry, sourceAsOf, '', store)).join('')}</details>` : ''}${pending.slice(0, 2).map(entry => insightEntryHTML(entry, sourceAsOf, '', store)).join('')}${pending.length > 2 ? `<details data-insight-detail="more"><summary>其他待查核線索 · ${pending.length - 2} 項</summary>${pending.slice(2).map(entry => insightEntryHTML(entry, sourceAsOf, '', store)).join('')}</details>` : ''}${insightReviewArchiveHTML(store, rejected, history)}<p id="insight-review-error" class="error" role="alert"></p></section>`;
 }
 function insightReviewArchiveHTML(store, rejected, history) {
   if (!rejected.length && !history.length) return '';
@@ -1622,7 +1705,7 @@ function noteHTML(v, query = '', { showStoreText = true } = {}) {
 }
 function render() {
   if (!payload) return;
-  records = project(payload.bundle); status();
+  records = project(payload.bundle); status(); queueInsightScan(); refreshInsightChangeBadges();
   if (!by(focus.type, focus.id) || by(focus.type, focus.id).deleted) { const first = all('topic').find(t => t.ruleKey === 'ortho') || all('store')[0] || all('topic')[0] || all('person')[0]; focus = first ? { type: first.type, id: first.id } : { type: 'store', id: '' }; }
   if (activeView === 'explore') { renderStores(); renderFocus(); }
   if (activeView === 'visits') renderVisits();
@@ -3372,7 +3455,7 @@ document.addEventListener('click', event => {
   const node = event.target.closest('[data-node-type]'); if (node && !busy) return singleStoreContext ? toast('請先完成或收起這次拜訪紀錄，再切換頁面。') : navigate(node.dataset.nodeType, node.dataset.nodeId);
   if (!b) return;
   if (b.dataset.close) {
-    if (['rebuild-dialog', 'quick-text-dialog', 'store-reminder-dialog', 'review', 'backup-review'].includes(b.dataset.close) && busy) return;
+    if (['rebuild-dialog', 'quick-text-dialog', 'store-reminder-dialog', 'review', 'backup-review', 'insight-changes-dialog'].includes(b.dataset.close) && busy) return;
     if (b.dataset.close === 'store-reminder-dialog') return run(closeStoreReminder, 'store-reminder-error');
     if (b.dataset.close === 'review' && singleStoreContext) return run(closeSingleStoreReview, 'single-store-error');
     if (b.dataset.close === 'editor' && editorContext?.reminderDraftContext) return run(closeStoreReminderEditor, 'editor-error');
@@ -3382,6 +3465,8 @@ document.addEventListener('click', event => {
     $(b.dataset.close).close(); if (b.dataset.close === 'rebuild-dialog') $('rebuild-connect-form').reset(); if (b.dataset.close === 'editor') editorContext = null; if (b.dataset.close === 'store-reminder-dialog') reminderContext = null; return;
   }
   if (updateHolding || busy || !payload) return;
+  if (b.dataset.insightChanges) return run(() => openInsightChanges(b.dataset.insightChanges), 'insight-review-error');
+  if (b.dataset.insightChangeRead) return run(() => readInsightChange(b.dataset.insightChangeRead), 'insight-changes-error');
   if (b.hasAttribute('data-monthly-close')) return closeMonthlyVisitSelection();
   if (b.dataset.monthlyAdd) return run(() => performMonthlyVisitAction('add', b.dataset.monthlyAdd, true), 'monthly-visit-error');
   if (monthlyVisitContext && !b.closest('#monthly-visit-dialog')) return toast('請先關閉每月門市選擇，再操作其他內容。');
@@ -3698,3 +3783,6 @@ $('weekly-dialog')?.addEventListener('close',clearWeeklySetup);
 $('weekly-dialog')?.addEventListener('cancel',clearWeeklySetup);
 $('weekly-refresh')?.addEventListener('click',()=>void weeklyTick(true));
 $('weekly-download')?.addEventListener('click',()=>run(downloadWeeklyBackup,'weekly-status'));
+
+$('insight-changes-dialog').addEventListener('close', () => { insightChangesContext = null; $('insight-changes-body').replaceChildren(); $('insight-changes-title').textContent = '線索新變化'; $('insight-changes-error').textContent = ''; syncScheduler.wake(); });
+$('insight-changes-dialog').addEventListener('cancel', event => { if (busy) event.preventDefault(); });
