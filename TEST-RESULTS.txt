@@ -1,3 +1,21 @@
+v1.5.78｜2026-10-24｜Mac 背景線索檢視（隔離驗證）
+
+Node v24.19.0 完整回歸 808／808 通過，0失敗／取消／略過；其中本次新增14項背景與生命週期測試。使用虛構資料、臨時HTTPS服務與獨立瀏覽器環境，不讀取正式客戶資料或密碼，不修改正式App、配對或任何舊包。
+
+Chrome 155.0.8059.86 隔離驗收8／8通過：Mac無消息、支持性補述、明確重要變化；錯過timer後回前景補查；iPhone、桌面UA iPad背景鎖定；Mac編輯／閱讀核對視窗中延後。visibility、裝置辨識與15分鐘時鐘均明示模擬，實際執行未修改的app.js與真正scan演算法；只在攔截的core模組外包唯讀呼叫計數。Mac三場皆在hidden首掃並於加速15分鐘後續掃，背景API請求增量0、不更新畫面；回前景只在重要變化顯示一個小提示並保留原確認收合，新舊依據可展開。每場完整bundle、原確認、歷史、token及IndexedDB加密slot與基準完全相同。前景既有activity/version/status請求全部攔截，沒有連接任何正式服務或外部網站。
+
+Node補充驗證背景資格綁key/meta/payload/bundle/epoch、iPad偽Mac UA排除、busy／saving／更新／匯入／備份／草稿／任何dialog延後、pagehide／lock撤銷、非同步過期結果丟棄，以及前景才允許查看／標記已讀。新資料與語意判定沿用既有規則，無新增資料不捏造新洞察。核心core、db、relations、server、supervisor及update-client未變動。
+
+初次測試發現將saving條件放入共用scan guard會擋住已讀操作自己的persist重驗，已改為僅背景准入限制並通過全部既有CAS測試。初次完整回歸的本機HTTPS監聽被sandbox阻擋，改以已授權的臨時隔離服務重跑全部808項成功。瀏覽器初次失敗是fixture將前景既有activity POST一併禁止，以及加速時鐘擠壓同步與scan callback；已明確區分前景攔截與背景零請求，並按callback順序推進時鐘，未為測試放寬App安全條件。
+
+原生可見性追加檢查：headless及一次獨立有視窗Chrome的newPage／bringToFront均回報兩頁visible，無法以該測試環境建立原生hidden狀態，nativeTabVisibility.verified=false。因此不宣稱真實Mac背景分頁切換驗收通過；8／8只指明示模擬的行為驗收。正式發布前仍應另作相容Mac瀏覽器實際背景切換驗收。
+
+重現：node --test test/*.test.mjs；既有Playwright與Chrome執行test/qa/insight-background-browser.mjs，可指定PLAYWRIGHT_MODULE、QA_BROWSER_EXECUTABLE、QA_OUTPUT_DIR；QA_HEADLESS=false與QA_NATIVE_ONLY=1可單獨檢查原生可見性（verified=false不能算功能驗收通過）。測試不啟動正式App服務、不使用使用者瀏覽器profile，全部測試資料皆虛構。
+
+限制：加速時計不等於真實等待15分鐘，模擬手機不等於實體iPhone／Safari。OS休眠、凍結或丟棄分頁不在此次真機驗證範圍，程式只承諾可執行時約15分鐘與恢復後補查。Mac背景保留已解鎖資料在記憶體並遮蔽畫面，仍須安全閒置且所有彈出視窗關閉。背景不擴大同步或備份準備，只掃此網頁已載入的正式筆記。App1.5.78／SOP1 1.2.55；schema2／protocol1／bootstrap1／CSV1.2.16與21條runtime不變。尚未公開推送、合併、發布或安裝正式裝置。
+
+以下為歷史證據。
+
 v1.5.77｜2026-10-23｜線索新變化精簡提醒（隔離驗證）
 
 Node24完整回歸794／794通過，0失敗／取消／略過；新增27項核心、16項UI測試，共43項。測試使用虛構筆記、臨時金鑰、獨立IndexedDB與臨時HTTPS服務，不讀取正式資料或使用者密碼。
