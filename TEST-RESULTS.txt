@@ -1,6 +1,6 @@
 v1.5.78｜2026-10-24｜Mac 背景線索檢視（隔離驗證）
 
-Node v24.19.0 完整回歸 808／808 通過，0失敗／取消／略過；其中本次新增14項背景與生命週期測試。使用虛構資料、臨時HTTPS服務與獨立瀏覽器環境，不讀取正式客戶資料或密碼，不修改正式App、配對或任何舊包。
+Node v24.19.0 最終完整回歸812／812通過，0失敗／取消／略過。原808項含本次新增14項背景與生命週期測試；新增電源紀錄parser的4項測試先單獨通過，再併入最終完整重跑。使用虛構資料、臨時HTTPS服務與獨立瀏覽器環境，不讀取正式客戶資料或密碼，不修改正式App、配對或任何舊包。
 
 Chrome 155.0.8059.86 隔離驗收8／8通過：Mac無消息、支持性補述、明確重要變化；錯過timer後回前景補查；iPhone、桌面UA iPad背景鎖定；Mac編輯／閱讀核對視窗中延後。visibility、裝置辨識與15分鐘時鐘均明示模擬，實際執行未修改的app.js與真正scan演算法；只在攔截的core模組外包唯讀呼叫計數。Mac三場皆在hidden首掃並於加速15分鐘後續掃，背景API請求增量0、不更新畫面；回前景只在重要變化顯示一個小提示並保留原確認收合，新舊依據可展開。每場完整bundle、原確認、歷史、token及IndexedDB加密slot與基準完全相同。前景既有activity/version/status請求全部攔截，沒有連接任何正式服務或外部網站。
 
@@ -8,11 +8,24 @@ Node補充驗證背景資格綁key/meta/payload/bundle/epoch、iPad偽Mac UA排�
 
 初次測試發現將saving條件放入共用scan guard會擋住已讀操作自己的persist重驗，已改為僅背景准入限制並通過全部既有CAS測試。初次完整回歸的本機HTTPS監聽被sandbox阻擋，改以已授權的臨時隔離服務重跑全部808項成功。瀏覽器初次失敗是fixture將前景既有activity POST一併禁止，以及加速時鐘擠壓同步與scan callback；已明確區分前景攔截與背景零請求，並按callback順序推進時鐘，未為測試放寬App安全條件。
 
-原生可見性追加檢查：headless及一次獨立有視窗Chrome的newPage／bringToFront均回報兩頁visible，無法以該測試環境建立原生hidden狀態，nativeTabVisibility.verified=false。因此不宣稱真實Mac背景分頁切換驗收通過；8／8只指明示模擬的行為驗收。正式發布前仍應另作相容Mac瀏覽器實際背景切換驗收。
+原生可見性追加檢查：初次headless及有視窗Chrome的newPage／bringToFront均回報兩頁visible，該次nativeTabVisibility.verified=false。後續定位為Playwright自動focus emulation；另以全新Chrome程序、預設context與connectOverCDP({noDefaults:true})取得真正trusted visibility事件，未覆寫可見性、裝置或時鐘。真實背景續掃於10:36:52、10:52:51、11:08:51完成，約16分鐘間隔，符合瀏覽器可能節流的限制。8／8仍只指原本明示模擬的完整場景，不能混作完整實機驗收。
 
-重現：node --test test/*.test.mjs；既有Playwright與Chrome執行test/qa/insight-background-browser.mjs，可指定PLAYWRIGHT_MODULE、QA_BROWSER_EXECUTABLE、QA_OUTPUT_DIR；QA_HEADLESS=false與QA_NATIVE_ONLY=1可單獨檢查原生可見性（verified=false不能算功能驗收通過）。測試不啟動正式App服務、不使用使用者瀏覽器profile，全部測試資料皆虛構。
+真實休眠驗收保留原失敗：run01測試連線於11:10:15中斷，之後雖有實際Sleep／DarkWake／FullWake，該輪沒有同一App工作階段醒後補檢及最終資料核對證據。run04於12:18開始，14:18觀察逾時，當時尚未發生Sleep，原結果仍為failed、fullPassed=false。逾時只中斷driver連接並保留測試瀏覽器及profile，未重開頁面或重新建立資料；上述失敗紀錄沒有被追加驗收覆蓋。
 
-限制：加速時計不等於真實等待15分鐘，模擬手機不等於實體iPhone／Safari。OS休眠、凍結或丟棄分頁不在此次真機驗證範圍，程式只承諾可執行時約15分鐘與恢復後補查。Mac背景保留已解鎖資料在記憶體並遮蔽畫面，仍須安全閒置且所有彈出視窗關閉。背景不擴大同步或備份準備，只掃此網頁已載入的正式筆記。App1.5.78／SOP1 1.2.55；schema2／protocol1／bootstrap1／CSV1.2.16與21條runtime不變。尚未公開推送、合併、發布或安裝正式裝置。
+真機追加功能驗收已通過（postwake-functional-acceptance.json；2026-10-24台北時間）：重新連接後核對仍為同一瀏覽器程序、target及document，取回同一renderer自始保留、序號完整的事件buffer。只讀實際電源紀錄並排除Wake Requests；沒有修改時鐘、可見性、裝置辨識或強制掃描。
+- 15:23:31進入Sleep，15:29:00.069到期；15:38:13 DarkWake後，15:38:45.241仍在hidden採納掃描結果，恢復至採納32.241秒。
+- 15:42:07再次Sleep，15:53:45.241到期；15:53:50完整Wake後，15:54:25.764仍在hidden採納掃描結果，恢復至採納35.764秒。
+兩次到期點皆落於真正Sleep區間，scan-start、scan-end與scan-accepted都在恢復執行後且保持hidden，當中沒有App回前景事件。DarkWake與完整Wake分別記錄，不把背景喚醒稱為完整喚醒。回前景、尚未開提示前，最近檢視顯示15:54:25；再確認只有小提示、新舊依據可讀、原確認保留收合。驗收前後與完成UI查閱後的完整加密slot雜湊一致。追加紀錄functionalAcceptancePassed=true，但原run04的failed與fullPassed=false保留。
+
+追加證據範圍：driver離線期間有連續的renderer掃描／可見性事件證據，沒有連續的driver網路與全部瀏覽器層錯誤觀察。因此整輪backgroundApiRequests為未知，不能宣稱離線區間零API／外部請求或零瀏覽器錯誤；加密slot端點相同也不代表每個中間狀態均受觀察。8／8模擬場景與短測試各自的零背景API結果仍只適用原本觀察範圍，不能填補此缺口。
+
+驗收工具加固：Wake Requests／Start／摘要不算實際電源轉換；觀察事件先同步存入renderer buffer，不等待driver，失聯保留測試現場並記錄觀察缺口，不能把重開頁面當同一輪延續。新的真機harness僅在攔截提供的core及app.js副本加入非阻塞唯讀事件記錄，原始public/app.js未修改；scan-accepted證明結果確實被App採納。電源parser新增4項測試通過，短測試確認原生背景切換、前景小提示、完整新舊依據、原確認收合、零背景API與完整加密slot不變；smokePassed不等於休眠通過。未因driver中斷或逾時改動產品安全條件。
+
+重現：node --test test/*.test.mjs；parser可單獨執行node --test test/mac-power-events.test.mjs。既有Playwright與Chrome執行node test/qa/insight-background-browser.mjs，可指定PLAYWRIGHT_MODULE、QA_BROWSER_EXECUTABLE、QA_OUTPUT_DIR；QA_HEADLESS=false與QA_NATIVE_ONLY=1可單獨檢查原生可見性（verified=false不能算功能驗收通過）。
+
+真正Mac休眠重現：node test/qa/insight-mac-lifecycle-acceptance.mjs。可用PLAYWRIGHT_MODULE指定既有Playwright、QA_BROWSER_EXECUTABLE指定既有Chrome，QA_OUTPUT_DIR必須為沒有舊結果的新目錄；省略時自建臨時目錄。等待ready-for-operator-sleep後，以Apple選單睡眠至少16分鐘，喚醒後先停留測試說明分頁，不點回App或關閉測試Chrome。最新版QA_WAIT_MINUTES預設720（12小時），可設16至1440分鐘；觀察窗逾時記為inconclusive並保留同一測試瀏覽器及頁面，不把等待不足算成產品失敗或重寫既有run04紀錄。工具只讀電源事件，不發出睡眠命令或更改電源設定；原15分鐘週期跨過真正Sleep區間，第一個DarkWake或Wake後的hidden結果實際被採納才算補檢。QA_SMOKE_ONLY=1只跑短測試，不代表真睡眠驗收。測試不啟動正式App服務、不使用使用者瀏覽器profile，全部測試資料皆虛構；失聯或逾時須保留原始結果，另列追加驗收及觀察限制。
+
+限制：8個場景的加速時計不等於真實等待15分鐘，模擬手機不等於實體iPhone／Safari；真正Mac背景與同一工作階段休眠後補檢由上述追加證據獨立證實，driver離線觀察限制仍保留。凍結或丟棄分頁未驗收。程式只承諾可執行時約15分鐘與恢復後補查，實測延遲不作固定保證。Mac背景保留已解鎖資料在記憶體並遮蔽畫面，仍須安全閒置且所有彈出視窗關閉。背景不擴大同步或備份準備，只掃此網頁已載入的正式筆記。App1.5.78／SOP1 1.2.55；schema2／protocol1／bootstrap1／CSV1.2.16與21條runtime不變。尚未合併、發布或安裝正式裝置。
 
 以下為歷史證據。
 
