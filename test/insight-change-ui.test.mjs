@@ -22,7 +22,7 @@ const seed = (async () => {
   return { meta, key, bundle };
 })();
 
-async function harness() {
+async function harness({ platform = 'MacIntel', userAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', maxTouchPoints = 0 } = {}) {
   const fixture = await seed, nodes = new Map(), timers = new Map(); let serial = 0, c;
   const state = { now: Date.parse('2026-10-22T13:00:00.000Z'), scans: [], writes: [], requests: [], pendingCSV: false, scanResult: result(), scanHook: null, sealHook: null, writeHook: null, failWrite: false, disk: { revision: 7 } };
   const $ = id => {
@@ -37,7 +37,8 @@ async function harness() {
   c = vm.createContext({ ...core, ...contexts, $, Date: TestDate, structuredClone, JSON, Set, Promise,
     key: fixture.key, meta: structuredClone(fixture.meta), payload: { schema: 1, device: 'fictional-device', token: null, bundle: structuredClone(fixture.bundle), dirty: false, serverVersion: 4, pendingSync: { entities: [], unknown: false } },
     localRevision: 7, slot: state.disk, localSaveState: 'saved', syncEpoch: 1, busy: false, pendingLock: false, updateHolding: false, autoFetching: false, syncInProgress: false, gateOpening: false, weeklyRunning: false,
-    document: { hidden: false, querySelectorAll: () => [...nodes.values()].filter(node => node.dataset.insightChangeSlot) },
+    navigator: { platform, userAgent, maxTouchPoints },
+    document: { hidden: false, querySelectorAll: selector => [...nodes.values()].filter(node => selector === 'dialog[open]' ? node.open : node.dataset.insightChangeSlot), querySelector: selector => selector === 'dialog[open]' ? [...nodes.values()].find(node => node.open) || null : null },
     csvImport: { hasPending: () => state.pendingCSV }, syncScheduler: { request: reason => state.requests.push(reason) }, renderDataSafetyEntry() {},
     esc: value => String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char])), dateText: value => value,
     by: (type, id) => core.project(c.payload.bundle).find(record => record.type === type && record.id === id), openDialog: node => { node.open = true; },
@@ -68,6 +69,78 @@ test('foreground scan is read-only, works unpaired/offline and checks unchanged 
   await h.advance(15 * 60 * 1000 - 1); await h.c.insightReviewTick(); assert.equal(h.state.scans.length, 1);
   await h.advance(1); await h.c.insightReviewTick(); assert.equal(h.state.scans.length, 2);
   assert.equal(JSON.stringify(h.c.payload), before); assert.equal(h.state.writes.length, 0); assert.equal(h.state.requests.length, 0);
+});
+
+test('retained Mac background scans every 15 minutes with no writes, sync requests or hidden UI paint', async () => {
+  const h = await harness(), before = JSON.stringify(h.c.payload);
+  h.c.document.hidden = true; h.get('insightBackgroundActive = { key, meta, payload, bundle: payload.bundle, epoch: syncEpoch }');
+  assert.equal(await h.c.insightReviewTick(), true); assert.equal(h.state.scans.length, 1);
+  assert.equal(h.$('badge-slot').innerHTML, ''); assert.equal(h.$('insight-scan-status').textContent, '');
+  assert.equal(h.get('insightScanCache').result.stores[0].changes.length, 1);
+  await h.advance(15 * 60 * 1000 - 1); await h.c.insightReviewTick(); assert.equal(h.state.scans.length, 1);
+  await h.advance(1); await h.c.insightReviewTick(); assert.equal(h.state.scans.length, 2);
+  assert.equal(JSON.stringify(h.c.payload), before); assert.equal(h.state.writes.length, 0); assert.equal(h.state.requests.length, 0);
+  h.c.document.hidden = false; h.get('insightBackgroundActive = null'); h.c.refreshInsightChangeBadges();
+  assert.match(h.$('badge-slot').innerHTML, /有 1 項新變化/); assert.match(h.$('insight-scan-status').textContent, /最近檢視/);
+});
+
+test('Mac permission cannot be reused by iPhone, iPad desktop UA, touch Mac disguise or other desktops', async () => {
+  const devices = [
+    { platform: 'iPhone', userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)', maxTouchPoints: 5 },
+    { platform: 'iPad', userAgent: 'Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X)', maxTouchPoints: 5 },
+    { platform: 'MacIntel', userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15)', maxTouchPoints: 5 },
+    { platform: 'MacIntel', userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)', maxTouchPoints: 0 },
+    { platform: 'Win32', userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)', maxTouchPoints: 0 },
+    { platform: 'Linux x86_64', userAgent: 'Mozilla/5.0 (X11; Linux x86_64)', maxTouchPoints: 0 }
+  ];
+  for (const device of devices) {
+    const h = await harness(device); h.c.document.hidden = true; h.get('insightBackgroundActive = { key, meta, payload, bundle: payload.bundle, epoch: syncEpoch }');
+    assert.equal(h.c.isMacInsightBackgroundDevice(), false, device.userAgent);
+    assert.equal(h.c.canRetainInsightBackground(), false, device.userAgent);
+    assert.equal(await h.c.insightReviewTick(), false, device.userAgent); assert.equal(h.state.scans.length, 0);
+  }
+});
+
+test('retained Mac background still defers for unsafe contexts and cannot bypass busy with allowBusy', async () => {
+  const blocks = ['busy', 'pendingLock', 'updateHolding', 'autoFetching', 'syncInProgress', 'gateOpening', 'weeklyRunning', 'editorContext', 'singleStoreContext', 'inlineTextContext', 'reminderContext', 'dayPlanContext', 'monthlyVisitContext', 'attendancePrompt', 'backupPreview', 'insightsPreview', 'storeMergePreview', 'storeMergeSetup', 'recoveryExportContext', 'weeklyContext'];
+  for (const name of blocks) {
+    const h = await harness(); h.c.document.hidden = true; h.get('insightBackgroundActive = { key, meta, payload, bundle: payload.bundle, epoch: syncEpoch }'); h.c[name] = true;
+    assert.equal(await h.c.insightReviewTick(), false, name); assert.equal(h.state.scans.length, 0, name);
+    assert.equal(h.c.canRetainInsightBackground(), false, name);
+    h.c[name] = false; assert.equal(await h.c.insightReviewTick(), true, name);
+  }
+  const h = await harness(); h.c.document.hidden = true; h.get('insightBackgroundActive = { key, meta, payload, bundle: payload.bundle, epoch: syncEpoch }'); h.c.busy = true;
+  assert.equal(await h.c.insightReviewTick({ allowBusy: true }), false, 'Only foreground explicit UI actions may use allowBusy');
+  h.c.busy = false; h.state.pendingCSV = true; assert.equal(await h.c.insightReviewTick(), false);
+  h.state.pendingCSV = false; h.$('unrelated-dialog').open = true; assert.equal(h.c.canRetainInsightBackground(), false);
+});
+
+test('hidden Mac cannot open evidence or acknowledge a change even while background scanning is enabled', async () => {
+  const h = await harness(); await h.c.openInsightChanges('s');
+  const before = JSON.stringify(h.c.payload), html = h.$('insight-changes-body').innerHTML;
+  h.c.document.hidden = true; h.get('insightBackgroundActive = { key, meta, payload, bundle: payload.bundle, epoch: syncEpoch }');
+  await assert.rejects(h.c.openInsightChanges('s'), /目前|回到|編輯|核對/);
+  await assert.rejects(h.c.readInsightChange(firstId), /資料或畫面已改變/);
+  assert.equal(h.state.writes.length, 0); assert.equal(JSON.stringify(h.c.payload), before); assert.equal(h.$('insight-changes-body').innerHTML, html);
+});
+
+test('hiding during explicit evidence scan never opens the dialog, even if Mac background retention succeeds', async () => {
+  const h = await harness(); let release;
+  h.state.scanHook = () => new Promise(resolve => { release = resolve; });
+  const opening = h.c.openInsightChanges('s');
+  h.c.document.hidden = true; h.get('insightBackgroundActive = { key, meta, payload, bundle: payload.bundle, epoch: syncEpoch }'); release(result());
+  await assert.rejects(opening, /目前|回到|編輯|核對/);
+  assert.equal(h.$('insight-changes-dialog').open, false); assert.equal(h.$('insight-changes-body').innerHTML, ''); assert.equal(h.state.writes.length, 0);
+});
+
+test('late retained-background completions cannot cross a reset, lock, vault, bundle or epoch boundary', async () => {
+  for (const mutate of [h => h.c.resetInsightScan(), h => { h.c.key = null; }, h => { h.c.pendingLock = true; }, h => { h.c.syncEpoch++; }, h => { h.c.meta = { ...h.c.meta }; }, h => { h.c.payload = { ...h.c.payload, bundle: structuredClone(h.c.payload.bundle) }; }, h => h.get('insightBackgroundActive = null')]) {
+    const h = await harness(); let release;
+    h.c.document.hidden = true; h.get('insightBackgroundActive = { key, meta, payload, bundle: payload.bundle, epoch: syncEpoch }');
+    h.state.scanHook = () => new Promise(resolve => { release = resolve; });
+    const running = h.c.insightReviewTick(); mutate(h); release(result());
+    assert.equal(await running, false); assert.equal(h.get('insightScanCache'), null); assert.equal(h.$('badge-slot').innerHTML, ''); assert.equal(h.state.writes.length, 0);
+  }
 });
 
 test('new data scans before the interval and queued renders coalesce instead of creating a busy loop', async () => {

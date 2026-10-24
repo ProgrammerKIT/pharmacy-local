@@ -914,7 +914,7 @@ async function openWorkspace() {
   document.body.classList.toggle('privacy-veil', pendingLock);
   try { storagePersistent = await navigator.storage?.persist?.() || false; } catch {}
   restoreTransientResumeState(); renderBackupResult(); await runPeriodicHealthAudit(); clearInterval(autoTimer);
-  autoTimer = setInterval(() => { void insightReviewTick(); syncScheduler.request('poll'); setTimeout(() => void weeklyTick(), 1500); }, 15000);
+  autoTimer = setInterval(() => { void insightReviewTick(); if (!document.hidden) { syncScheduler.request('poll'); setTimeout(() => void weeklyTick(), 1500); } }, 15000);
   setTimeout(() => void weeklyTick(), 3000);
   syncScheduler.request('foreground');
   queueInsightScan(); requestNearbyPosition();
@@ -1424,18 +1424,31 @@ function assertInsightsIdle() {
 // Local, read-only monitoring. No timer writes customer data or review events.
 const INSIGHT_SCAN_INTERVAL = 15 * 60 * 1000;
 let insightScanCache = null, insightScanRunning = false, insightScanGeneration = 0, insightScanTimer = null, insightScanError = '', insightChangesContext = null;
+let insightBackgroundActive = null;
+function isMacInsightBackgroundDevice() {
+  const ua = navigator.userAgent || '', platform = navigator.platform || '';
+  return (/^Mac/.test(platform) || /Macintosh/.test(ua)) && !/iPhone|iPad|iPod/.test(ua) && !(navigator.maxTouchPoints > 1);
+}
 function insightScanBasis() { return payload ? payload.bundle.vaultId + ':' + payload.bundle.ops.map(op => op.id).sort().join('|') : ''; }
-function canScanInsights(allowBusy = false) {
-  return !!(payload && key) && !document.hidden && !pendingLock && !updateHolding && (allowBusy || !busy) && !autoFetching && !syncInProgress && !gateOpening &&
+function insightScanIdle(allowBusy = false) {
+  return !!(payload && key) && !pendingLock && !updateHolding && (allowBusy || !busy) && !autoFetching && !syncInProgress && !gateOpening &&
     !editorContext && !singleStoreContext && !inlineTextContext && !reminderContext && !dayPlanContext && !monthlyVisitContext && !attendancePrompt && !backupPreview && !insightsPreview && !storeMergePreview && !storeMergeSetup && !recoveryExportContext && !weeklyContext && !weeklyRunning && !csvImport.hasPending() &&
     !['editor', 'quick-text-dialog', 'store-reminder-dialog', 'rebuild-dialog', 'backup-review', 'visit-attendance-dialog', 'day-plan-dialog', 'monthly-visit-dialog'].some(id => $(id)?.open) &&
     (!$('review')?.open || $('review').classList.contains('visit-brief-dialog'));
+}
+function canRetainInsightBackground() {
+  return isMacInsightBackgroundDevice() && insightScanIdle() && localSaveState !== 'saving' && !payload.draft && !payload.inlineTextDraft && !document.querySelector('dialog[open]');
+}
+function canScanInsights(allowBusy = false) {
+  const session = insightBackgroundActive;
+  return insightScanIdle(allowBusy) && (!document.hidden || (canRetainInsightBackground() && session && key === session.key && meta === session.meta && payload === session.payload && payload.bundle === session.bundle && syncEpoch === session.epoch));
 }
 function queueInsightScan() {
   if (insightScanTimer || !payload) return;
   insightScanTimer = setTimeout(() => { insightScanTimer = null; void insightReviewTick(); }, 1800);
 }
 function resetInsightScan() {
+  insightBackgroundActive = null;
   insightScanGeneration++; clearTimeout(insightScanTimer); insightScanTimer = null; insightScanCache = null; insightScanRunning = false; insightScanError = ''; insightChangesContext = null;
   $('insight-changes-body')?.replaceChildren();
   if ($('insight-changes-title')) $('insight-changes-title').textContent = '線索新變化';
@@ -1467,6 +1480,7 @@ function insightReadIds() {
   return new Set(state?.vaultId === payload?.bundle.vaultId && Array.isArray(state.ids) ? state.ids.filter(id => typeof id === 'string' && /^[a-f0-9]{64}$/.test(id)) : []);
 }
 function refreshInsightChangeBadges() {
+  if (document.hidden || pendingLock) return;
   document.querySelectorAll('[data-insight-change-slot]').forEach(node => { node.innerHTML = insightChangeBadgeHTML(node.dataset.insightChangeSlot); });
   const node = $('insight-scan-status');
   if (node) node.textContent = insightScanError || (insightScanCache?.basis === insightScanBasis() ? `最近檢視：${dateText(new Date(insightScanCache.at).toISOString())}。只提示有明確新證據的可能變化，不代表已證實或涵蓋所有語意。` : '新資料將在可檢視時補查；原確認維持。');
@@ -1479,15 +1493,17 @@ function renderInsightChanges() {
   $('insight-changes-body').innerHTML = '<p>以下是新筆記中可能影響原線索的內容。原確認、完整筆記和歷史仍保留；這裡不會替你改寫或撤銷確認。</p>' + (changes.map(change => `<article class="insight-change-item"><h3>${esc(change.reason)}</h3><h4>原來的依據</h4>${change.originalEvidence.map(evidenceHTML).join('')}<h4>新筆記</h4>${evidenceHTML(change.newEvidence)}${seen.has(change.id) ? '<p class="muted">已讀；相同變化不再顯示提醒。</p>' : `<button type="button" data-insight-change-read="${esc(change.id)}">已讀，不再提醒本項</button>`}</article>`).join('') || '<p>目前沒有可列出的實質新變化。沒有提示不代表已重新證實所有關係。</p>') + '<p class="muted">已讀只保存在這台裝置，不改變「Kit已確認」或「待查核」，也不刪除證據。其他裝置需各自閱讀。</p>';
 }
 async function openInsightChanges(storeId) {
-  if (!canScanInsights(true)) throw new Error('請先完成目前編輯或核對，再查看新變化。');
+  if (document.hidden || !canScanInsights(true)) throw new Error('請回到 App 並完成目前編輯或核對，再查看新變化。');
+  const session = { key, meta, payload, epoch: syncEpoch };
   if (!await insightReviewTick({ force: true, allowBusy: true })) throw new Error('目前尚未完成最新檢視，請稍候再開啟。');
+  if (document.hidden || !canScanInsights(true) || key !== session.key || meta !== session.meta || payload !== session.payload || syncEpoch !== session.epoch) throw new Error('資料或畫面已改變，請回到 App 後重新查看。');
   insightChangesContext = { storeId, key, meta, payload, revision: localRevision, epoch: syncEpoch, basis: insightScanBasis() };
   $('insight-changes-error').textContent = ''; renderInsightChanges(); openDialog($('insight-changes-dialog'));
 }
 async function readInsightChange(id) {
   const ctx = insightChangesContext;
   const guard = () => {
-    if (!ctx || !canScanInsights(true) || !$('insight-changes-dialog').open || ctx !== insightChangesContext || key !== ctx.key || meta !== ctx.meta || payload !== ctx.payload || localRevision !== ctx.revision || syncEpoch !== ctx.epoch || insightScanBasis() !== ctx.basis || !currentInsightChanges(ctx.storeId).some(change => change.id === id)) throw new Error('資料或畫面已改變，請關閉後重新查看；尚未標記已讀。');
+    if (!ctx || document.hidden || !canScanInsights(true) || !$('insight-changes-dialog').open || ctx !== insightChangesContext || key !== ctx.key || meta !== ctx.meta || payload !== ctx.payload || localRevision !== ctx.revision || syncEpoch !== ctx.epoch || insightScanBasis() !== ctx.basis || !currentInsightChanges(ctx.storeId).some(change => change.id === id)) throw new Error('資料或畫面已改變，請關閉後重新查看；尚未標記已讀。');
   };
   guard(); const ids = insightReadIds(); ids.add(id);
   if (ids.size > 20000) throw new Error('本機已讀紀錄已達上限，既有紀錄保留；請另行處理。');
@@ -3599,15 +3615,31 @@ document.addEventListener('change', event => {
   const option = event.target.closest?.('[data-reminder-option]'); if (option) return changeReminderOption(option);
   const toggle = event.target.closest?.('[data-reminder-custom-toggle]'); if (toggle) changeCustomReminderOption(toggle.closest('[data-reminder-options-for]'), toggle.checked);
 });
-document.addEventListener('visibilitychange', () => {
+function handleAppVisibilityChange() {
   dismissKeyboard();
-  if (document.hidden) { syncEpoch++; syncScheduler.pause(); finishAttendancePrompt(); clearNearbyPosition(); if (editorContext?.type === 'visit' || singleStoreContext) void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); if (activeReminderDraftContext()) void flushReminderDraft().catch(() => {}); document.body.classList.add('privacy-veil'); if (payload || busy || backupPreview) lockNow(false); }
-  else if (pendingLock || !payload) { pendingLock = false; document.body.classList.remove('privacy-veil'); showGate(); }
-  else { document.body.classList.remove('privacy-veil'); requestNearbyPosition(); }
-  if (!document.hidden) { resumeDayPlanContext(); resumeMonthlyVisitContext(); syncScheduler.request('foreground'); }
-});
+  if (document.hidden) {
+    const retain = canRetainInsightBackground();
+    syncEpoch++; syncScheduler.pause(); finishAttendancePrompt(); clearNearbyPosition();
+    if (editorContext?.type === 'visit' || singleStoreContext) void flushVisitDraft();
+    if (inlineTextContext) void flushInlineTextDraft();
+    if (activeReminderDraftContext()) void flushReminderDraft().catch(() => {});
+    document.body.classList.add('privacy-veil');
+    // Only this read-only Mac session survives a tab switch. Other work still
+    // uses foreground guards; pagehide/lock always revoke this capability.
+    insightBackgroundActive = retain ? { key, meta, payload, bundle: payload.bundle, epoch: syncEpoch } : null;
+    if (retain) queueInsightScan();
+    else if (payload || busy || backupPreview) lockNow(false);
+  } else {
+    insightBackgroundActive = null;
+    if (pendingLock || !payload) { pendingLock = false; document.body.classList.remove('privacy-veil'); showGate(); }
+    else { document.body.classList.remove('privacy-veil'); requestNearbyPosition(); }
+    resumeDayPlanContext(); resumeMonthlyVisitContext(); syncScheduler.request('foreground');
+    refreshInsightChangeBadges(); queueInsightScan();
+  }
+}
+document.addEventListener('visibilitychange', handleAppVisibilityChange);
 window.addEventListener('pagehide', () => { syncEpoch++; syncScheduler.pause(); finishAttendancePrompt(); dismissKeyboard(); clearNearbyPosition(); if (editorContext?.type === 'visit' || singleStoreContext) void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); if (activeReminderDraftContext()) void flushReminderDraft().catch(() => {}); if (payload || busy || backupPreview) lockNow(false); });
-window.addEventListener('pageshow', () => { dismissKeyboard(); if (!payload && !document.hidden) { document.body.classList.remove('privacy-veil'); showGate(); } if (!document.hidden) { resumeDayPlanContext(); resumeMonthlyVisitContext(); syncScheduler.request('foreground'); } });
+window.addEventListener('pageshow', () => { dismissKeyboard(); if (!payload && !document.hidden) { document.body.classList.remove('privacy-veil'); showGate(); } if (!document.hidden) { resumeDayPlanContext(); resumeMonthlyVisitContext(); syncScheduler.request('foreground'); queueInsightScan(); } });
 window.addEventListener('online', () => syncScheduler.request('online'));
 window.addEventListener('offline', () => syncScheduler.pause());
 $('visit-attendance-form').addEventListener('submit', event => {
