@@ -34,7 +34,7 @@ test('SOP1 accounts for every extra text field and never infers people or topics
   const b = emptyBundle('sop1'), raw = `標題,筆記,網址,留言\n虛構藥局,筆記,${url},未核對的留言`;
   const p = await planCSV([await file(raw)], b);
   assert.throws(() => buildCSVImport(p, b, 'mac'), /其他非空白文字欄/);
-  assert.equal(p.rows[0].textFields.at(-1).text, '未核對的留言'); p.rows[0].sop1.extraAccepted = true;
+  assert.equal(p.rows[0].textFields.at(-1).text, '未核對的留言'); p.rows[0].supplementColumns = [3]; p.rows[0].sop1.extraAccepted = true;
   const records = project(buildCSVImport(p, b, 'mac').bundle);
   assert.equal(records.filter(r => ['person','topic'].includes(r.type)).length, 0);
   assert.equal(records.find(r=>r.type==='visit').csvSources[0].supplements[0].text, '未核對的留言');

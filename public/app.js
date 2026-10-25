@@ -3,7 +3,7 @@ import { readWeeklyRecovery, writeWeeklyRecovery, readLocal, writeLocal, archive
 import { dayPlanDate, shiftDayPlanDate, dayPlanForStore, dayPlanOverview, dayItineraryBasis, applyDayItineraryAction } from './core.js';
 import { monthlyVisitMonth, shiftMonthlyVisitMonth, monthlyVisitForStore, monthlyVisitOverview, monthlyVisitBasis, applyMonthlyVisitAction } from './core.js';
 import { createCSVImport } from './csv-ui.js';
-import { PROFILE_FIELDS, FILL_FIELDS, scanQuality, setDistinctReview, sourceSuggestions, fillProfile } from './csv.js';
+import { PROFILE_FIELDS, FILL_FIELDS, scanQuality, setDistinctReview, sourceSuggestions, fillProfile, csvSourceSupplements, sourceListKey } from './csv.js';
 import { entityRule, evidenceKind, sourceTags, groupCSVNotes, storeIdentityPending, relationVisitAllowed, retailChannel, originalStoreNames, filterStoreDirectory, candidateRelationsForStore, candidateOverview, candidateTrend, visitBriefForStore, regionalOptions, regionalInsights } from './relations.js';
 import { APP_VERSION } from './version.js';
 import { makeVisitAttendance, visitAttendanceForStore, attendanceTaipeiDate } from './core.js';
@@ -407,7 +407,23 @@ async function confirmStoreSave(storeId, storeName, changed = true) {
   return result;
 }
 let nearbyState = { status: 'idle', position: null, message: '' }, nearbyRequest = 0, nearbyDenied = false;
-const csvImport = createCSVImport({ host: $('csv-view'), getState: () => payload, run, saveBundle: async bundle => { await persist({ ...payload, bundle, dirty: true }); render(); }, notify: toast, exportReport: report => download(JSON.stringify({ ...report, appVersion: APP_VERSION }, null, 2), 'pharmacy-import-preview.json', 'application/json'), downloadSource: (blob, filename) => { if (!confirm('原始 CSV 是明文檔案。請確認下載到自己的本機資料夾，避開 iCloud Drive。')) return; download(unb64(payload.bundle.blobs[blob]), filename.replace(/[\/\\]/g, '_'), 'application/octet-stream'); } });
+const csvImport = createCSVImport({ host: $('csv-view'), getState: () => payload, getSaveContext: captureCSVSaveContext, run, saveBundle: saveCSVBundle, notify: toast, exportReport: report => download(JSON.stringify({ ...report, appVersion: APP_VERSION }, null, 2), 'pharmacy-import-preview.json', 'application/json'), downloadSource: (blob, filename) => { if (!confirm('原始 CSV 是明文檔案。請確認下載到自己的本機資料夾，避開 iCloud Drive。')) return; download(unb64(payload.bundle.blobs[blob]), filename.replace(/[\/\\]/g, '_'), 'application/octet-stream'); } });
+// Bind CSV confirmation and encryption to the same foreground device session.
+function captureCSVSaveContext() {
+  const ctx = { payload, key, meta, bundle: payload?.bundle, revision: localRevision, epoch: syncEpoch, token: payload?.token, device: payload?.device };
+  assertCSVSaveContext(ctx);
+  return ctx;
+}
+function assertCSVSaveContext(ctx) {
+  if (!ctx || !payload || !key || !meta || payload !== ctx.payload || key !== ctx.key || meta !== ctx.meta || payload.bundle !== ctx.bundle || localRevision !== ctx.revision || syncEpoch !== ctx.epoch || payload.token !== ctx.token || payload.device !== ctx.device || document.hidden || pendingLock || updateHolding || autoFetching || syncInProgress || gateOpening) throw new Error('CSV 核對期間資料或工作階段已變更，請回到 App 重新預覽；本次尚未寫入。');
+}
+async function saveCSVBundle(bundle, ctx) {
+  const guard = () => assertCSVSaveContext(ctx);
+  guard();
+  await persist({ ...ctx.payload, bundle, dirty: true }, { guard });
+  if (!payload || key !== ctx.key || meta !== ctx.meta || payload.bundle !== bundle || localRevision !== ctx.revision + 1 || syncEpoch !== ctx.epoch || payload.token !== ctx.token || payload.device !== ctx.device || document.hidden || pendingLock || updateHolding || autoFetching || syncInProgress || gateOpening) throw new Error('CSV 本機保存已完成，但畫面或工作階段已改變；請重新開啟核對保存結果。');
+  render();
+}
 const all = type => records.filter(r => r.type === type && (!r.deleted || r.conflict));
 const by = (type, id) => records.find(r => r.type === type && r.id === id);
 const name = (type, id) => by(type, id)?.name || (type === 'store' ? '已刪除／未命名門市' : '已刪除節點');
@@ -2460,12 +2476,29 @@ function renderVisits() {
   const groups = [...grouped.values()].sort((a, b) => a.bestRank - b.bestRank || b.bestRankDate.localeCompare(a.bestRankDate) || name('store', a.storeId).localeCompare(name('store', b.storeId), 'zh-Hant'));
   $('visit-list').innerHTML = groups.map(group => group.emptyStore ? visitStoreCardHTML(group.emptyStore, query, group.unresolvedVisits) : group.storeTextMatch || group.matches.length > 1 ? renderVisitSearchGroup(group, query) : noteHTML(group.matches[0].v, query)).join('') || '<p class="empty">沒有符合的門市或拜訪紀錄。</p>';
 }
-function sourceButton(r) { return (r.csvSources?.length || r.versions?.some(v => v.data.csvSources?.length)) ? `<button class="text-button" data-csv-source="${r.type}:${esc(r.id)}">查看匯入原始來源</button>` : ''; }
+function sourceButton(r) { return (r.csvSources?.length || r.versions?.some(v => v.data.csvSources?.length)) ? `<button class="text-button" data-csv-source="${r.type}:${esc(r.id)}">查看匯入來源與已選補充</button>` : ''; }
 function openSources(type, id) {
   const r = by(type, id); if (!r) return;
-  const seen = new Set(), sources = r.versions.flatMap(v => v.data.csvSources || []).filter(s => { const k = `${s.blob}:${s.fingerprint}:${s.list}`; if (seen.has(k)) return false; seen.add(k); return true; });
-  $('review-title').textContent = 'CSV 原始來源';
-  $('review-body').innerHTML = `<p class="muted">以下是匯入時的原始欄位；包含歷史版本的來源。匯入時間不是拜訪日期。地圖網址只顯示，不會自動連線。</p>${sources.map(s => `<article class="version"><strong>${esc(s.file)} · 第 ${s.line} 行</strong><p class="muted">清單：${esc(s.list)} · 匯入：${dateText(s.at)}</p><details><summary>展開原始欄位</summary><div class="csv-raw">${s.headers.map((h, i) => `<p><strong>第 ${i + 1} 欄 · ${esc(h)}</strong><span>${esc(s.cells[i])}</span></p>`).join('')}</div></details><button class="text-button" data-csv-download="${esc(s.blob)}" data-csv-filename="${esc(s.file)}">下載原始 CSV（明文）</button></article>`).join('')}`;
+  const allSources = [...(r.csvSources || []), ...r.versions.flatMap(v => v.data.csvSources || [])];
+  const sourceKey = s => JSON.stringify([s.blob, s.fingerprint, s.list]);
+  // A later field-only adoption belongs to the store, without changing the note.
+  // Include those choices when opening that note's matching source, too.
+  if (type === 'visit') {
+    const rowKey = s => JSON.stringify([s.fingerprint, sourceListKey(s.list)]);
+    const keys = new Set(allSources.map(rowKey)), store = by('store', r.store);
+    allSources.push(...(store?.csvSources || []).filter(s => keys.has(rowKey(s))));
+  }
+  const grouped = new Map();
+  for (const source of allSources) {
+    const key = sourceKey(source);
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(source);
+  }
+  $('review-title').textContent = 'CSV 原始來源與已選補充';
+  $('review-body').innerHTML = `<p class="muted">以下保留完整原始欄位及歷史來源。已選補充只是來源文字，不自動建立人物、關係或待辦；未採用的欄位仍可在原始欄位查看。匯入時間不是拜訪日期，地圖網址不會自動連線。</p>${[...grouped.values()].map(group => {
+    const s = group[0], supplements = csvSourceSupplements(group);
+    return `<article class="version"><strong>${esc(s.file)} · 第 ${s.line} 行</strong><p class="muted">清單：${esc(s.list)} · 匯入：${dateText(s.at)}</p>${supplements.length ? `<details class="csv-adopted-supplements" open><summary>已納入的來源補充 · ${supplements.length} 欄</summary><div class="csv-raw">${supplements.map(f => `<p><strong>第 ${f.column + 1} 欄 · ${esc(f.header || '無欄名')}</strong><span>${esc(f.text)}</span></p>`).join('')}</div></details>` : '<p class="muted">這份來源尚無已採用的額外補充；原始欄位完整保留。</p>'}<details><summary>展開完整原始欄位（含未採用）</summary><div class="csv-raw">${s.headers.map((h, i) => `<p><strong>第 ${i + 1} 欄 · ${esc(h)}</strong><span>${esc(s.cells[i])}</span></p>`).join('')}</div></details><button class="text-button" data-csv-download="${esc(s.blob)}" data-csv-filename="${esc(s.file)}">下載原始 CSV（明文）</button></article>`;
+  }).join('')}`;
   openDialog($('review'));
 }
 const input = (id, label, value = '', max = 500, required = false) => `<label>${label}<input id="${id}" maxlength="${max}" value="${esc(value)}" ${required ? 'required' : ''} autocomplete="off"></label>`;

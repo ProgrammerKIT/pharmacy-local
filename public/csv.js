@@ -206,7 +206,7 @@ export function identityRuleAllows(store, incoming) {
   const name = comparisonText(incoming.name), address = comparisonText(incoming.address);
   return (store.csvIdentityRules || []).some(rule => rule.decision === 'same' && rule.mapKey === key && rule.names.some(alias => comparisonText(alias) === name) && (!address || !rule.addresses.length || rule.addresses.some(value => comparisonText(value) === address)));
 }
-export const SOP1_VERSION = '1.2.16';
+export const SOP1_VERSION = '1.2.17';
 export const sourceListKey = list => normalizeListName(list).normalize('NFKC').trim().toLocaleLowerCase('zh-Hant');
 export function sourceTextFields(file, raw) {
   const mapped = new Set(Object.values(file.mapping).filter(i => i >= 0));
@@ -217,6 +217,50 @@ export function sourceTextFields(file, raw) {
     const kind = column === file.mapping.note ? 'note' : ['標籤', 'tags', 'label', 'labels'].includes(label) ? 'tag' : mapped.has(column) ? 'profile' : 'supplement';
     return [{ column, header, kind, text }];
   });
+}
+export function csvSourceSupplements(sources = []) {
+  const seen = new Set(), result = [];
+  for (const source of sources) {
+    if (!source || !Array.isArray(source.supplements) || !Array.isArray(source.headers) || !Array.isArray(source.cells)) continue;
+    for (const field of source.supplements) {
+      const column = field?.column;
+      if (!Number.isInteger(column) || column < 0 || column >= source.headers.length || typeof field.text !== 'string' || !field.text.trim() || field.header !== source.headers[column] || field.text !== source.cells[column]) continue;
+      const key = JSON.stringify([source.blob, source.fingerprint, source.list, column, field.text]);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push({ column, header: field.header, text: field.text, file: source.file, line: source.line, list: source.list, blob: source.blob, fingerprint: source.fingerprint });
+    }
+  }
+  return result;
+}
+const sameSourceRow = (source, row, file) => source.fingerprint === row.fingerprint && sourceListKey(source.list) === sourceListKey(file.list);
+function supplementChoices(file, raw, row, sources = []) {
+  const adopted = csvSourceSupplements(sources.filter(source => sameSourceRow(source, row, file)));
+  return sourceTextFields(file, raw).filter(field => field.kind === 'supplement').map(({ column, header, text }) => ({ column, header, text,
+    included: adopted.some(field => field.column === column && field.header === header && field.text === text) }));
+}
+export function csvSupplementChoices(plan, row, records = []) {
+  const file = plan.files[row.fileIndex], raw = file?.rows[row.rowIndex];
+  if (!file || !raw) return [];
+  const target = csvTargetChoice(plan, row);
+  // A duplicate row may be skipped while its already-adopted fields remain
+  // visible. This hint only affects display; skipped rows cannot adopt fields.
+  const storeId = target.startsWith('store:') ? target.slice(6) : target === 'skip' ? row.matchedStoreId : null;
+  const store = storeId ? records.find(record => record.type === 'store' && record.id === storeId && !record.deleted && !record.conflict && (target !== 'skip' || identity(row.data) && identity(row.data) === identity(record))) : null;
+  return supplementChoices(file, raw, row, store?.csvSources || []);
+}
+function supplementSelection(plan, row, records) {
+  const choices = csvSupplementChoices(plan, row, records), columns = row.supplementColumns === undefined ? [] : row.supplementColumns;
+  if (!Array.isArray(columns) || columns.length > 100 || new Set(columns).size !== columns.length || columns.some(column => !Number.isInteger(column) || !choices.some(field => field.column === column))) throw new Error('補充欄位選擇不正確，請重新核對原始欄位');
+  if (columns.length && (row.choice === 'skip' || row.reviewExcluded)) throw new Error('已略過或裁定排除的列不能補選欄位');
+  return choices.filter(field => columns.includes(field.column) && !field.included);
+}
+function supplementalOnly(plan, row, store) {
+  const file = plan.files[row.fileIndex];
+  // Once a known source row offers field selection, clearing the last checkbox
+  // must not turn the same preview into a reapplication of historical notes.
+  return !!store && (store.csvSources || []).some(source => sameSourceRow(source, row, file)) &&
+    (csvSupplementChoices(plan, row, [store]).length > 0 || profileChanges({ ...row, choice: 'store:' + store.id }, [store]).some(change => change.fillable));
 }
 function listMetadata(file, raw) {
   const fields = sourceTextFields(file, raw);
@@ -279,6 +323,8 @@ export function sop1Report(plan, bundle) {
   }
   const fail = (row, message) => blockers.push({ key: row.key, file: plan.files[row.fileIndex].file, line: row.line, message });
   for (const row of plan.rows) {
+    try { supplementSelection(plan, row, records); }
+    catch (error) { fail(row, error.message); }
     if (row.reviewExcluded && row.choice !== 'skip') fail(row, '此列已裁定排除，須重新核對資料包才可納入');
     if (row.choice === 'skip') { summaries.push({ key: row.key, kind: row.sop1?.metadata ? 'metadata' : 'skipped' }); continue; }
     if (row.choice === 'review') { fail(row, row.reason || '門市尚未核對'); continue; }
@@ -291,17 +337,19 @@ export function sop1Report(plan, bundle) {
         [store.name, ...(store.csvAliases || [])].some(name => comparisonText(name) === comparisonText(row.data.name))));
     if (mergedSource) { fail(row, '此來源涉及已合併門市，須另行核對原筆記串流；本批不會自動新建、覆蓋或還原'); continue; }
     const file = plan.files[row.fileIndex];
-    if ((row.textFields || []).some(f => f.kind === 'supplement') && !row.sop1?.extraAccepted) fail(row, '尚有其他非空白文字欄，須核對並確認保留為來源補充，不可默默漏掉');
+    if (csvSupplementChoices(plan, row, records).some(field => !field.included) && !row.sop1?.extraAccepted) fail(row, '尚有其他非空白文字欄，須核對勾選結果；未勾選只保留原始來源');
+    const fieldsOnly = supplementalOnly(plan, row, selectedStore);
     const stream = resolved + ':' + sourceListKey(file.list), bucket = streams.get(stream) || [];
-    bucket.push(row); streams.set(stream, bucket);
+    if (!fieldsOnly) bucket.push(row);
+    streams.set(stream, bucket);
     const existing = resolved.startsWith('store:') ? records.filter(v => v.type === 'visit' && !v.deleted && effectiveVisitStream(v) === csvStream(resolved.slice(6), file.list)) : [];
     if (existing.length > 1 || existing.some(v => v.conflict)) fail(row, '同一來源有多筆備註或同步衝突，請先在 App 核對');
     const old = existing[0];
     let kind = !row.note?.trim() ? 'no-note' : old ? (old.googleText ?? old.text) === row.note && (!row.date || row.date === old.date) ? 'unchanged' : 'new-version' : 'new-note';
     if (old && row.noteProvided && !row.note) kind = 'retain-missing';
-    const manual = old && row.note && old.text !== row.note && (old.googleText === undefined || old.text !== old.googleText) && row.note !== old.googleText;
+    const manual = !fieldsOnly && old && row.note && old.text !== row.note && (old.googleText === undefined || old.text !== old.googleText) && row.note !== old.googleText;
     if (manual && !row.sop1?.manualAccepted) fail(row, 'App 手動修改與新來源文字不同，須先確認保留 App 文字及保存來源新版');
-    summaries.push({ key: row.key, target: resolved, kind, manual: !!manual });
+    summaries.push({ key: row.key, target: resolved, kind: fieldsOnly ? 'supplement-only' : kind, manual: !!manual });
   }
   for (const group of streams.values()) {
     const notes = new Set(group.filter(r => r.noteProvided).map(r => JSON.stringify([r.note, r.date])));
@@ -403,16 +451,18 @@ export async function planCSV(files, bundle) {
       const candidates = similar.map(s => ({ choice: 'store:' + s.id, data: s, reasons: duplicateEvidence(data, s) }));
       const batchCandidates = batchSimilar.map(r => ({ choice: 'row:' + r.key, data: r.data, reasons: duplicateEvidence(data, r.data) }));
       const batchFingerprint = normalizeListName(f.list).toLocaleLowerCase('zh-Hant') + ':' + fingerprint;
-      let choice = 'new', reason = '新增門市';
+      let choice = 'new', reason = '新增門市', matchedStoreId;
       if (seenBatch.has(batchFingerprint)) { choice = 'skip'; reason = '同一來源清單的相同原始列已在本批出現'; }
       else if (errors.length) { choice = 'skip'; reason = errors.join('；'); }
       else if ([...matches, ...names].some(store => store.mergedInto || store.storeMergeHistory?.length)) { choice = 'review'; reason = '此來源涉及已合併門市，須另行核對原筆記串流；不會自動新建、覆蓋或還原'; }
       else if (matches.length === 1 && !matches[0].conflict && !matches[0].deleted) {
-        const matched = matches[0]; choice = `store:${matched.id}`; reason = '相同地圖網址或名稱＋地址';
+        const matched = matches[0]; matchedStoreId = matched.id; choice = `store:${matched.id}`; reason = '相同地圖網址或名稱＋地址';
         const stream = csvStream(matched.id, f.list), current = visits.filter(v => visitStream(v) === stream);
         const sameStoreRow = (matched.csvSources || []).some(s => s.fingerprint === fingerprint && normalizeListName(s.list).toLocaleLowerCase('zh-Hant') === normalizeListName(f.list).toLocaleLowerCase('zh-Hant'));
         const sameState = !noteProvided || (!note ? !current.length || current.length === 1 && current[0].sourceMissing : current.length === 1 && (current[0].googleText ?? current[0].text) === note && (!date || current[0].date === date) && !current[0].sourceMissing);
-        if (sameStoreRow && sameState) { choice = 'skip'; reason = '目前版本已包含相同原始列'; }
+        const missingSupplements = supplementChoices(f, r, { fingerprint }, matched.csvSources || []).some(field => !field.included);
+        const fillable = FILL_FIELDS.some(field => data[field]?.trim() && !matched[field]?.trim());
+        if (sameStoreRow && sameState && !missingSupplements && !fillable) { choice = 'skip'; reason = '目前版本已包含相同原始列'; }
       }
       else if (matches.length || names.length) { choice = 'review'; reason = [...matches, ...names].some(store => store.mergedInto)
         ? '命中已合併門市的舊名稱或地點識別；請核對保留主檔，不會自動復活舊店或另建門市'
@@ -422,7 +472,7 @@ export async function planCSV(files, bundle) {
       else if (candidates.length || batchCandidates.length) { choice = 'review'; reason = '有相似名稱、地址或地點識別，請比對來源後指定'; }
       if (choice === 'new') { if (id) batchIdentities.set(id, key); batchNames.set(data.name.trim(), key); }
       seenBatch.add(batchFingerprint);
-      rows.push({ key, fileIndex: fi, rowIndex: ri, line: r.line, data, note, noteProvided, date, fingerprint, choice, reason, warnings, errors, issues, candidates: [...candidates, ...batchCandidates], fillFields: [] });
+      rows.push({ key, fileIndex: fi, rowIndex: ri, line: r.line, data, note, noteProvided, date, fingerprint, choice, reason, warnings, errors, issues, candidates: [...candidates, ...batchCandidates], fillFields: [], supplementColumns: [], ...(matchedStoreId ? { matchedStoreId } : {}) });
       for (const key of keys) add(rowIndex, key, rows.at(-1));
     }
   }
@@ -441,7 +491,7 @@ export function buildCSVImport(plan, bundle, device) {
   if (!sop.ready) throw new Error('SOP1 尚未通過：' + sop.blockers[0].message + '。這批尚未寫入 App 或關聯圖。');
   const next = structuredClone(bundle), initial = project(bundle), states = new Map(initial.filter(r => r.type === 'store').map(r => [r.id, { data: structuredClone(r.heads[0].data), parents: r.heads.map(h => h.id), invalid: r.deleted || r.conflict }])); next.schema = 2;
   const resolution = new Map(), at = new Date().toISOString(), batch = uuid(), changed = new Set(), visitOps = [], sourceOps = [], mergeStoreOps = [], movedVisitRecords = new Map(), sourceSnapshotIds = plan.files.map(() => uuid());
-  const summary = { sourceSnapshots: 0, stores: 0, linked: 0, notes: 0, updatedNotes: 0, missingNotes: 0, restoredNotes: 0, unchangedNotes: 0, duplicateNotes: 0, filledFields: 0, skipped: 0, rows: 0, mergeGroups: 0, mergedStores: 0, movedVisits: 0 };
+  const summary = { sourceSnapshots: 0, stores: 0, linked: 0, notes: 0, updatedNotes: 0, missingNotes: 0, restoredNotes: 0, unchangedNotes: 0, duplicateNotes: 0, filledFields: 0, adoptedSupplements: 0, skipped: 0, rows: 0, mergeGroups: 0, mergedStores: 0, movedVisits: 0 };
   for (const [index, f] of plan.files.entries()) {
     const encoded = b64(f.bytes);
     if (Object.hasOwn(next.blobs, f.blob) && next.blobs[f.blob] !== encoded) throw new Error('原始 CSV 雜湊相同但內容不同，停止匯入。');
@@ -503,12 +553,14 @@ export function buildCSVImport(plan, bundle, device) {
     if (row.choice === 'skip') { summary.skipped++; continue; }
     if (row.errors.length) throw new Error(`第 ${row.line} 行：${row.errors.join('；')}。請略過或修正原檔。`);
     const id = resolve(row), state = states.get(id), f = plan.files[row.fileIndex], raw = f.rows[row.rowIndex];
+    const selected = supplementChoices(f, raw, row, state.data.csvSources || []).filter(field => (row.supplementColumns || []).includes(field.column) && !field.included);
+    const prior = (state.data.csvSources || []).some(source => sameSourceRow(source, row, f));
+    const currentState = visitsByStream.get(csvStream(id, f.list)) || [];
+    const same = row.noteProvided === false || (!row.note ? !currentState.length || currentState.length === 1 && currentState[0].sourceMissing : currentState.length === 1 && (currentState[0].googleText ?? currentState[0].text) === row.note && (!row.date || row.date === currentState[0].date) && !currentState[0].sourceMissing);
+    const known = !row.review || (state.data.csvDecisionGroups || []).includes(row.review.key);
+    const fieldsOnly = sop.rows.find(item => item.key === row.key)?.kind === 'supplement-only';
+    if (known && prior && (same || fieldsOnly) && !currentState.some(visit => visit.conflict) && !row.fillFields.length && !selected.length) { summary.skipped++; continue; }
     if (row.review) {
-      const known = (state.data.csvDecisionGroups || []).includes(row.review.key);
-      const prior = (state.data.csvSources || []).some(s => s.fingerprint === row.fingerprint && sourceListKey(s.list) === sourceListKey(f.list));
-      const current = visitsByStream.get(csvStream(id, f.list)) || [];
-      const same = row.noteProvided === false || (!row.note ? !current.length || current.length === 1 && current[0].sourceMissing : current.length === 1 && (current[0].googleText ?? current[0].text) === row.note && (!row.date || row.date === current[0].date) && !current[0].sourceMissing);
-      if (known && prior && same && !current.some(v => v.conflict) && !row.fillFields.length) { summary.skipped++; continue; }
       if (!known) {
         state.data.csvDecisionGroups = [...(state.data.csvDecisionGroups || []), row.review.key];
         if (row.review.pending) state.data.csvIdentityPending = true;
@@ -528,12 +580,14 @@ export function buildCSVImport(plan, bundle, device) {
       if (!state.data[field]?.trim()) { state.data[field] = row.data[field]; summary.filledFields++; }
     }
     if (state.parents.length && !changed.has(id)) summary.linked++;
-    const source = { fingerprint: row.fingerprint, sourceSnapshot: sourceSnapshotIds[row.fileIndex], batch, file: f.file, line: row.line, list: f.list, at, blob: f.blob, headers: [...f.headers], cells: [...raw.cells], sop1Version: SOP1_VERSION, supplements: row.textFields.filter(field => field.kind === 'supplement'), disposition: row.choice, supplementReviewed: !!row.sop1?.extraAccepted, manualReviewed: !!row.sop1?.manualAccepted };
+    const source = { fingerprint: row.fingerprint, sourceSnapshot: sourceSnapshotIds[row.fileIndex], batch, file: f.file, line: row.line, list: f.list, at, blob: f.blob, headers: [...f.headers], cells: [...raw.cells], sop1Version: SOP1_VERSION, supplements: selected.map(({ column, header, text }) => ({ column, header, text, kind: 'supplement' })), disposition: row.choice, supplementReviewed: !!row.sop1?.extraAccepted, manualReviewed: !!row.sop1?.manualAccepted };
+    summary.adoptedSupplements += selected.length;
     if (row.review) source.review = structuredClone(row.review);
     state.data.csvSources = [...(state.data.csvSources || []), source];
     state.data.lists = [...new Set([...(state.data.lists || []), ...(f.list ? [f.list] : [])])];
     // Existing profiles are not overwritten, including their names, addresses and map URLs.
     changed.add(id); summary.rows++;
+    if (fieldsOnly) continue;
     const stream = csvStream(id, f.list), current = visitsByStream.get(stream) || [];
     if (current.length > 1) throw new Error(`第 ${row.line} 行：同一 Google 備註來源已有多筆舊紀錄，為避免錯誤合併，請先在 App 檢查。`);
     const existing = current[0];
@@ -693,7 +747,7 @@ export function setReviewedGroupChoice(plan, id, choice) {
   for (const key of group.rows) {
     const row = plan.rows.find(r => r.key === key);
     row.choice = ['skip', 'review'].includes(choice) || key === first ? choice : 'row:' + first;
-    row.fillFields = []; row.sop1.manualAccepted = false;
+    row.fillFields = []; row.supplementColumns = []; row.sop1.extraAccepted = false; row.sop1.manualAccepted = false;
   }
 }
 export async function planReviewedCSV(review, bundle) {
@@ -747,6 +801,6 @@ export function exportCSVPreview(plan, bundle) {
     rows: plan.rows.map(row => {
       const file = plan.files[row.fileIndex], target = csvTargetChoice(plan, row), storeId = target.startsWith('store:') ? target.slice(6) : '';
       const old = records.filter(r => r.type === 'visit' && !r.deleted && plannedVisitStream(plan, r) === csvStream(storeId, file.list));
-      return { key: row.key, file: file.file, line: row.line, name: row.data.name, target, pending: !!row.review?.pending, action: report.rows.find(r => r.key === row.key)?.kind || 'blocked', incomingText: row.note, existing: old.map(v => ({ text: v.text, sourceText: v.googleText, date: v.date, conflict: v.conflict })) };
+      return { key: row.key, file: file.file, line: row.line, name: row.data.name, target, pending: !!row.review?.pending, action: report.rows.find(r => r.key === row.key)?.kind || 'blocked', incomingText: row.note, fillFields: [...row.fillFields], supplementColumns: [...(row.supplementColumns || [])], supplements: csvSupplementChoices(plan, row, records).map(field => ({ ...field, selected: (row.supplementColumns || []).includes(field.column) })), existing: old.map(v => ({ text: v.text, sourceText: v.googleText, date: v.date, conflict: v.conflict })) };
     }) };
 }
