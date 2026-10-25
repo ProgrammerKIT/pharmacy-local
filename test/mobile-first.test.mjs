@@ -631,8 +631,8 @@ test('successful single-store inline save clears edit state and refreshes the sa
 });
 
 test('SOP1 explicitly separates App daily notes from Google CSV imports and keeps retention undecided', () => {
-  assert.equal(SOP1_VERSION, '1.2.18');
-  assert.match(sop, /流程版本：1\.2\.57/);
+  assert.equal(SOP1_VERSION, '1.2.19');
+  assert.match(sop, /流程版本：1\.2\.58/);
   assert.match(sop, /393 × 852 CSS 像素/);
   assert.match(sop, /固定手機畫布不等於鍵盤開啟時的可見高度/);
   assert.match(sop, /長原文末行游標也須可見/);
