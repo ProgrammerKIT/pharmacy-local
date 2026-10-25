@@ -90,6 +90,7 @@ async function openCSV(page) {
   await page.locator('#csv-view').waitFor({ state: 'visible' });
 }
 async function previewCSV(page) {
+  await page.locator('#csv-import-mode').selectOption('standard');
   await page.locator('#csv-files').setInputFiles({ name: fixtureName, mimeType: 'text/csv', buffer: csvBytes });
   await page.locator('#csv-preview-button').waitFor();
   await page.locator('#csv-preview-button').click();
