@@ -371,3 +371,6 @@ button[data-csv-source-snapshot]{flex:none;min-height:44px}
 .csv-extra-choices .csv-change { min-width:0; }
 .csv-extra-choices .check { align-items:flex-start; overflow-wrap:anywhere; }
 .csv-sop-checks .check input { flex-shrink:0; }
+
+/* Remembered CSV places keep long source labels inside narrow panels. */
+#csv-exclusions,#csv-exclusion-manager{min-width:0;overflow-wrap:anywhere}

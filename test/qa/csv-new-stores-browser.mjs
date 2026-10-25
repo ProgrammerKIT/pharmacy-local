@@ -112,18 +112,14 @@ async function classification(page, repeated) {
   return expected;
 }
 async function confirmImport(page, accept) {
-  const waiting = page.waitForEvent('dialog'), clicking = page.locator('#csv-commit').click();
-  void clicking.catch(() => {});
-  const dialog = await waiting, message = dialog.message();
-  let handled = false;
-  try {
-    assert.equal(dialog.type(), 'confirm');
-    assert.match(message, /完整原始 CSV/);
-    assert.match(message, /既有門市、文字、關係及歷史更新：0/);
-    await (accept ? dialog.accept() : dialog.dismiss()); handled = true;
-  } finally { if (!handled) await dialog.dismiss().catch(() => {}); }
-  await clicking;
+  await page.locator('#csv-commit').click();
+  const dialog = page.locator('#csv-final-review'); await dialog.waitFor({ state: 'visible' });
+  const message = await dialog.innerText();
+  assert.match(message, /完整原始 CSV/);
+  assert.match(message, /既有門市、文字、關係及歷史更新：0/);
+  await page.locator(accept ? '#csv-final-apply' : '#csv-final-back').click();
   if (accept) await page.waitForFunction(() => document.querySelector('#csv-result')?.textContent.startsWith('完成：'));
+  else await dialog.waitFor({ state: 'hidden' });
   return message;
 }
 function metadataAndHistory(before, after) {

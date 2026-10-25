@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import { createCSVImport } from '../public/csv-ui.js';
 import { emptyBundle, revision, project, validateBundle, b64 } from '../public/core.js';
-import { PROFILE_FIELDS, FILL_FIELDS, scanQuality, setDistinctReview, sourceSuggestions, fillProfile, prepareCSV, planCSV, csvSourceSupplements, sourceListKey } from '../public/csv.js';
+import { PROFILE_FIELDS, FILL_FIELDS, scanQuality, setDistinctReview, sourceSuggestions, fillProfile, prepareCSV, planCSV, csvSourceSupplements, sourceListKey, csvExclusionList } from '../public/csv.js';
 import { groupCSVNotes, sourceTags, storeIdentityPending, relationVisitAllowed, evidenceKind, entityRule } from '../public/relations.js';
 
 const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
@@ -38,8 +38,8 @@ function importUI(b = bundle(), importMode = 'standard') {
   const state = { bundle: b, device: 'phone' };
   let errors = [], accepted = true, onConfirm = null;
   function node(id = '') {
-    let html = '';
-    return { id, dataset: {}, disabled: false, value: '', textContent: '',
+    let html = ''; const events = {};
+    return { open: false, addEventListener(type, fn) { events[type] = fn; }, showModal() { this.open = true; }, close() { this.open = false; events.close?.(); }, dispatch(type) { events[type]?.({ preventDefault() {} }); }, id, dataset: {}, disabled: false, value: '', textContent: '',
       get innerHTML() { return html; },
       set innerHTML(value) { html = value; for (const match of value.matchAll(/\bid="([^"]+)"/g)) nodes.set('#' + match[1], node(match[1])); },
       replaceChildren() { html = ''; },
@@ -83,13 +83,16 @@ test('new-only UI defaults to unselected candidates and cannot select existing o
   await h.change({ dataset: { csvInclude: '0:2' }, checked: true });
   assert.match(h.preview(), /已選新增 0 間/);
   await h.change({ dataset: { csvInclude: '0:1' }, checked: true });
-  h.reject(); await h.click('csv-commit'); assert.equal(h.saved.length, 0);
-  h.accept(); await h.click('csv-commit'); assert.deepEqual(h.errors(), []); assert.equal(h.saved.length, 1);
+  await h.click('csv-commit'); assert.equal(h.saved.length, 0);
+  assert.match(h.nodes.get('#csv-final-review').innerHTML, /虛構全新青木藥局/);
+  assert.match(h.nodes.get('#csv-final-review').innerHTML, /虛構.csv · 第 3 行/);
+  await h.click('csv-final-back'); assert.equal(h.saved.length, 0);
+  await h.click('csv-commit'); await h.click('csv-final-apply'); assert.deepEqual(h.errors(), []); assert.equal(h.saved.length, 1);
   assert.deepEqual(h.state.bundle.ops.slice(0, original.ops.length), original.ops);
   assert.equal(project(h.state.bundle).find(r => r.id === 's0').versions.length, 1);
   assert.equal(project(h.state.bundle).filter(r => r.type === 'store').length, 2);
   assert.equal(project(h.state.bundle).find(r => r.type === 'visit').text, '新店原文');
-  assert.match(h.prompts.at(-1), /既有門市、文字、關係及歷史更新：0/);
+  assert.equal(h.prompts.length, 0, 'new-only never substitutes a native count-only confirm');
 });
 test('new-only mode switches clear previews and choices, and reviewed packets cannot bypass the mode', async t => {
   const h = importUI(bundle(), 'new-only'); t.after(h.cleanup);
@@ -101,7 +104,7 @@ test('new-only mode switches clear previews and choices, and reviewed packets ca
   await h.click('csv-preview-button'); assert.match(h.preview(), /已選新增 0 間/);
   await h.change({ id: 'csv-review-file', files: [{ size: 2, text: async () => '{}' }] });
   assert.match(h.errors().at(-1), /不接受已核對資料包/);
-  await h.click('csv-commit');
+  await h.click('csv-commit'); await h.click('csv-final-apply');
   assert.equal(project(h.state.bundle).filter(r => r.type === 'source').length, 1);
   assert.equal(project(h.state.bundle).filter(r => r.type === 'store').length, 1);
 });
@@ -115,10 +118,98 @@ test('new-only selected extras require acknowledgment and old-store fill control
   await h.change({ dataset: { csvAck: 'extraAccepted', row: '0:0' }, checked: true });
   await h.change({ dataset: { csvFill: '0:0' }, value: 'address', checked: true });
   await h.change({ dataset: { csvChoice: '0:0' }, value: 'store:s0' });
-  await h.click('csv-commit'); assert.deepEqual(h.errors(), []);
+  await h.click('csv-commit'); await h.click('csv-final-apply'); assert.deepEqual(h.errors(), []);
   const records = project(h.state.bundle), created = records.find(r => r.type === 'store' && r.id !== 's0');
   assert.equal(created.csvSources[0].supplements[0].text, '<虛構補充>');
   assert.equal(records.find(r => r.id === 's0').csvSources, undefined);
+});
+test('remembered exclusions require explicit selection, are cancel-safe and can be revoked without importing', async t => {
+  const h = importUI(bundle(), 'new-only'); t.after(h.cleanup);
+  const text = 'Title,Address,Note,URL\n虛構排除甲,甲路1號,原文,https://maps.google.com/?cid=7654001\n虛構單純未選,乙路2號,未勾原文,https://maps.google.com/?cid=7654002';
+  await h.read(text);
+  await h.change({ dataset: { csvInclude: '0:0' }, checked: true });
+  await h.change({ dataset: { csvExclude: '0:0' }, checked: true });
+  assert.match(h.preview(), /已選新增 0 間/);
+  assert.match(h.preview(), /待記住排除 1 列/);
+  await h.click('csv-commit'); assert.equal(h.saved.length, 0);
+  assert.match(h.nodes.get('#csv-final-review').innerHTML, /這次記住排除 · 選取 1 列／記住 1 個地點/);
+  await h.click('csv-final-edit'); await h.click('csv-cancel');
+  assert.equal(h.saved.length, 0); assert.deepEqual(csvExclusionList(h.state.bundle), []);
+  await h.read(text); assert.match(h.preview(), /待記住排除 0 列/);
+  await h.change({ dataset: { csvExclude: '0:0' }, checked: true });
+  await h.click('csv-commit'); await h.click('csv-final-apply'); assert.deepEqual(h.errors(), []);
+  assert.equal(csvExclusionList(h.state.bundle).length, 1);
+  assert.equal(project(h.state.bundle).filter(r => r.type === 'store').length, 1);
+  await h.read(text);
+  assert.doesNotMatch(h.preview(), /data-csv-row="0:0"/);
+  assert.match(h.preview(), /data-csv-row="0:1"/);
+  await h.change({ id: 'csv-filter', value: 'remembered' });
+  assert.match(h.preview(), /data-csv-new-status="remembered"/);
+  const exclusion = csvExclusionList(h.state.bundle)[0];
+  await h.change({ dataset: { csvRevoke: exclusion.id }, checked: true });
+  await h.click('csv-commit'); assert.match(h.nodes.get('#csv-final-review').innerHTML, /這次撤銷排除 · 1 筆/);
+  await h.click('csv-final-apply'); assert.deepEqual(h.errors(), []);
+  assert.deepEqual(csvExclusionList(h.state.bundle), []);
+  assert.equal(project(h.state.bundle).filter(r => r.type === 'store').length, 1);
+  await h.read(text); assert.match(h.preview(), /data-csv-include="0:0"/);
+  assert.doesNotMatch(h.preview(), /data-csv-include="0:0" checked/);
+});
+test('duplicate rows can be explicitly excluded while final confirmation separates row and place counts', async t => {
+  const h = importUI(bundle(), 'new-only'); t.after(h.cleanup);
+  const row = '虛構不要匯入,甲路1號,原文,https://maps.google.com/?cid=7654001';
+  await h.read('Title,Address,Note,URL\n' + row + '\n' + row);
+  await h.change({ id: 'csv-filter', value: 'all' });
+  assert.match(h.preview(), /data-csv-exclude="0:1"/);
+  await h.change({ dataset: { csvExclude: '0:0' }, checked: true });
+  await h.change({ dataset: { csvExclude: '0:1' }, checked: true });
+  await h.click('csv-commit');
+  assert.match(h.nodes.get('#csv-final-review').innerHTML, /選取 2 列／記住 1 個地點/);
+  assert.equal((h.nodes.get('#csv-final-review').innerHTML.match(/data-csv-final-row=/g) || []).length, 2);
+  await h.click('csv-final-apply'); assert.deepEqual(h.errors(), []);
+  assert.equal(csvExclusionList(h.state.bundle).length, 1);
+  assert.equal(project(h.state.bundle).filter(r => r.type === 'store').length, 1);
+});
+test('final per-store confirmation rejects changed bundle, session, selection, mapping and reset', async t => {
+  for (const mutation of ['bundle', 'device', 'token', 'choice', 'mapping', 'reset', 'hidden']) {
+    const h = importUI(bundle(), 'new-only');
+    try {
+      await h.read('Title,Address,Note,URL\n<虛構 & 新店>,甲路1號,文字,https://maps.google.com/?cid=7654001');
+      await h.change({ dataset: { csvInclude: '0:0' }, checked: true });
+      await h.click('csv-commit');
+      const final = h.nodes.get('#csv-final-review').innerHTML;
+      assert.match(final, /&lt;虛構 &amp; 新店&gt;/); assert.doesNotMatch(final, /<虛構/);
+      if (mutation === 'bundle') h.state.bundle = structuredClone(h.state.bundle);
+      if (mutation === 'device') h.state.device = 'changed';
+      if (mutation === 'token') h.state.token = 'changed';
+      if (mutation === 'choice') await h.change({ dataset: { csvInclude: '0:0' }, checked: false });
+      if (mutation === 'mapping') await h.change({ dataset: { csvField: 'note', file: '0' }, value: '-1' });
+      if (mutation === 'reset') h.ui.reset();
+      if (mutation === 'hidden') document.hidden = true;
+      await h.click('csv-final-apply');
+      assert.equal(h.saved.length, 0, mutation + ' must invalidate final confirmation');
+      assert.match(h.errors().at(-1), /核對期間/);
+    } finally { h.cleanup(); }
+  }
+});
+test('final confirmation rebuild rejects data changed in place without writing', async t => {
+  const h = importUI(bundle(), 'new-only'); t.after(h.cleanup);
+  await h.read('Title,Address,Note,URL\n虛構新店,甲路1號,文字,https://maps.google.com/?cid=7654001');
+  await h.change({ dataset: { csvInclude: '0:0' }, checked: true });
+  await h.click('csv-commit');
+  h.state.bundle.ops.push(revision('store', 'concurrent-store', { ...h.state.bundle.ops[0].data, name: '虛構同期新增門市', mapUrl: 'https://maps.google.com/?cid=7890101' }, [], 'other-device'));
+  await h.click('csv-final-apply');
+  assert.equal(h.saved.length, 0);
+  assert.match(h.errors().at(-1), /資料已變更/);
+  assert.equal(h.nodes.get('#csv-final-review').open, false);
+});
+test('closing the final dialog preserves editing choices and never saves', async t => {
+  const h = importUI(bundle(), 'new-only'); t.after(h.cleanup);
+  await h.read('Title,Note,URL\n虛構新店,文字,https://maps.google.com/?cid=7654001');
+  await h.change({ dataset: { csvInclude: '0:0' }, checked: true });
+  await h.click('csv-commit'); h.nodes.get('#csv-final-review').dispatch('cancel');
+  assert.equal(h.nodes.get('#csv-final-review').open, false); assert.equal(h.saved.length, 0);
+  assert.match(h.preview(), /已選新增 1 間/);
+  await h.click('csv-final-apply'); assert.equal(h.saved.length, 0);
 });
 test('CSV UI keeps fill opt-in through filtering and requires confirmation before writing', async t => {
   const h = importUI(); t.after(h.cleanup);
@@ -288,7 +379,7 @@ test('source viewer shows later adopted columns for a note even when the enclosi
   const old = source('old-file', '虛構清單', []), adopted = source('changed-file', '虛構清單.csv', [{ column: 1, header: '電話', text: '<虛構電話>' }]);
   const r = { type: 'visit', id: 'visit', store: 'store', csvSources: [old], versions: [{ data: { csvSources: [old] } }] };
   const nodes = new Map(), $ = id => { if (!nodes.has(id)) nodes.set(id, {}); return nodes.get(id); };
-  const ctx = vm.createContext({ by: type => type === 'visit' ? r : { csvSources: [adopted] }, $, esc, dateText: x => x, openDialog() {}, csvSourceSupplements, sourceListKey });
+  const ctx = vm.createContext({ by: type => type === 'visit' ? r : { csvSources: [adopted] }, $, esc, dateText: x => x, openDialog() {}, csvSourceSupplements, sourceListKey, csvExclusionList });
   vm.runInContext(app.slice(app.indexOf('function openSources('), app.indexOf('const input =', app.indexOf('function openSources('))), ctx);
   vm.runInContext('openSources("visit", "visit")', ctx);
   assert.match($('review-body').innerHTML, /已納入的來源補充 · 1 欄/);

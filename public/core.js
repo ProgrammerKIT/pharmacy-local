@@ -590,6 +590,77 @@ export function applyDayPlanChanges(bundle, changes, device, at = new Date().toI
   if (enc.encode(JSON.stringify(next)).length > MAX_BYTES) throw new Error('行程儲存後資料超過 24 MB 上限；全部原資料保留，本次尚未寫入。');
   return next;
 }
+// Exclusion memory is an explicit decision about one exact Google place
+// identity. These comparison keys never replace the original source strings.
+export function csvExclusionIdentity(profile) {
+  if (!plain(profile) || !str(profile.name, 200) || !profile.name.trim() || !str(profile.address, 2000) || !str(profile.mapUrl, 2000)) return null;
+  let mapKey = '';
+  try {
+    const url = new URL(profile.mapUrl.trim());
+    if (url.protocol !== 'https:' || !['www.google.com', 'maps.google.com', 'www.google.com.tw', 'maps.google.com.tw'].includes(url.hostname)) return null;
+    const place = url.searchParams.get('query_place_id') || (url.searchParams.get('q') || '').match(/^place_id:(.+)$/)?.[1];
+    const cid = url.searchParams.get('cid'), feature = decodeURIComponent(url.pathname + url.search).match(/!1s([^!&/?]+)/)?.[1];
+    if (place) mapKey = 'place:' + place;
+    else if (cid && /^\d+$/.test(cid)) mapKey = 'cid:' + BigInt(cid).toString();
+    else if (feature) mapKey = 'feature:' + feature;
+  } catch { return null; }
+  if (!mapKey || mapKey.length > 500) return null;
+  const normalize = value => value.normalize('NFKC').toLowerCase().replace(/\s+/gu, '').replaceAll('臺', '台');
+  return { mapKey, name: normalize(profile.name), address: normalize(profile.address) };
+}
+const csvEventKeys = (value, fields) => plain(value) && Object.keys(value).length === fields.length && fields.every(field => Object.hasOwn(value, field));
+const csvEventIdentityKey = identity => JSON.stringify([identity.mapKey, identity.name, identity.address]);
+function validCSVExclusionEvent(event) {
+  if (!plain(event) || !str(event.id, 100) || !event.id) return false;
+  if (event.action === 'revoke') return csvEventKeys(event, ['id', 'action', 'target']) && str(event.target, 100) && !!event.target && event.target !== event.id;
+  if (event.action !== 'exclude' || !csvEventKeys(event, ['id', 'action', 'identity', 'profile', 'line', 'fingerprint', 'seenRevocations']) ||
+    !csvEventKeys(event.profile, ['name', 'address', 'mapUrl']) || !csvEventKeys(event.identity, ['mapKey', 'name', 'address'])) return false;
+  const identity = csvExclusionIdentity(event.profile);
+  return !!identity && csvEventIdentityKey(identity) === csvEventIdentityKey(event.identity) &&
+    Number.isSafeInteger(event.line) && event.line > 0 && event.line <= 2097152 && /^[a-f0-9]{64}$/.test(event.fingerprint || '') &&
+    Array.isArray(event.seenRevocations) && event.seenRevocations.length <= 2000 && new Set(event.seenRevocations).size === event.seenRevocations.length &&
+    event.seenRevocations.every(id => str(id, 100) && !!id && id !== event.id);
+}
+function validateCSVExclusionEvents(sourceEntities) {
+  const events = new Map(), owners = new Map();
+  for (const source of sourceEntities.values()) for (const event of source.data.csvExclusionEvents || []) {
+    if (events.has(event.id)) throw new Error('CSV 排除事件識別重複；不能覆寫排除或撤銷歷史。');
+    events.set(event.id, event); owners.set(event.id, source);
+  }
+  const dependencies = new Map();
+  for (const source of sourceEntities.values()) {
+    const list = source.data.csvExclusionEvents || [];
+    if (source.data.csvExclusionAuditOf !== undefined) {
+      const original = sourceEntities.get(source.data.csvExclusionAuditOf);
+      if (!original || original === source || original.data.csvExclusionAuditOf !== undefined || !list.length || list.some(event => event.action !== 'revoke') ||
+        ['file', 'list', 'blob', 'rows', 'headers', 'encoding', 'delimiter'].some(field => JSON.stringify(source.data[field]) !== JSON.stringify(original.data[field]))) throw new Error('CSV 撤銷稽核未連到完整原始來源。');
+    } else if (list.some(event => event.action !== 'exclude')) throw new Error('CSV 撤銷事件缺少原始來源稽核連結。');
+    for (const event of list) {
+      if (event.action === 'revoke') {
+        const target = events.get(event.target);
+        if (!target || target.action !== 'exclude' || owners.get(event.target).entity !== source.data.csvExclusionAuditOf) throw new Error('CSV 撤銷事件的排除依據不存在或不一致。');
+        dependencies.set(event.id, [event.target]);
+      } else {
+        for (const id of event.seenRevocations) {
+          const revoked = events.get(id), target = events.get(revoked?.target);
+          if (!revoked || revoked.action !== 'revoke' || !target || target.action !== 'exclude' || csvEventIdentityKey(target.identity) !== csvEventIdentityKey(event.identity)) throw new Error('CSV 重新排除引用了不同地點或不存在的撤銷。');
+        }
+        dependencies.set(event.id, event.seenRevocations);
+      }
+    }
+  }
+  // Imported/merged history can be long; validate causality without recursion.
+  const degrees = new Map(), children = new Map(), queue = [];
+  for (const [id, parents] of dependencies) {
+    degrees.set(id, parents.length);
+    if (!parents.length) queue.push(id);
+    for (const parent of parents) { const list = children.get(parent) || []; list.push(id); children.set(parent, list); }
+  }
+  for (let index = 0; index < queue.length; index++) for (const child of children.get(queue[index]) || []) {
+    const degree = degrees.get(child) - 1; degrees.set(child, degree); if (!degree) queue.push(child);
+  }
+  if (queue.length !== events.size) throw new Error('CSV 排除與撤銷歷史形成循環。');
+}
 export function validData(type, d) {
   if (!plain(d)) return false;
   if (d.monthlyVisits !== undefined && (type !== 'store' || !validMonthlyVisits(d.monthlyVisits))) return false;
@@ -602,6 +673,8 @@ export function validData(type, d) {
   if (d.preVisitInsightRelations !== undefined && (type !== 'store' || !validInsightRelations(d.preVisitInsightRelations))) return false;
   if ((d.nextRememberTasks !== undefined || d.nextRememberImports !== undefined) && (type !== 'store' || !validReminderTasks(d))) return false;
   if (d.csvIdentityPending !== undefined && (type !== 'store' || typeof d.csvIdentityPending !== 'boolean')) return false;
+  if (d.csvExclusionEvents !== undefined && (type !== 'source' || !Array.isArray(d.csvExclusionEvents) || d.csvExclusionEvents.length > 1500 || !d.csvExclusionEvents.every(validCSVExclusionEvent))) return false;
+  if (d.csvExclusionAuditOf !== undefined && (type !== 'source' || !str(d.csvExclusionAuditOf, 100) || !d.csvExclusionAuditOf)) return false;
   if (d.mergedInto !== undefined && (type !== 'store' || !str(d.mergedInto, 100) || !d.mergedInto)) return false;
   if (d.mergeDecision !== undefined && (type !== 'store' || !str(d.mergeDecision, 200) || !d.mergeDecision)) return false;
   if (d.csvDecisionGroups !== undefined && (type !== 'store' || !Array.isArray(d.csvDecisionGroups) || d.csvDecisionGroups.length > 200 || !d.csvDecisionGroups.every(v => str(v, 200)))) return false;
@@ -644,6 +717,7 @@ export function validateBundle(b) {
     seen.set(o.id, o);
   }
   validateStoreMergeProvenance(b, seen);
+  validateCSVExclusionEvents(sourceEntities);
   for (const o of b.ops) if (Object.hasOwn(o, 'visitAttendance') && !storeEntities.has(o.visitAttendance.store)) throw new Error('拜訪確認所屬門市不存在。');
   for (const o of b.ops) for (const p of o.parents) {
     const parent = seen.get(p);

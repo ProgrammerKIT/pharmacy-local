@@ -64,10 +64,14 @@ test('reconfirming identical CSV keeps customer data idempotent but records the 
 
 test('Source Snapshot panel refreshes after encrypted state becomes available', async () => {
   let state = null;
+  const children = new Map([
+    ['#csv-exclusions', { innerHTML: '' }],
+    ['#csv-final-review', { open: false, addEventListener() {}, close() { this.open = false; } }]
+  ]);
   const host = {
     innerHTML: '',
     addEventListener() {},
-    querySelector() { return null; }
+    querySelector(selector) { return children.get(selector) || null; }
   };
   const ui = createCSVImport({
     host,

@@ -1,4 +1,4 @@
-import { b64, unb64, hashBytes, uuid, revision, project, validateBundle, MAX_BYTES } from './core.js';
+import { b64, unb64, hashBytes, uuid, revision, project, validateBundle, csvExclusionIdentity, MAX_BYTES } from './core.js';
 const utf8 = new TextEncoder();
 export const CSV_LIMIT = 2 * 1024 * 1024;
 export const PROFILE_FIELDS = { name: '名稱', address: '地址', city: '縣市', district: '地區', channel: '通路', contact: '拜訪窗口', mapUrl: 'Google Maps 網址' };
@@ -206,7 +206,7 @@ export function identityRuleAllows(store, incoming) {
   const name = comparisonText(incoming.name), address = comparisonText(incoming.address);
   return (store.csvIdentityRules || []).some(rule => rule.decision === 'same' && rule.mapKey === key && rule.names.some(alias => comparisonText(alias) === name) && (!address || !rule.addresses.length || rule.addresses.some(value => comparisonText(value) === address)));
 }
-export const SOP1_VERSION = '1.2.18';
+export const SOP1_VERSION = '1.2.19';
 export const sourceListKey = list => normalizeListName(list).normalize('NFKC').trim().toLocaleLowerCase('zh-Hant');
 export function sourceTextFields(file, raw) {
   const mapped = new Set(Object.values(file.mapping).filter(i => i >= 0));
@@ -420,6 +420,32 @@ const bundleRevision = bundle => bundle.ops.map(o => o.id).sort().join(',');
 // Source snapshots held outside the editable UI plan are the authority for the
 // new-only writer. Changing a mapping/source requires a fresh preview.
 const newStorePlans = new WeakMap();
+const exclusionKey = identity => JSON.stringify([identity.mapKey, identity.name, identity.address]);
+function exclusionState(bundle) {
+  validateBundle(bundle);
+  const events = new Map(), revocations = new Map(), revoked = new Set();
+  for (const source of bundle.ops.filter(op => op.type === 'source')) for (const event of source.data.csvExclusionEvents || []) events.set(event.id, { event, source });
+  for (const { event } of events.values()) if (event.action === 'revoke') {
+    const target = events.get(event.target).event, key = exclusionKey(target.identity), list = revocations.get(key) || [];
+    list.push(event.id); revocations.set(key, list); revoked.add(event.target);
+  }
+  const groups = new Map();
+  for (const { event, source } of events.values()) if (event.action === 'exclude') {
+    const key = exclusionKey(event.identity);
+    // A concurrent/stale exclusion cannot undo a revoke. Re-exclusion must be
+    // explicit and must have observed every revoke of this exact identity.
+    if (revoked.has(event.id) || (revocations.get(key) || []).some(id => !event.seenRevocations.includes(id))) continue;
+    const group = groups.get(key) || []; group.push({ event, source }); groups.set(key, group);
+  }
+  const list = [...groups.values()].map(group => {
+    group.sort((a, b) => a.event.id.localeCompare(b.event.id));
+    const { event, source } = group[0];
+    return { id: event.id, eventIds: group.map(item => item.event.id), identity: structuredClone(event.identity), ...event.profile,
+      file: source.data.file, line: event.line, at: source.at, sourceSnapshot: source.entity };
+  }).sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+  return { events, revocations, list };
+}
+export function csvExclusionList(bundle) { return exclusionState(bundle).list; }
 const newRowSignature = row => JSON.stringify([row.key, row.fileIndex, row.rowIndex, row.line, row.data, row.note, row.noteProvided, row.date, row.fingerprint]);
 const newFileSignature = file => JSON.stringify([file.file, file.list, file.blob, file.headers, file.rows, file.mapping, file.channel, file.encoding, file.delimiter]);
 function newOnlyRawRow(file, raw, fileIndex, rowIndex, fingerprint) {
@@ -476,13 +502,15 @@ function classifyNewOnly(files, rows, bundle) {
   const history = newOnlyHistory(bundle, project(bundle)), batchKeys = new Map(), duplicateKeys = new Map();
   const add = (index, key, rowIndex) => { if (!key) return; let group = index.get(key); if (!group) index.set(key, group = []); group.push(rowIndex); };
   const signatures = rows.map(row => JSON.stringify([files[row.fileIndex].headers, files[row.fileIndex].rows[row.rowIndex].cells, row.data, row.noteProvided, row.date]));
+  // Keep this signal independently of same-batch classification: an explicit
+  // exclusion must never hide a later existing-record conflict/history match.
+  const historyCandidates = rows.map(row => [...new Set([...(history.fingerprints.get(row.fingerprint) || []), ...profileKeys(row.data).flatMap(key => [...(history.keys.get(key) || [])])])]);
   const result = rows.map((row, index) => {
     for (const key of profileKeys(row.data)) add(batchKeys, key, index);
     add(duplicateKeys, signatures[index], index);
     if (row.sop1.metadata) return { status: 'excluded', reason: '清單標籤行只保留原始來源，不建立門市' };
     if (row.errors.length) return { status: 'review', reason: row.errors.join('；') };
-    const candidates = new Set([...(history.fingerprints.get(row.fingerprint) || []), ...profileKeys(row.data).flatMap(key => [...(history.keys.get(key) || [])])]);
-    const matched = [...candidates];
+    const matched = historyCandidates[index];
     if (matched.length === 1 && newOnlySameCurrent(row.data, history.stores.get(matched[0]))) return { status: 'existing', reason: '已匹配現有門市；本模式保留全部既有內容並略過', matchedStoreId: matched[0] };
     if (matched.length) return { status: 'review', reason: '命中既有／歷史名稱、來源、身分裁定或非有效門市，需另外核對；本次不新增', candidateStoreIds: matched };
     if (!identity(row.data)) return { status: 'review', reason: '缺少穩定地點識別或名稱加地址，無法判定新店候選' };
@@ -499,6 +527,23 @@ function classifyNewOnly(files, rows, bundle) {
   for (const group of duplicateKeys.values()) {
     if (group.length < 2 || group.some(index => result[index].status !== 'new')) continue;
     for (const index of group.slice(1)) result[index] = { status: 'duplicate', reason: '同批完全相同原始列僅列一個新店候選；只建立所選列的清單關聯，其餘完整原檔保留於來源快照', duplicateOf: rows[group[0]].key };
+  }
+  const exclusions = csvExclusionList(bundle);
+  for (const [index, row] of rows.entries()) {
+    const identity = csvExclusionIdentity(row.data), current = result[index];
+    // Memory never turns an uncertain identity into permission to create a
+    // store, and it never changes an existing store's import classification.
+    if (!historyCandidates[index].length && !['existing', 'excluded'].includes(current.status)) {
+      const related = exclusions.filter(item => item.identity.mapKey === mapKey(row.data.mapUrl || '') ||
+        item.identity.name === comparisonText(row.data.name) || item.identity.address && item.identity.address === comparisonText(row.data.address));
+      if (related.length) {
+        const exact = identity ? related.filter(item => exclusionKey(item.identity) === exclusionKey(identity)) : [];
+        result[index] = exact.length
+          ? { status: 'remembered', reason: '已明確記住不匯入此地點；原始來源仍保留，可在排除清單撤銷', exclusionIds: exact.map(item => item.id) }
+          : { status: 'review', reason: '已記住排除的地點出現名稱、地址或地點識別變化，須重新核對；不會自動隱藏或新增', exclusionIdentityChanged: true };
+      }
+    }
+    result[index].canExclude = !historyCandidates[index].length && !!identity && ['new', 'review', 'duplicate'].includes(result[index].status);
   }
   return result;
 }
@@ -518,7 +563,7 @@ async function planNewStoresOnly(files, bundle) {
   }
   if (rows.length > 1500) throw new Error('每批最多1,500列，請分批匯入。');
   const classifications = classifyNewOnly(sources, rows, bundle);
-  const plan = { files: structuredClone(sources), rows: structuredClone(rows), baseRevision: bundleRevision(bundle), vaultId: bundle.vaultId, sop1Version: SOP1_VERSION, mode: 'new-only' };
+  const plan = { files: structuredClone(sources), rows: structuredClone(rows), baseRevision: bundleRevision(bundle), vaultId: bundle.vaultId, sop1Version: SOP1_VERSION, mode: 'new-only', exclusions: csvExclusionList(bundle), revokeExclusionIds: [] };
   for (const [index, row] of plan.rows.entries()) { row.newStoreOnly = classifications[index]; row.reason = classifications[index].reason; }
   newStorePlans.set(plan, { files: sources, rows, rowSignatures: rows.map(newRowSignature), fileSignatures: sources.map(newFileSignature) });
   return plan;
@@ -533,16 +578,25 @@ function newStoreOnlyReport(plan, bundle) {
   if (!Array.isArray(plan.files) || plan.files.length !== proof.files.length || plan.files.some((file, i) => newFileSignature(file) !== proof.fileSignatures[i])) fail(null, 'CSV來源或欄位對應已改變，請重新預覽');
   if (!Array.isArray(plan.rows) || plan.rows.length !== proof.rows.length) fail(null, 'CSV預覽列不完整，請重新預覽');
   const classifications = classifyNewOnly(proof.files, proof.rows, bundle);
+  const exclusions = csvExclusionList(bundle), revokeIds = plan.revokeExclusionIds;
+  if (!Array.isArray(revokeIds) || revokeIds.length > exclusions.length || new Set(revokeIds).size !== revokeIds.length || revokeIds.some(id => !exclusions.some(item => item.id === id))) fail(null, '撤銷排除的選擇已失效，請重新預覽');
+  const decisions = new Map();
   for (const [index, canonical] of proof.rows.entries()) {
     const row = plan.rows?.[index], classification = classifications[index];
     if (!row || newRowSignature(row) !== proof.rowSignatures[index]) { fail(canonical, 'CSV預覽資料與原始列不符，請重新預覽'); continue; }
     if (row.review !== undefined || row.reviewExcluded !== undefined || !Array.isArray(row.fillFields) || row.fillFields.length) fail(row, '只新增新門市模式不能補登既有欄位或套用裁定');
-    if (!['new', 'skip'].includes(row.choice) || row.choice === 'new' && classification.status !== 'new') fail(row, '只有尚待勾選的新店候選可以新增；其他列只能略過');
-    const checkedRow = { ...canonical, choice: row.choice, supplementColumns: row.supplementColumns, sop1: row.sop1 };
+    if (!['new', 'skip', 'exclude'].includes(row.choice) || row.choice === 'new' && classification.status !== 'new' || row.choice === 'exclude' && !classification.canExclude) fail(row, '只有新店候選可以新增；記住排除須有穩定地點識別及完整身分，其餘列只能略過');
+    const identity = csvExclusionIdentity(canonical.data);
+    if (identity && ['new', 'exclude'].includes(row.choice)) {
+      const key = exclusionKey(identity), prior = decisions.get(key);
+      if (prior && prior !== row.choice) fail(row, '同一精確地點不能同時新增與記住排除');
+      decisions.set(key, row.choice);
+    }
+    const checkedRow = { ...canonical, choice: row.choice === 'exclude' ? 'skip' : row.choice, supplementColumns: row.supplementColumns, sop1: row.sop1 };
     const checkedPlan = { files: proof.files, rows: [checkedRow] };
     try { supplementSelection(checkedPlan, checkedRow, []); } catch (error) { fail(row, error.message); }
     if (row.choice === 'new' && csvSupplementChoices(checkedPlan, checkedRow, []).length && !row.sop1?.extraAccepted) fail(row, '尚有其他非空白文字欄，須核對勾選結果；未勾選只保留原始來源');
-    summaries.push({ key: row.key, kind: row.choice === 'new' && classification.status === 'new' ? row.note?.trim() ? 'new-note' : 'no-note' : classification.status === 'excluded' ? 'metadata' : 'skipped', newStoreOnly: classification });
+    summaries.push({ key: row.key, kind: row.choice === 'exclude' ? 'remember-exclusion' : row.choice === 'new' && classification.status === 'new' ? row.note?.trim() ? 'new-note' : 'no-note' : classification.status === 'excluded' ? 'metadata' : 'skipped', newStoreOnly: classification });
   }
   return { version: SOP1_VERSION, ready: !blockers.length, blockers, rows: summaries, counts: Object.fromEntries([...new Set(summaries.map(row => row.kind))].map(kind => [kind, summaries.filter(row => row.kind === kind).length])) };
 }
@@ -551,18 +605,38 @@ function buildNewStoresOnly(plan, bundle, device) {
   if (!report.ready) throw new Error('只新增新門市檢查未通過：' + report.blockers[0].message);
   const proof = newStorePlans.get(plan), next = structuredClone(bundle), at = new Date().toISOString(), batch = uuid(), sourceIds = proof.files.map(() => uuid()), newStores = new Set();
   next.schema = 2;
-  const summary = { sourceSnapshots: 0, stores: 0, linked: 0, notes: 0, updatedNotes: 0, missingNotes: 0, restoredNotes: 0, unchangedNotes: 0, duplicateNotes: 0, filledFields: 0, adoptedSupplements: 0, skipped: 0, rows: 0, mergeGroups: 0, mergedStores: 0, movedVisits: 0 };
+  const summary = { sourceSnapshots: 0, stores: 0, linked: 0, notes: 0, updatedNotes: 0, missingNotes: 0, restoredNotes: 0, unchangedNotes: 0, duplicateNotes: 0, filledFields: 0, adoptedSupplements: 0, skipped: 0, rows: 0, mergeGroups: 0, mergedStores: 0, movedVisits: 0, excludedPlaces: 0, revokedExclusions: 0, auditSnapshots: 0 };
+  const memory = exclusionState(bundle), remembered = new Set(), eventsByFile = new Map();
+  for (const [index, canonical] of proof.rows.entries()) {
+    if (plan.rows[index].choice !== 'exclude') continue;
+    const identity = csvExclusionIdentity(canonical.data), key = exclusionKey(identity);
+    if (remembered.has(key)) continue;
+    remembered.add(key);
+    const event = { id: uuid(), action: 'exclude', identity, profile: { name: canonical.data.name, address: canonical.data.address, mapUrl: canonical.data.mapUrl },
+      line: canonical.line, fingerprint: canonical.fingerprint, seenRevocations: [...(memory.revocations.get(key) || [])].sort() };
+    const list = eventsByFile.get(canonical.fileIndex) || []; list.push(event); eventsByFile.set(canonical.fileIndex, list); summary.excludedPlaces++;
+  }
   for (const [index, file] of proof.files.entries()) {
     if (!(plan.files[index].bytes instanceof Uint8Array) || plan.files[index].bytes.length !== file.bytes.length || file.bytes.some((byte, i) => byte !== plan.files[index].bytes[i])) throw new Error('CSV原始bytes已改變，請重新預覽');
     const encoded = b64(file.bytes);
     if (Object.hasOwn(next.blobs, file.blob) && next.blobs[file.blob] !== encoded) throw new Error('原始CSV雜湊相同但內容不同，停止匯入');
     next.blobs[file.blob] = encoded;
-    next.ops.push(revision('source', sourceIds[index], { file: file.file, list: file.list, batch, blob: file.blob, rows: file.rows.length, headers: [...file.headers], encoding: file.encoding || 'auto', delimiter: file.delimiter || 'auto' }, [], device));
+    const csvExclusionEvents = eventsByFile.get(index);
+    next.ops.push(revision('source', sourceIds[index], { file: file.file, list: file.list, batch, blob: file.blob, rows: file.rows.length, headers: [...file.headers], encoding: file.encoding || 'auto', delimiter: file.delimiter || 'auto', ...(csvExclusionEvents ? { csvExclusionEvents } : {}) }, [], device));
     summary.sourceSnapshots++;
+  }
+  const audits = new Map();
+  for (const id of plan.revokeExclusionIds) {
+    const { source } = memory.events.get(id), audit = audits.get(source.entity) || { source, events: [] };
+    audit.events.push({ id: uuid(), action: 'revoke', target: id }); audits.set(source.entity, audit); summary.revokedExclusions++;
+  }
+  for (const { source, events } of audits.values()) {
+    const data = { ...structuredClone(source.data), batch, csvExclusionEvents: events, csvExclusionAuditOf: source.entity };
+    next.ops.push(revision('source', uuid(), data, [], device)); summary.auditSnapshots++;
   }
   for (const [index, canonical] of proof.rows.entries()) {
     const row = plan.rows[index];
-    if (row.choice === 'skip') { summary.skipped++; continue; }
+    if (row.choice === 'skip' || row.choice === 'exclude') { summary.skipped++; continue; }
     const file = proof.files[canonical.fileIndex], raw = file.rows[canonical.rowIndex], id = uuid();
     const supplements = supplementChoices(file, raw, canonical).filter(field => (row.supplementColumns || []).includes(field.column)).map(({ column, header, text }) => ({ column, header, text, kind: 'supplement' }));
     const source = { fingerprint: canonical.fingerprint, sourceSnapshot: sourceIds[canonical.fileIndex], batch, file: file.file, line: canonical.line, list: file.list, at, blob: file.blob, headers: [...file.headers], cells: [...raw.cells], sop1Version: SOP1_VERSION, supplements, disposition: 'new', supplementReviewed: !!row.sop1?.extraAccepted, manualReviewed: false };
