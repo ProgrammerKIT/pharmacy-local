@@ -32,5 +32,7 @@ export const CODE_FILES = [...RUNTIME_FILES,
   'test/keyboard-pan-feedback.test.mjs', 'test/qa/keyboard-pan-fixture.mjs',
   'test/visit-attendance.test.mjs', 'test/attendance-review-ui.test.mjs', 'test/qa/visit-attendance-browser.mjs',
   'test/qa/backup-restore-browser.mjs', 'DEVICE-ACCEPTANCE.md',
+  'CSV-SELECTION-ACCEPTANCE.md', 'test/csv-selection.test.mjs', 'test/csv-new-stores.test.mjs', 'test/csv-save-guard.test.mjs',
+  'test/qa/csv-selection-browser.mjs', 'test/qa/csv-new-stores-browser.mjs',
   '.gitignore', '.github/workflows/release.yml',
 ];
