@@ -365,3 +365,9 @@ button[data-csv-source-snapshot]{flex:none;min-height:44px}
 .insight-change-item{padding:12px 0;border-top:1px solid var(--line);overflow-wrap:anywhere}
 .insight-change-item blockquote{margin:8px 0;padding:10px 14px;border-left:3px solid var(--teal);white-space:pre-wrap;background:var(--pale)}
 #insight-changes-dialog{width:min(760px,calc(100vw - 24px))}
+
+/* CSV choices retain exact source text on desktop and narrow screens. */
+.csv-extra-choices { border-top:1px solid var(--line); padding-top:16px; }
+.csv-extra-choices .csv-change { min-width:0; }
+.csv-extra-choices .check { align-items:flex-start; overflow-wrap:anywhere; }
+.csv-sop-checks .check input { flex-shrink:0; }

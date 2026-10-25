@@ -1,15 +1,16 @@
-import { FIELD_NAMES, prepareCSV, planCSV, buildCSVImport, normalizeListName, CSV_LIMIT, profileChanges, csvStream, sop1Report, REVIEW_LIMIT, prepareReviewedCSV, planReviewedCSV, setReviewedGroupChoice, csvTargetChoice, exportCSVPreview } from './csv.js';
+import { FIELD_NAMES, prepareCSV, planCSV, buildCSVImport, normalizeListName, CSV_LIMIT, profileChanges, csvStream, sop1Report, REVIEW_LIMIT, prepareReviewedCSV, planReviewedCSV, setReviewedGroupChoice, csvTargetChoice, csvSupplementChoices, exportCSVPreview } from './csv.js';
 import { project } from './core.js';
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-export function createCSVImport({ host, getState, run, saveBundle, notify, exportReport, downloadSource }) {
-  let files = [], plan = null, page = 0, generation = 0, filter = 'all', review = null;
+export function createCSVImport({ host, getState, run, saveBundle, getSaveContext, notify, exportReport, downloadSource }) {
+  let files = [], plan = null, page = 0, generation = 0, filter = 'all', review = null, mode = 'new-only';
+  const previousChoices = new Map();
   const find = s => host.querySelector(s);
   function shell() {
     const snapshots = getState() ? project(getState().bundle).filter(r => r.type === 'source').sort((a, b) => (b.heads?.[0]?.at || '').localeCompare(a.heads?.[0]?.at || '')) : [];
     const saved = snapshots.length ? '<article class="panel"><div class="section-row"><div><h3>已保存原始 CSV · ' + snapshots.length + ' 份</h3><p class="muted">Source Snapshot 只新增、不由分析或門市整理改寫。以下顯示最近 20 份；相同 SHA 可共用同一份檔案 bytes。</p></div></div>' + snapshots.slice(0, 20).map(s => '<div class="section-row"><div><strong>' + esc(s.file) + '</strong><p class="muted">' + esc(s.list || '未命名清單') + ' · ' + s.rows + ' 列 · SHA-256 ' + esc(s.blob.slice(0, 12)) + '…</p></div><button class="text-button" data-csv-source-snapshot="' + esc(s.id) + '">下載原始 CSV</button></div>').join('') + '</article>' : '<article class="panel"><h3>已保存原始 CSV · 0 份</h3><p class="muted">第一次確認提交 CSV 後，完整原檔會以 Source Snapshot 加密保存在資料庫。</p></article>';
-    host.innerHTML = `<div class="section-row"><div><h2>從 Google Maps CSV 匯入</h2><p class="muted">在這台裝置讀取、預覽並加密儲存。原始 CSV 不會送到外部服務。</p></div><button id="csv-choose" class="primary">選取 CSV 檔案</button><button id="csv-review-choose">載入已核對資料包</button></div><input id="csv-files" type="file" accept=".csv,text/csv" multiple hidden><input id="csv-review-file" type="file" accept=".pharmareview,application/json" hidden><div class="csv-intro"><p>① 選取檔案　② 核對欄位　③ 確認門市　④ 保存來源並加密匯入</p><p class="muted">可多檔選取，每個 2 MB、合計 5 MB，每批最多 1,500 列。建議在 Mac 操作。請先匯出加密備份；Mac 與 iPhone 都更新到支援 Source Snapshot 的版本後再提交新批次。</p></div>${saved}<div id="csv-file-settings"></div><p id="csv-error" class="error" role="alert"></p><div id="csv-preview"></div><div id="csv-result" class="result" role="status"></div>`;
+    host.innerHTML = `<div class="section-row"><div><h2>從 Google Maps CSV 匯入</h2><p class="muted">在這台裝置讀取、預覽並加密儲存。原始 CSV 不會送到外部服務。</p></div><button id="csv-choose" class="primary">選取 CSV 檔案</button><button id="csv-review-choose" ${mode === 'new-only' ? 'disabled' : ''}>載入已核對資料包</button></div><input id="csv-files" type="file" accept=".csv,text/csv" multiple hidden><input id="csv-review-file" type="file" accept=".pharmareview,application/json" hidden><article class="panel"><label>匯入模式<select id="csv-import-mode"><option value="new-only" ${mode === 'new-only' ? 'selected' : ''}>只新增新門市（預設）</option><option value="standard" ${mode === 'standard' ? 'selected' : ''}>一般匯入／補選既有資料</option></select></label><p id="csv-mode-help" class="muted">${mode === 'new-only' ? '既有店自動略過；有疑慮的留待核對。新店候選預設不勾，由你選擇要新增的店；既有文字與歷史不更新。' : '一般模式可連結既有店、補空白及更新來源版本，須逐列核對；已核對資料包也使用此模式。'}</p></article><div class="csv-intro"><p>① 選取檔案　② 核對欄位　③ 勾選要納入的列與額外欄位　④ 確認後保存來源並加密匯入</p><p class="muted">可多檔選取，每個 2 MB、合計 5 MB，每批最多 1,500 列。建議在 Mac 操作。請先匯出加密備份；Mac 與 iPhone 都更新到支援 Source Snapshot 的版本後再提交新批次。</p></div>${saved}<div id="csv-file-settings"></div><p id="csv-error" class="error" role="alert"></p><div id="csv-preview"></div><div id="csv-result" class="result" role="status"></div>`;
   }
-  function reset() { generation++; files = []; plan = null; review = null; page = 0; filter = 'all'; shell(); }
+  function reset() { generation++; files = []; plan = null; review = null; page = 0; filter = 'all'; mode = 'new-only'; previousChoices.clear(); shell(); }
   function fileSettings() {
     let cancel = find('#csv-cancel');
     if (!cancel) { cancel = document.createElement('button'); cancel.id = 'csv-cancel'; cancel.textContent = '取消本次匯入'; cancel.className = 'secondary'; find('#csv-choose').after(cancel); }
@@ -42,40 +43,71 @@ export function createCSVImport({ host, getState, run, saveBundle, notify, expor
   }
   function preview() {
     if (!plan) { find('#csv-preview').replaceChildren(); return; }
+    if (plan.mode === 'new-only') return previewNewOnly();
     const records = project(getState().bundle), selected = plan.rows.filter(r => r.choice !== 'skip');
     const sop = sop1Report(plan, getState().bundle), blockedKeys = new Set(sop.blockers.map(b => b.key));
     const unresolved = blockedKeys.size;
-    const filters = { all: () => true, review: r => blockedKeys.has(r.key), errors: r => r.errors.length, warnings: r => r.warnings.length, selected: r => r.choice !== 'skip' };
+    const filters = { all: () => true, review: r => blockedKeys.has(r.key), errors: r => r.errors.length, warnings: r => r.warnings.length, pending: r => r.choice !== 'skip' && (csvSupplementChoices(plan, r, records).some(f => !f.included) || profileChanges({ ...r, choice: csvTargetChoice(plan, r) }, records).some(f => f.fillable)), selected: r => r.choice !== 'skip' };
     const filtered = plan.rows.filter(filters[filter] || filters.all);
     page = Math.min(page, Math.max(0, Math.ceil(filtered.length / 40) - 1));
     const start = page * 40, rows = filtered.slice(start, start + 40);
     const newRows = selected.filter(r => r.choice === 'new').length, linkedRows = selected.filter(r => /^(store|row):/.test(r.choice)).length;
-    const fills = selected.reduce((n, r) => n + r.fillFields.length, 0), merges = (plan.reviewGroups || []).filter(g => g.merge);
+    const fills = selected.reduce((n, r) => n + r.fillFields.length, 0), supplements = selected.reduce((n, r) => n + (r.supplementColumns?.length || 0), 0), merges = (plan.reviewGroups || []).filter(g => g.merge);
     const mergedStores = merges.reduce((n, g) => n + g.merge.merged.length, 0), movedVisits = merges.reduce((n, g) => n + g.merge.movedVisits, 0);
-    let html = '<div class="csv-summary"><div><strong>' + plan.rows.length + ' 列 · 選取 ' + selected.length + ' 列 · 略過 ' + (plan.rows.length - selected.length) + ' 列 · 待處理 ' + unresolved + ' 列</strong><p>新增門市列 ' + newRows + ' · 連結列 ' + linkedRows + ' · 已選補值 ' + fills + ' 項' + (merges.length ? ' · 依裁定整併 ' + mergedStores + ' 間既有門市、搬移 ' + movedVisits + ' 筆既有拜訪' : '') + '</p></div><button id="csv-commit" class="primary" ' + (unresolved ? 'disabled' : '') + '>確認保存來源並加密匯入</button></div>';
-    html += '<p class="muted">同一門市與來源清單的備註會建立新版本。選取補值只填空白欄位；既有欄位與原始 CSV 都會保留。</p><p class="muted">本批每一份原始 CSV 都會先建立唯讀 Source Snapshot；即使所有列都略過，完整原檔仍會加密保存。相同檔案可共用同一份 bytes，但每次確認提交仍保留本次來源快照。</p>';
+    let html = '<div class="csv-summary"><div><strong>' + plan.rows.length + ' 列 · 選取 ' + selected.length + ' 列 · 略過 ' + (plan.rows.length - selected.length) + ' 列 · 待處理 ' + unresolved + ' 列</strong><p>新增門市列 ' + newRows + ' · 連結列 ' + linkedRows + ' · 已選補值 ' + fills + ' 項 · 已選來源補充 ' + supplements + ' 項' + (merges.length ? ' · 依裁定整併 ' + mergedStores + ' 間既有門市、搬移 ' + movedVisits + ' 筆既有拜訪' : '') + '</p></div><button id="csv-commit" class="primary" ' + (unresolved ? 'disabled' : '') + '>確認保存來源並加密匯入</button></div>';
+    html += '<p class="muted">先確認這列的門市，再勾選尚未納入的額外欄位。已對應的門市資料與備註依下方預覽匯入；取消整列勾選即可不納入這列。補值只填空白，額外欄位存為來源補充，不自動建立人物、關係或待辦。</p><p class="muted">本批每一份原始 CSV 都會先建立唯讀 Source Snapshot；即使所有列都略過，完整原檔仍會加密保存。相同檔案可共用同一份 bytes，但每次確認提交仍保留本次來源快照。</p>';
     if (review) html += '<p class="conflict-card">待確認門市會標記「需要後續的確認」。原文仍可在客戶與拜訪紀錄查看，身分核實前不列入關聯分析。同組來源一起指定，已裁定分開的組不能指向同一間現有門市。</p>';
     html += '<section class="conflict-card" aria-live="polite"><h3>SOP1 · 匯入前整理閘門</h3><p>' + (sop.ready ? '本批已通過檢查；按確認後才寫入 App。' : '尚有待處理事項；整批不會寫入 App 或關聯圖。請切換「待核對門市」篩選。') + '</p><p>檔案原文與來源逐列保留；同店同來源重傳不新增拜訪。不同清單的完全相同文字整合顯示，來源分別留存。</p><p>備註未變 ' + (sop.counts.unchanged || 0) + ' 列 · 來源新版 ' + (sop.counts['new-version'] || 0) + ' 列 · 清單標籤行 ' + (sop.counts.metadata || 0) + ' 列</p></section>';
-    html += '<label class="quality-filter">檢查篩選<select id="csv-filter">' + [['all', '全部列'], ['review', '待核對門市'], ['errors', '無法匯入的列'], ['warnings', '缺漏或提醒'], ['selected', '選取匯入的列']].map(([key, label]) => '<option value="' + key + '" ' + (filter === key ? 'selected' : '') + '>' + label + '</option>').join('') + '</select></label>';
+    html += '<label class="quality-filter">檢查篩選<select id="csv-filter">' + [['all', '全部列'], ['pending', '尚有可選欄位的列'], ['review', '待核對門市'], ['errors', '無法匯入的列'], ['warnings', '缺漏或提醒'], ['selected', '選取匯入的列']].map(([key, label]) => '<option value="' + key + '" ' + (filter === key ? 'selected' : '') + '>' + label + '</option>').join('') + '</select></label>';
     html += '<div class="csv-review-list">' + rows.map(row => {
       const group = row.review ? plan.reviewGroups.find(g => g.id === row.review.group) : null;
       const mergeText = group?.merge ? '<div class="conflict-card"><strong>依已裁定同店規則整併</strong><p>' + group.merge.merged.map(s => esc(s.name)).join('、') + ' → ' + esc(group.merge.keeperName) + '</p><p>將搬移 ' + group.merge.movedVisits + ' 筆既有拜訪；被整併門市移到回收桶，原版本、附件與來源歷史仍保留。</p></div>' : '';
       const control = row.reviewExcluded ? '<p>依裁定排除本批；原始來源保留。</p>' : group && group.rows[0] !== row.key ? '<p>同組來源：跟隨「' + esc(group.label) + '」的整組匯入方式。</p>' : group?.merge ? mergeText : group?.mergeBlocked ? '<div class="conflict-card"><p class="error">同店裁定目前不能安全整併：' + esc(group.mergeBlocked) + '</p><p>不能用手動改指門市繞過；請取消本批並先處理衝突。</p></div>' : '<label>' + (group ? '這組的匯入方式' : '這列的匯入方式') + '<select data-csv-choice="' + esc(row.key) + '" aria-label="' + esc(row.data.name) + '的匯入方式">' + targets(row, records) + '</select></label>';
       const changes = profileChanges({ ...row, choice: csvTargetChoice(plan, row) }, records);
-      const extra = (row.textFields || []).filter(f => f.kind === 'supplement');
-      const manual = sop.rows.find(s => s.key === row.key)?.manual;
-      const checks = '<div class="csv-sop-checks">' + sop.blockers.filter(b => b.key === row.key).map(b => '<p class="error">SOP1：' + esc(b.message) + '</p>').join('') + (extra.length ? '<details open><summary>其他文字欄 · ' + extra.length + ' 欄</summary>' + extra.map(f => '<strong>' + esc(f.header) + '</strong><pre>' + esc(f.text) + '</pre>').join('') + '</details><label class="check"><input type="checkbox" data-csv-ack="extraAccepted" data-row="' + row.key + '" ' + (row.sop1.extraAccepted ? 'checked' : '') + '>已核對，保留為來源補充文字；不自動推論成拜訪或人物關係</label>' : '') + (manual ? '<label class="check"><input type="checkbox" data-csv-ack="manualAccepted" data-row="' + row.key + '" ' + (row.sop1.manualAccepted ? 'checked' : '') + '>保留 App 手動文字，另存 CSV 新版供後續核對</label>' : '') + '</div>';
-      const fillHTML = changes.map(change => '<div class="csv-change"><strong>' + esc(change.label) + '</strong><p>既有：' + esc(change.previous || '未提供') + '</p><p>CSV：' + esc(change.incoming) + '</p>' + (change.fillable ? '<label class="check"><input type="checkbox" data-csv-fill="' + esc(row.key) + '" value="' + change.field + '" ' + (row.fillFields.includes(change.field) ? 'checked' : '') + '>確認補上這個空白欄位</label>' : '<small>已有資料，保留既有值</small>') + '</div>').join('');
-      return checks + '<article class="panel csv-review-row"><div class="section-row"><div><small>' + esc(plan.files[row.fileIndex].file) + ' · 第 ' + row.line + ' 行</small><h3>' + esc(row.data.name || '缺少門市名稱') + '</h3><p>' + esc(row.data.address || '地址未提供') + '</p></div><span class="pill ' + (row.errors.length || row.choice === 'review' ? 'warn' : '') + '">' + (row.errors.length ? '此列需修正或略過' : row.choice === 'review' ? '待核對門市' : row.choice === 'skip' ? '略過' : '已選取') + '</span></div><div class="csv-review-columns"><div><details><summary>備註原文：' + esc(row.note ? row.note.slice(0, 90) + (row.note.length > 90 ? '…' : '') : row.noteProvided ? '空白' : '未對應') + '</summary><pre>' + esc(row.note) + '</pre></details><p class="muted">拜訪日期：' + esc(row.date || '原始日期未提供') + '</p><p>' + esc(row.reason) + '</p>' + row.errors.map(e => '<p class="error">' + esc(e) + '</p>').join('') + (row.warnings.length ? '<details class="csv-warnings"><summary>' + row.warnings.length + ' 項缺漏或提醒</summary>' + row.warnings.map(w => '<p>' + esc(w) + '</p>').join('') + '</details>' : '') + noteChanges(row, records) + '</div><div>' + control + (row.candidates.length ? '<details><summary>查看 ' + row.candidates.length + ' 個門市比對線索</summary>' + row.candidates.slice(0, 12).map(c => '<div class="csv-candidate"><strong>' + esc(c.data.name) + '</strong><p>' + esc(c.data.address || '地址未提供') + '</p><small>' + c.reasons.map(esc).join('；') + (c.data.deleted || c.data.conflict ? '；此門市已刪除或有衝突，不能直接連結' : '') + '</small></div>').join('') + (row.candidates.length > 12 ? '<p class="muted">先顯示 12 個線索，可在匯入方式清單核對其他門市。</p>' : '') + '</details>' : '') + '</div></div>' + (changes.length ? '<details class="csv-profile-changes"><summary>門市欄位差異與可補值 · ' + changes.length + ' 項' + (row.fillFields.length ? '（已選 ' + row.fillFields.length + '）' : '') + '</summary>' + fillHTML + '</details>' : '') + '</article>';
+      const extras = csvSupplementChoices(plan, row, records), available = extras.filter(f => !f.included), included = extras.filter(f => f.included);
+      const rowReport = sop.rows.find(s => s.key === row.key), manual = rowReport?.manual;
+      const inactive = row.choice === 'skip' || row.choice === 'review' || row.reviewExcluded;
+      const extraHTML = available.length ? '<details class="csv-extra-choices" open><summary>尚未納入的其他文字欄 · ' + available.length + ' 欄</summary><p class="muted">勾選後會加入此門市的來源補充。未勾選只保存於完整原始 CSV；不會刪除以前已採用的內容。</p>' + available.map(f => '<div class="csv-change"><label class="check"><input type="checkbox" data-csv-supplement="' + row.key + '" value="' + f.column + '" ' + ((row.supplementColumns || []).includes(f.column) ? 'checked ' : '') + (inactive ? 'disabled ' : '') + '>納入第 ' + (f.column + 1) + ' 欄 · ' + esc(f.header || '無欄名') + '</label><pre>' + esc(f.text) + '</pre></div>').join('') + '<label class="check"><input type="checkbox" data-csv-ack="extraAccepted" data-row="' + row.key + '" ' + (row.sop1.extraAccepted ? 'checked ' : '') + (inactive ? 'disabled ' : '') + '>已核對勾選結果；未勾選的欄位本次不採用，只保留原始來源</label></details>' : '';
+      const includedHTML = included.length ? '<details><summary>已納入的來源補充 · ' + included.length + ' 欄（保留）</summary>' + included.map(f => '<strong>第 ' + (f.column + 1) + ' 欄 · ' + esc(f.header || '無欄名') + '</strong><pre>' + esc(f.text) + '</pre>').join('') + '</details>' : '';
+      const checks = '<div class="csv-sop-checks">' + sop.blockers.filter(b => b.key === row.key).map(b => '<p class="error">SOP1：' + esc(b.message) + '</p>').join('') + extraHTML + includedHTML + (manual ? '<label class="check"><input type="checkbox" data-csv-ack="manualAccepted" data-row="' + row.key + '" ' + (row.sop1.manualAccepted ? 'checked' : '') + '>保留 App 手動文字，另存 CSV 新版供後續核對</label>' : '') + '</div>';
+      const includeControl = !row.reviewExcluded && (!group || (group.rows[0] === row.key && !group.merge && !group.mergeBlocked)) ? '<label class="check"><input type="checkbox" data-csv-include="' + row.key + '" ' + (row.choice !== 'skip' ? 'checked' : '') + '>' + (group ? '納入這組資料（原始檔一律保留）' : '納入這列資料（原始檔一律保留）') + '</label>' : '';
+      const fillHTML = changes.map(change => '<div class="csv-change"><strong>' + esc(change.label) + '</strong><p>既有：' + esc(change.previous || '未提供') + '</p><p>CSV：' + esc(change.incoming) + '</p>' + (change.fillable ? '<label class="check"><input type="checkbox" data-csv-fill="' + esc(row.key) + '" value="' + change.field + '" ' + (row.fillFields.includes(change.field) ? 'checked ' : '') + (inactive ? 'disabled ' : '') + '>確認補上這個空白欄位</label>' : '<small>已有資料，保留既有值</small>') + '</div>').join('');
+      return '<article class="panel csv-review-row"><div class="section-row"><div><small>' + esc(plan.files[row.fileIndex].file) + ' · 第 ' + row.line + ' 行</small><h3>' + esc(row.data.name || '缺少門市名稱') + '</h3><p>' + esc(row.data.address || '地址未提供') + '</p></div><span class="pill ' + (row.errors.length || row.choice === 'review' ? 'warn' : '') + '">' + (row.errors.length ? '此列需修正或略過' : row.choice === 'review' ? '待核對門市' : row.choice === 'skip' ? '略過' : '已選取') + '</span></div><div class="csv-review-columns"><div><details><summary>備註原文：' + esc(row.note ? row.note.slice(0, 90) + (row.note.length > 90 ? '…' : '') : row.noteProvided ? '空白' : '未對應') + '</summary><pre>' + esc(row.note) + '</pre></details><p class="muted">拜訪日期：' + esc(row.date || '原始日期未提供') + '</p><p>' + esc(row.reason) + '</p>' + row.errors.map(e => '<p class="error">' + esc(e) + '</p>').join('') + (row.warnings.length ? '<details class="csv-warnings"><summary>' + row.warnings.length + ' 項缺漏或提醒</summary>' + row.warnings.map(w => '<p>' + esc(w) + '</p>').join('') + '</details>' : '') + (rowReport?.kind === 'supplement-only' ? '<p class="muted">此原始列已匯入；此次只補選欄位，備註不重套、不回滾目前版本。</p>' : noteChanges(row, records)) + '</div><div>' + includeControl + control + (row.candidates.length ? '<details><summary>查看 ' + row.candidates.length + ' 個門市比對線索</summary>' + row.candidates.slice(0, 12).map(c => '<div class="csv-candidate"><strong>' + esc(c.data.name) + '</strong><p>' + esc(c.data.address || '地址未提供') + '</p><small>' + c.reasons.map(esc).join('；') + (c.data.deleted || c.data.conflict ? '；此門市已刪除或有衝突，不能直接連結' : '') + '</small></div>').join('') + (row.candidates.length > 12 ? '<p class="muted">先顯示 12 個線索，可在匯入方式清單核對其他門市。</p>' : '') + '</details>' : '') + '</div></div>' + (changes.length ? '<details class="csv-profile-changes" open><summary>門市欄位差異與可補值 · ' + changes.length + ' 項' + (row.fillFields.length ? '（已選 ' + row.fillFields.length + '）' : '') + '</summary>' + fillHTML + '</details>' : '') + checks + '</article>';
     }).join('') + '</div>';
     if (!rows.length) html += '<p class="empty">沒有符合此篩選的列。</p>';
     html += '<div class="section-row csv-pagination"><button id="csv-prev" ' + (!page ? 'disabled' : '') + '>上一頁</button><span>' + (page + 1) + ' / ' + Math.max(1, Math.ceil(filtered.length / 40)) + ' 頁 · 符合篩選 ' + filtered.length + ' 列</span><button id="csv-next" ' + (start + 40 >= filtered.length ? 'disabled' : '') + '>下一頁</button></div>';
     find('#csv-preview').innerHTML = html;
   }
 
+  function previewNewOnly() {
+    const state = getState(), records = project(state.bundle), report = sop1Report(plan, state.bundle);
+    const status = row => row.newStoreOnly?.status || 'review';
+    const count = kind => plan.rows.filter(row => status(row) === kind).length;
+    const selected = plan.rows.filter(row => row.choice === 'new'), supplements = selected.reduce((n, row) => n + (row.supplementColumns?.length || 0), 0);
+    const filters = { all: () => true, new: row => status(row) === 'new', existing: row => status(row) === 'existing', review: row => status(row) === 'review', other: row => ['duplicate', 'excluded'].includes(status(row)), selected: row => row.choice === 'new' };
+    const filtered = plan.rows.filter(filters[filter] || filters.new);
+    page = Math.min(page, Math.max(0, Math.ceil(filtered.length / 40) - 1));
+    const start = page * 40, rows = filtered.slice(start, start + 40);
+    const labels = { new: '新門市候選', existing: '既有門市 · 自動略過', review: '待核對 · 本次不納入', duplicate: '本批重複 · 略過', excluded: '非門市資料／排除 · 略過' };
+    let html = '<div class="csv-summary"><div><strong>只新增新門市</strong><p>新門市候選 ' + count('new') + ' 列 · 已選新增 ' + selected.length + ' 間 · 已選新店補充 ' + supplements + ' 項</p><p>既有自動略過 ' + count('existing') + ' 列 · 待核對 ' + count('review') + ' 列 · 重複／排除 ' + (count('duplicate') + count('excluded')) + ' 列</p></div><button id="csv-commit" class="primary" ' + (report.ready ? '' : 'disabled') + '>確認只新增並保存來源</button></div>';
+    html += '<p class="muted">新店候選預設不勾，請核對店名、地址與地圖網址再選取。比對只依這台 App 已載入的資料，候選不代表已證實是全新店家。</p><p class="muted">既有店不補欄、不更新文字或歷史；待核對及本批重複列不納入。完整原始 CSV 一律保存，包含未勾選及略過的列。全部不勾只保存原始來源。</p>';
+    if (report.blockers.length) html += '<div class="conflict-card" role="alert">' + report.blockers.map(item => '<p class="error">' + esc(item.message) + '</p>').join('') + '</div>';
+    html += '<label class="quality-filter">檢查篩選<select id="csv-filter">' + [['new', '可勾選的新門市候選（' + count('new') + '）'], ['selected', '已勾選新增（' + selected.length + '）'], ['existing', '既有門市 · 自動略過（' + count('existing') + '）'], ['review', '待核對 · 本次不納入（' + count('review') + '）'], ['other', '本批重複／排除'], ['all', '全部列']].map(([value, text]) => '<option value="' + value + '" ' + (filter === value ? 'selected' : '') + '>' + text + '</option>').join('') + '</select></label>';
+    html += '<div class="csv-review-list">' + rows.map(row => {
+      const kind = status(row), isNew = kind === 'new', active = row.choice === 'new', file = plan.files[row.fileIndex], raw = file.rows[row.rowIndex];
+      const extras = isNew && active ? csvSupplementChoices(plan, row, records).filter(field => !field.included) : [];
+      const extraHTML = extras.length ? '<details class="csv-extra-choices" open><summary>新店的其他文字欄 · ' + extras.length + ' 欄</summary><p class="muted">勾選加入新店來源補充；未勾選只保留完整原始欄位，不自動建立人物、關係或待辦。</p>' + extras.map(field => '<div class="csv-change"><label class="check"><input type="checkbox" data-csv-supplement="' + row.key + '" value="' + field.column + '" ' + ((row.supplementColumns || []).includes(field.column) ? 'checked' : '') + '>納入第 ' + (field.column + 1) + ' 欄 · ' + esc(field.header || '無欄名') + '</label><pre>' + esc(field.text) + '</pre></div>').join('') + '<label class="check"><input type="checkbox" data-csv-ack="extraAccepted" data-row="' + row.key + '" ' + (row.sop1.extraAccepted ? 'checked' : '') + '>已核對勾選結果；未勾選的欄位只保留原始來源</label></details>' : '';
+      const candidates = row.candidates?.length ? '<details><summary>查看既有／同批比對線索 · ' + row.candidates.length + ' 項</summary>' + row.candidates.slice(0, 12).map(candidate => '<p><strong>' + esc(candidate.data.name) + '</strong> · ' + esc(candidate.data.address || '地址未提供') + '<br><small>' + candidate.reasons.map(esc).join('；') + '</small></p>').join('') + '</details>' : '';
+      return '<article class="panel csv-review-row" data-csv-row="' + row.key + '" data-csv-new-status="' + kind + '"><div class="section-row"><div><small>' + esc(file.file) + ' · 第 ' + row.line + ' 行</small><h3>' + esc(row.data.name || '缺少門市名稱') + '</h3></div><span class="pill ' + (kind === 'review' ? 'warn' : '') + '">' + labels[kind] + '</span></div><p>' + esc(row.newStoreOnly?.reason || row.reason) + '</p><p>地址：' + esc(row.data.address || '未提供') + '</p><p>地圖網址：' + esc(row.data.mapUrl || '未提供') + '</p>' + (isNew ? '<label class="check"><input type="checkbox" data-csv-include="' + row.key + '" ' + (active ? 'checked' : '') + '>新增這間門市</label><details><summary>新店備註原文</summary><pre>' + esc(row.note || '未提供') + '</pre></details>' : '<p class="muted">本次只保存原始來源，不建立或更新這間門市與筆記。</p>') + candidates + '<details><summary>查看完整原始欄位</summary><div class="csv-raw">' + file.headers.map((header, index) => '<p><strong>第 ' + (index + 1) + ' 欄 · ' + esc(header || '無欄名') + '</strong><span>' + esc(raw.cells[index]) + '</span></p>').join('') + '</div></details>' + extraHTML + '</article>';
+    }).join('') + '</div>';
+    if (!rows.length) html += '<p class="empty">這個分類沒有資料。可切換篩選查看既有或待核對項目。</p>';
+    html += '<div class="section-row csv-pagination"><button id="csv-prev" ' + (!page ? 'disabled' : '') + '>上一頁</button><span>' + (page + 1) + ' / ' + Math.max(1, Math.ceil(filtered.length / 40)) + ' 頁 · 符合篩選 ' + filtered.length + ' 列</span><button id="csv-next" ' + (start + 40 >= filtered.length ? 'disabled' : '') + '>下一頁</button></div>';
+    find('#csv-preview').innerHTML = html;
+  }
+
   async function readFiles(selected) {
     if (!selected.length) return;
-    const active = ++generation; files = []; plan = null; review = null; page = 0; find('#csv-result').textContent = ''; find('#csv-file-settings').replaceChildren(); preview();
+    const active = ++generation; previousChoices.clear(); files = []; plan = null; review = null; page = 0; find('#csv-result').textContent = ''; find('#csv-file-settings').replaceChildren(); preview();
     if (selected.length > 10 || selected.some(f => f.size > CSV_LIMIT) || selected.reduce((n, f) => n + f.size, 0) > 5 * 1024 * 1024) throw new Error('最多 10 個 CSV；每個上限 2 MB，合計 5 MB。');
     for (const f of selected) {
       const bytes = new Uint8Array(await f.arrayBuffer()); if (active !== generation || !getState()) return;
@@ -85,7 +117,8 @@ export function createCSVImport({ host, getState, run, saveBundle, notify, expor
     if (active === generation && getState()) { fileSettings(); preview(); }
   }
   async function readReview(file) {
-    const active = ++generation; files = []; plan = null; review = null; page = 0;
+    if (mode !== 'standard') throw new Error('只新增新門市模式不接受已核對資料包；請選取原始 CSV。');
+    const active = ++generation; previousChoices.clear(); files = []; plan = null; review = null; page = 0;
     find('#csv-file-settings').replaceChildren(); find('#csv-result').textContent = ''; preview();
     if (file.size > REVIEW_LIMIT) throw new Error('已核對資料包上限8 MB。');
     const parsed = await prepareReviewedCSV(await file.text());
@@ -100,9 +133,31 @@ export function createCSVImport({ host, getState, run, saveBundle, notify, expor
     catch (e) { if (active !== generation || !getState()) return; files[i] = { ...old, encoding, requestedDelimiter: delimiter, error: e.message }; }
     plan = null; fileSettings(); preview();
   }
+  function chooseTarget(row, choice) {
+    if (plan.mode === 'new-only') {
+      if (row.newStoreOnly?.status !== 'new' || !['skip', 'new'].includes(choice)) return;
+      row.choice = choice; row.supplementColumns = []; row.fillFields = [];
+      row.sop1.extraAccepted = false; row.sop1.manualAccepted = false; return;
+    }
+    const members = row.review ? plan.rows.filter(r => r.review?.group === row.review.group) : [row];
+    if (choice === 'skip' && row.choice !== 'skip') previousChoices.set(row.key, row.choice);
+    if (row.review) setReviewedGroupChoice(plan, row.review.group, choice);
+    else row.choice = choice;
+    for (const item of members) {
+      item.fillFields = []; item.supplementColumns = [];
+      item.sop1.manualAccepted = false; item.sop1.extraAccepted = false;
+    }
+  }
   host.addEventListener('change', event => {
     const el = event.target;
     if (!getState()) return;
+    if (el.id === 'csv-import-mode') {
+      if (!['new-only', 'standard'].includes(el.value)) return;
+      mode = el.value; generation++; plan = null; page = 0; filter = 'all'; previousChoices.clear();
+      if (review) { files = []; review = null; }
+      shell(); if (files.length) fileSettings();
+      notify('已切換匯入模式；請重新產生預覽，先前勾選不會沿用。'); return;
+    }
     if (el.id === 'csv-files') { const selected = [...el.files]; el.value = ''; return run(() => readFiles(selected), 'csv-error'); }
     if (el.id === 'csv-review-file') { const file = el.files[0]; el.value = ''; if (file) return run(() => readReview(file), 'csv-error'); }
     if (el.dataset.csvEncoding !== undefined) { const i = +el.dataset.csvEncoding; return run(() => reparse(i, el.value, files[i].requestedDelimiter || 'auto'), 'csv-error'); }
@@ -112,25 +167,42 @@ export function createCSVImport({ host, getState, run, saveBundle, notify, expor
     if (el.dataset.csvChannel !== undefined) { files[+el.dataset.csvChannel].channel = el.value; plan = null; preview(); }
     if (el.id === 'csv-filter') { filter = el.value; page = 0; preview(); return; }
     if (el.dataset.csvAck) { const row = plan?.rows.find(r => r.key === el.dataset.row); if (row && ['extraAccepted', 'manualAccepted'].includes(el.dataset.csvAck)) row.sop1[el.dataset.csvAck] = !!el.checked; preview(); return; }
-    if (el.dataset.csvFill) { const row = plan.rows.find(r => r.key === el.dataset.csvFill); row.fillFields = row.fillFields.filter(field => field !== el.value); if (el.checked) row.fillFields.push(el.value); preview(); return; }
-    if (el.dataset.csvChoice) { const row = plan.rows.find(r => r.key === el.dataset.csvChoice); if (row.review) setReviewedGroupChoice(plan, row.review.group, el.value); else { row.choice = el.value; row.fillFields = []; row.sop1.manualAccepted = false; } preview(); }
+    if (el.dataset.csvFill) { if (plan?.mode === 'new-only') return; const row = plan.rows.find(r => r.key === el.dataset.csvFill); row.fillFields = row.fillFields.filter(field => field !== el.value); if (el.checked) row.fillFields.push(el.value); preview(); return; }
+    if (el.dataset.csvSupplement) {
+      const row = plan?.rows.find(r => r.key === el.dataset.csvSupplement), column = +el.value;
+      if (!row || row.choice === 'skip' || row.choice === 'review' || row.reviewExcluded) return;
+      if (!csvSupplementChoices(plan, row, project(getState().bundle)).some(f => f.column === column && !f.included)) return;
+      row.supplementColumns = (row.supplementColumns || []).filter(c => c !== column);
+      if (el.checked) row.supplementColumns.push(column);
+      row.sop1.extraAccepted = false; preview(); return;
+    }
+    if (el.dataset.csvInclude) {
+      const row = plan?.rows.find(r => r.key === el.dataset.csvInclude);
+      if (!row || row.reviewExcluded) return;
+      chooseTarget(row, el.checked ? plan.mode === 'new-only' ? 'new' : previousChoices.get(row.key) || 'review' : 'skip'); preview(); return;
+    }
+    if (el.dataset.csvChoice) { if (plan?.mode === 'new-only') return; const row = plan.rows.find(r => r.key === el.dataset.csvChoice); chooseTarget(row, el.value); preview(); }
   });
   host.addEventListener('click', event => {
     const b = event.target.closest('button'); if (!b || !getState()) return;
     if (b.dataset?.csvSourceSnapshot) { const snapshot = project(getState().bundle).find(r => r.type === 'source' && r.id === b.dataset.csvSourceSnapshot); if (!snapshot) return notify('找不到這份原始 CSV Source Snapshot。'); if (!downloadSource) return notify('此介面尚未支援下載原始來源。'); return downloadSource(snapshot.blob, snapshot.file); }
     if (b.id === 'csv-choose') return find('#csv-files').click();
-    if (b.id === 'csv-review-choose') return find('#csv-review-file').click();
+    if (b.id === 'csv-review-choose') { if (mode !== 'standard') return notify('只新增新門市模式請選取原始 CSV。'); return find('#csv-review-file').click(); }
     if (b.id === 'csv-export-preview') return run(async () => { if (!plan) throw new Error('請先預覽並確認本批來源。'); if (!exportReport) throw new Error('此介面尚未支援匯出核對結果。'); exportReport(exportCSVPreview(plan, getState().bundle)); }, 'csv-error');
     if (b.id === 'csv-cancel') { reset(); notify('已取消未完成的匯入；已保存的客戶資料不受影響。'); return; }
-    if (b.id === 'csv-preview-button') return run(async () => { if (files.some(f => f.error)) throw new Error('請先解決檔案的編碼或格式問題。'); const active = generation, bundle = getState().bundle; plan = null; preview(); const parsed = review ? await planReviewedCSV(review, bundle) : await planCSV(files, bundle); if (active !== generation || !getState()) return; plan = parsed; page = 0; preview(); }, 'csv-error');
+    if (b.id === 'csv-preview-button') return run(async () => { if (files.some(f => f.error)) throw new Error('請先解決檔案的編碼或格式問題。'); const active = generation, bundle = getState().bundle; plan = null; preview(); const parsed = review ? await planReviewedCSV(review, bundle) : await planCSV(files, bundle, { mode }); if (active !== generation || !getState()) return; plan = parsed; previousChoices.clear(); filter = mode === 'new-only' ? 'new' : 'all'; page = 0; preview(); }, 'csv-error');
     if (b.id === 'csv-prev') { page = Math.max(0, page - 1); preview(); }
     if (b.id === 'csv-next') { page = Math.min(Math.ceil(plan.rows.length / 40) - 1, page + 1); preview(); }
     if (b.id === 'csv-commit') return run(async () => {
       if (!plan) throw new Error('請先預覽並確認本批來源。');
-      const state = getState(), result = buildCSVImport(plan, state.bundle, state.device);
-      if (!confirm(`確認保存 ${result.summary.sourceSnapshots} 份原始 CSV Source Snapshot，並匯入 ${result.summary.rows} 列？\n新增 ${result.summary.stores} 間門市、${result.summary.notes} 筆備註；更新 ${result.summary.updatedNotes} 筆版本。\n${result.summary.mergeGroups ? `依已裁定同店規則整併 ${result.summary.mergedStores} 間既有門市，搬移 ${result.summary.movedVisits} 筆既有拜訪；原版本與來源歷史保留。\n` : ''}補上 ${result.summary.filledFields} 個空白欄位。\n原始 CSV 完整 bytes 不會被分析結果回寫；Google 缺少備註時保留舊文。`)) return;
-      await saveBundle(result.bundle);
-      const s = result.summary; reset(); find('#csv-result').textContent = `完成：已保存 ${s.sourceSnapshots} 份原始 CSV Source Snapshot；新增 ${s.stores} 間門市，連結 ${s.linked} 間現有門市，新增 ${s.notes} 筆備註，更新 ${s.updatedNotes} 筆版本${s.mergeGroups ? `，依裁定整併 ${s.mergedStores} 間既有門市並搬移 ${s.movedVisits} 筆既有拜訪` : ''}，補上 ${s.filledFields} 個空白欄位；${s.missingNotes} 筆最新匯出缺少備註但舊文已保留，${s.restoredNotes} 筆重新出現，${s.unchangedNotes} 筆未變，${s.skipped} 列略過。已加密儲存於本機，Mac 可連線時會交換。`;
+      const state = getState(), baseBundle = state.bundle, baseDevice = state.device, activePlan = plan;
+      const saveContext = getSaveContext?.();
+      const result = buildCSVImport(plan, baseBundle, baseDevice);
+      if (!confirm(plan.mode === 'new-only' ? `只新增新門市：新增 ${result.summary.stores} 間門市、${result.summary.notes} 筆新店備註、${result.summary.adoptedSupplements} 項新店來源補充。\n既有門市、文字、關係及歷史更新：0。\n保存 ${result.summary.sourceSnapshots} 份完整原始 CSV；既有、待核對及未勾選列只保留於來源快照。\n確認保存？` : `確認保存 ${result.summary.sourceSnapshots} 份原始 CSV Source Snapshot，並匯入 ${result.summary.rows} 列？\n新增 ${result.summary.stores} 間門市、${result.summary.notes} 筆備註；更新 ${result.summary.updatedNotes} 筆版本。\n${result.summary.mergeGroups ? `依已裁定同店規則整併 ${result.summary.mergedStores} 間既有門市，搬移 ${result.summary.movedVisits} 筆既有拜訪；原版本與來源歷史保留。\n` : ''}補上 ${result.summary.filledFields} 個空白欄位、納入 ${result.summary.adoptedSupplements} 項來源補充。\n未勾選欄位及略過列只保留在完整原始來源；既有內容不移除。\n原始 CSV 完整 bytes 不會被分析結果回寫；Google 缺少備註時保留舊文。`)) return;
+      const current = getState();
+      if (!current || current.bundle !== baseBundle || current.device !== baseDevice || plan !== activePlan) throw new Error('確認期間資料或工作階段已變更，請重新預覽；這批未寫入。');
+      await saveBundle(result.bundle, saveContext);
+      const s = result.summary, newOnly = plan.mode === 'new-only'; reset(); find('#csv-result').textContent = newOnly ? `完成：只新增 ${s.stores} 間門市、${s.notes} 筆新店備註、${s.adoptedSupplements} 項新店來源補充；保存 ${s.sourceSnapshots} 份完整原始 CSV。既有門市、文字、關係及歷史完全保留，更新 0 筆。已加密儲存於本機，Mac 可連線時會交換。` : `完成：已保存 ${s.sourceSnapshots} 份原始 CSV Source Snapshot；新增 ${s.stores} 間門市，連結 ${s.linked} 間現有門市，新增 ${s.notes} 筆備註，更新 ${s.updatedNotes} 筆版本${s.mergeGroups ? `，依裁定整併 ${s.mergedStores} 間既有門市並搬移 ${s.movedVisits} 筆既有拜訪` : ''}，補上 ${s.filledFields} 個空白欄位、納入 ${s.adoptedSupplements} 項來源補充；${s.missingNotes} 筆最新匯出缺少備註但舊文已保留，${s.restoredNotes} 筆重新出現，${s.unchangedNotes} 筆未變，${s.skipped} 列略過。已加密儲存於本機，Mac 可連線時會交換。`;
       notify('CSV 已加密匯入，可到客戶門市與拜訪紀錄查看。');
     }, 'csv-error');
   });
