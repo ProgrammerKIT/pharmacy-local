@@ -681,6 +681,8 @@ function validStoreSupervision(value) {
 export function validData(type, d) {
   if (!plain(d)) return false;
   if (d.supervision !== undefined && (type !== 'store' || !validStoreSupervision(d.supervision))) return false;
+  if (d.relationshipNotes !== undefined && (type !== 'person' || !str(d.relationshipNotes, 20000))) return false;
+  if (d.relationshipReviews !== undefined && (type !== 'person' || !Array.isArray(d.relationshipReviews) || d.relationshipReviews.length > 2000 || !d.relationshipReviews.every(validSupervisorReview))) return false;
   if (d.supervisorKey !== undefined && (type !== 'person' || !supervisionText(d.supervisorKey, 200))) return false;
   if (d.monthlyVisits !== undefined && (type !== 'store' || !validMonthlyVisits(d.monthlyVisits))) return false;
   if (d.datePlans !== undefined && (type !== 'store' || !validDatePlans(d.datePlans))) return false;
@@ -735,6 +737,7 @@ export function validateBundle(b) {
     if (Object.hasOwn(o, 'visitAttendance') && !validVisitAttendance(o)) throw new Error('拜訪確認資料不完整或與紀錄不符。');
     seen.set(o.id, o);
   }
+  validateSupervisorReviews(b, seen);
   validateStoreMergeProvenance(b, seen);
   validateCSVExclusionEvents(sourceEntities);
   for (const o of b.ops) if (Object.hasOwn(o, 'visitAttendance') && !storeEntities.has(o.visitAttendance.store)) throw new Error('拜訪確認所屬門市不存在。');
@@ -2144,4 +2147,90 @@ export function supervisedStores(records, personId) {
   const person=records.find(r=>r.type==='person' && r.id===personId);
   if (!person || person.deleted || person.conflict || person.sameAs) return [];
   return records.filter(r=>r.type==='store' && !r.deleted && !r.conflict && !r.csvIdentityPending && !r.mergedInto && r.supervision?.personId===personId);
+}
+
+
+// Local, conservative cross-store discovery. Candidates are evidence, never inferred friendship.
+const SUPERVISOR_REVIEW_STATUSES = ['confirmed', 'rejected', 'pending'];
+function validSupervisorEntry(e) {
+  return plain(e) && str(e.id, 300) && !!e.id && str(e.basis, 12000) && !!e.basis
+    && str(e.title, 1000) && str(e.value, 2000) && Array.isArray(e.evidence) && e.evidence.length === 2
+    && e.evidence.every(s => plain(s) && ['person','visit'].includes(s.type) && str(s.id,100) && !!s.id && str(s.revisionId,100) && !!s.revisionId && str(s.storeId,100) && str(s.label,500) && str(s.text,2000) && !!s.text);
+}
+function validSupervisorReview(e) {
+  return plain(e) && str(e.id,100) && !!e.id && SUPERVISOR_REVIEW_STATUSES.includes(e.status) && attendanceInstant(e.at) && validSupervisorEntry(e.entry);
+}
+function validateSupervisorReviews(bundle, ops) {
+  const events = new Map();
+  for (const op of bundle.ops) for (const event of op.data.relationshipReviews || []) {
+    const fingerprint = JSON.stringify([op.entity,event]);
+    if (events.has(event.id) && events.get(event.id) !== fingerprint) throw new Error('關係審視歷史識別重複且內容不同。');
+    events.set(event.id,fingerprint);
+    for (const source of event.entry.evidence) {
+      const original = ops.get(source.revisionId);
+      const text = source.type === 'person' ? [original?.data.desc, original?.data.relationshipNotes].filter(Boolean).join('\n') : original?.data.text;
+      if (!original || original.deleted || original.type !== source.type || original.entity !== source.id || (source.type === 'visit' && original.data.store !== source.storeId) || typeof text !== 'string' || !text.includes(source.text)) throw new Error('關係審視缺少當時引用的原文版本。');
+    }
+  }
+}
+function relationshipSafe(r) { return r && !r.deleted && !r.conflict && r.heads?.length === 1 && !r.sameAs && !r.csvIdentityPending && !r.mergedInto && !r.sourceMissing && !r.googleUpdatePending; }
+function relationshipSentences(text) {
+  return String(text || '').split(/[\n。！!；;]/u).map(s=>s.trim()).filter(s=>s && s.length<=2000 && !/不認識|不是|並非|未確認|待確認|待核實|是否|疑似|可能|同名|聽說|[？?]/u.test(s));
+}
+export function supervisorRelationships(bundle, personId) {
+  const records = project(bundle), person = records.find(r=>r.type==='person' && r.id===personId);
+  if (!relationshipSafe(person) || !person.supervisorKey) return [];
+  const stores = new Map(records.filter(r=>r.type==='store' && relationshipSafe(r)).map(r=>[r.id,r]));
+  const people = records.filter(r=>r.type==='person' && relationshipSafe(r) && r.confirmed && r.name.length>=2);
+  const unique = people.filter(p=>records.filter(r=>r.type==='person' && !r.deleted && r.name===p.name).length===1);
+  const topics=records.filter(r=>r.type==='topic' && relationshipSafe(r) && !r.csvTag && !r.ruleKey && r.name.length>=2 && records.filter(t=>t.type==='topic' && !t.deleted && t.name===r.name).length===1);
+  const targets = [...unique.filter(p=>p.id!==personId),...topics].sort((a,b)=>(a.type+':'+a.id).localeCompare(b.type+':'+b.id)), sources = [];
+  for (const visit of records.filter(r=>r.type==='visit' && relationshipSafe(r) && stores.has(r.store))) {
+    const sentences=relationshipSentences(visit.text);
+    for (const text of sentences) {
+      const mentions = [...unique,...topics].filter(p=>text.includes(p.name) || (p.type==='person'?visit.people:visit.topics).includes(p.id) && !visit.text.includes(p.name) && text===sentences[0]).map(p=>p.type+':'+p.id);
+      sources.push({type:'visit',id:visit.id,revisionId:visit.heads[0].id,storeId:visit.store,label:stores.get(visit.store).name,text,mentions,anchor:mentions.includes('person:'+personId)});
+    }
+  }
+  const ownText = [person.desc,person.relationshipNotes].filter(Boolean).join('\n');
+  // Reviews also create person revisions; use the original revision of unchanged note text.
+  const ownMatches = bundle.ops.filter(o=>o.type==='person' && o.entity===personId && !o.deleted && [o.data.desc,o.data.relationshipNotes].filter(Boolean).join('\n')===ownText);
+  const ownIds = new Set(ownMatches.map(o=>o.id));
+  const ownRevision = ownMatches.filter(o=>!o.parents.some(id=>ownIds.has(id))).sort((a,b)=>a.at.localeCompare(b.at)||a.id.localeCompare(b.id))[0];
+  for (const text of relationshipSentences(ownText)) sources.push({type:'person',id:personId,revisionId:ownRevision.id,storeId:'',label:person.name+' · 個人筆記',text,mentions:targets.filter(p=>text.includes(p.name)).map(p=>p.type+':'+p.id),anchor:true});
+  sources.sort((a,b)=>(a.type+':'+a.id+':'+a.text).localeCompare(b.type+':'+b.id+':'+b.text));
+  const entries = [];
+  for (const target of targets) {
+    const anchors = sources.filter(s=>s.anchor && s.mentions.includes(target.type+':'+target.id));
+    const others = sources.filter(s=>s.type==='visit' && s.mentions.includes(target.type+':'+target.id));
+    let pair;
+    for (const a of anchors) { const b=others.find(b=>b.id!==a.id && b.storeId!==a.storeId); if(b){pair=[a,b];break;} }
+    if (!pair) continue;
+    const evidence = pair.map(({mentions,anchor,...s})=>s);
+    const id = 'supervisor-'+target.type+':'+personId+':'+target.id;
+    // Ignore revision-only changes and review writes; only changed cited content reopens a decision.
+    const basis = JSON.stringify(evidence.map(s=>[s.type,s.id,s.storeId,s.text]));
+    entries.push({id,basis,title:person.name+'的筆記與其他門市，出現共同'+(target.type==='person'?'人物':'主題')+'「'+target.name+'」',value:'可從兩邊記錄的共同話題切入拜訪；先核對人物身分與原句，不能僅憑共同提及就認定友情、同事或介紹關係。',evidence});
+    if (entries.length>=30) break;
+  }
+  return entries;
+}
+export function supervisorReviewHistory(bundle, personId) {
+  const events = new Map();
+  for (const op of bundle.ops) if (op.type==='person' && op.entity===personId) for(const e of op.data.relationshipReviews||[]) events.set(e.id,e);
+  const current=project(bundle).find(r=>r.type==='person' && r.id===personId);
+  const ordered=!current?.conflict ? current?.heads[0]?.data.relationshipReviews||[] : [];
+  const currentIds=new Set(ordered.map(e=>e.id));
+  return [...events.values()].filter(e=>!currentIds.has(e.id)).sort((a,b)=>a.at.localeCompare(b.at)||a.id.localeCompare(b.id)).concat(ordered);
+}
+export function reviewSupervisorRelationship(bundle, personId, entry, status, device) {
+  validateBundle(bundle);
+  const person=project(bundle).find(r=>r.type==='person' && r.id===personId);
+  const current=supervisorRelationships(bundle,personId).find(e=>e.id===entry?.id);
+  if(!relationshipSafe(person) || !SUPERVISOR_REVIEW_STATUSES.includes(status) || !current || JSON.stringify(current)!==JSON.stringify(entry)) throw new Error('來源或人物已有變更，請重新核對後再審視。');
+  const history=supervisorReviewHistory(bundle,personId);
+  if(history.filter(e=>e.entry.id===entry.id && e.entry.basis===entry.basis).at(-1)?.status===status) return bundle;
+  const next=structuredClone(bundle);
+  next.ops.push(revision('person',personId,{...person.heads[0].data,relationshipReviews:[...history,{id:uuid(),status,at:new Date().toISOString(),entry}]},[person.heads[0].id],device));
+  validateBundle(next); return next;
 }

@@ -1,4 +1,4 @@
-import { planStoreSupervision, applyStoreSupervision, supervisedStores } from './core.js';
+import { supervisorRelationships, supervisorReviewHistory, reviewSupervisorRelationship, planStoreSupervision, applyStoreSupervision, supervisedStores } from './core.js';
 import { setupWeeklyRecovery, prepareWeeklyRecovery, createRecoveryBackup, newMeta, checkEnvelope, derive, seal, unseal, planBackupImport, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates, buildStoreEnrichmentRequest, planStoreEnrichment, applyStoreEnrichment, readonlyHealthAudit, dataSafetySummary, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, addReminderTasks, convertReminderTasks, completeReminderTask, reminderTaskHistory, searchStoreVisitText, scanInsightChanges, storeInsightDisplayForStore, storeInsightEvidenceForEntry, insightReviewForEntry, insightSharedReviewForEntry, storeInsightReviewHistory, planInsightReview, applyInsightReview, planStoreInsights, applyStoreInsights, planStoreInsightRelations, applyStoreInsightRelations, buildStoreInsightsSource, planStoreMerge, applyStoreMerge } from './core.js';
 import { readWeeklyRecovery, writeWeeklyRecovery, readLocal, writeLocal, archiveAndReplaceLocal, listLocalArchives, readLocalArchive } from './db.js';
 import { dayPlanDate, shiftDayPlanDate, dayPlanForStore, dayPlanOverview, dayItineraryBasis, applyDayItineraryAction } from './core.js';
@@ -27,6 +27,114 @@ function highlightLiteral(value, query) {
 }
 const titles = { monthly: '每月拜訪', itinerary: '行程與準備', explore: '關聯探索', visits: '拜訪', stores: '門市', regional: '區域觀察', entities: '人物與主題', csv: '匯入 CSV', quality: '資料整理', sync: '資料與安全', trash: '回收桶' };
 const kinds = { store: '門市', visit: '拜訪', person: '人物', topic: '主題' };
+// Supervisor notes stay on the person entity; drafts stay encrypted on this device.
+let supervisorDraftTimer = null, supervisorDraftChain = Promise.resolve(), supervisorDraftGeneration = 0;
+let supervisorRelationCache = null;
+const supervisorReviewLabels = {confirmed:'確定',rejected:'否定',pending:'待確認'};
+function supervisorNoteDraft(id) {
+  const d = editorContext?.type === 'supervisor-inline' ? editorContext : payload?.supervisorDraft;
+  return d?.id===id && d?.vaultId===payload?.bundle.vaultId ? d : null;
+}
+function supervisorDraftStatus(message) { if($('supervisor-note-status')) $('supervisor-note-status').textContent=message; }
+function supervisorRelationEntries(personId) {
+  if(!payload) return [];
+  if(supervisorRelationCache?.bundle!==payload.bundle) supervisorRelationCache={bundle:payload.bundle,people:new Map(),at:Date.now()};
+  if(!supervisorRelationCache.people.has(personId)) supervisorRelationCache.people.set(personId,supervisorRelationships(payload.bundle,personId));
+  return supervisorRelationCache.people.get(personId);
+}
+function supervisorRelationshipTick() {
+  if (!canScanInsights() || editorContext || payload?.supervisorDraft) return;
+  if(supervisorRelationCache?.bundle===payload.bundle && Date.now()-supervisorRelationCache.at<INSIGHT_SCAN_INTERVAL) return;
+  const next={bundle:payload.bundle,people:new Map(),at:Date.now()};
+  for(const p of all('person').filter(p=>p.supervisorKey && !p.conflict)) next.people.set(p.id,supervisorRelationships(payload.bundle,p.id));
+  supervisorRelationCache=next;
+  if(!document.hidden && activeView==='explore' && focus.type==='person' && by('person',focus.id)?.supervisorKey && !document.querySelector('dialog[open]')) renderFocus();
+}
+function supervisorRelationCard(entry, person, interactive=true) {
+  return `<article class="relation-value-card"><span class="relation-kicker">跨店筆記候選</span><h4>${esc(entry.title)}</h4><p class="relation-value"><strong>拜訪價值</strong>${esc(entry.value)}</p><details class="relation-evidence"><summary>查看兩邊筆記依據</summary>${entry.evidence.map(s=>`<div><strong>${esc(s.label)}</strong><blockquote>${esc(s.text)}</blockquote><small>引用版本：${esc(s.revisionId)}</small></div>`).join('')}</details>${interactive?`<div class="relation-review-actions" aria-label="關係審視">${Object.entries(supervisorReviewLabels).map(([status,label])=>`<button type="button" ${status==='confirmed'?'class="primary"':''} data-supervisor-review="${status}" data-review-entry="${esc(entry.id)}" data-review-person="${esc(person.id)}">${label}</button>`).join('')}</div>`:''}</article>`;
+}
+function supervisorRelationsHTML(person) {
+  const entries=supervisorRelationEntries(person.id), events=supervisorReviewHistory(payload.bundle,person.id), latest=new Map();
+  for(const e of events) latest.set(e.entry.id,e);
+  const fresh=entries.filter(e=>!latest.has(e.id));
+  const changed=entries.filter(e=>latest.has(e.id) && latest.get(e.id).entry.basis!==e.basis);
+  const groups=Object.keys(supervisorReviewLabels).filter(s=>s!=='rejected').map(status=>{
+    const reviewed=[...latest.values()].filter(e=>e.status===status);
+    return reviewed.length?`<details class="relation-reviewed-group" data-relation-group="${status}"><summary>${status==='confirmed'?'已確定':'待確認'} · ${reviewed.length}</summary>${reviewed.map(e=>{const current=entries.find(c=>c.id===e.entry.id && c.basis===e.entry.basis);return supervisorRelationCard(e.entry,person,!!current)+(current?'':'<p class="muted">保留當時判斷；目前來源已變更或不再符合候選規則。</p>');}).join('')}</details>`:'';
+  }).join('');
+  return `<section class="simple-relations"><div class="relation-heading"><h3>關係紀錄</h3><span>${fresh.length?'新線索 '+fresh.length:changed.length?'來源有變化 '+changed.length:'尚無新線索'}</span></div><p class="relation-intro">以明確連結、唯一已核對姓名或手動主題，比對實際筆記。共同提及是候選，不直接認定人際關係。</p>${fresh.slice(0,1).map(e=>supervisorRelationCard(e,person)).join('')}${fresh.length>1?`<details><summary>其他新線索 · ${fresh.length-1}</summary>${fresh.slice(1).map(e=>supervisorRelationCard(e,person)).join('')}</details>`:''}${changed.length?`<details class="relation-change-notice"><summary>新依據待查看 · ${changed.length}（原判斷保留）</summary>${changed.map(e=>supervisorRelationCard(e,person)).join('')}</details>`:''}${groups}${events.length?`<details class="relation-review-history"><summary>審視歷史 · ${events.length}（含否定）</summary>${events.slice().reverse().map(e=>`<section><strong>${supervisorReviewLabels[e.status]} · ${esc(dateText(e.at))}</strong>${supervisorRelationCard(e.entry,person,false)}</section>`).join('')}${[...latest.values()].filter(e=>e.status==='rejected').map(e=>entries.find(c=>c.id===e.entry.id && c.basis===e.entry.basis)).filter(Boolean).map(e=>supervisorRelationCard(e,person)).join('')}</details>`:''}<p id="supervisor-relation-error" class="error" role="alert"></p></section>`;
+}
+function renderSupervisorDraftBanner() {
+  let banner=$('supervisor-draft-banner');
+  if(!banner){banner=document.createElement('aside');banner.id='supervisor-draft-banner';banner.className='panel';$('workspace').querySelector('main').prepend(banner);}
+  const draft=payload?.supervisorDraft;
+  banner.hidden=!draft || draft.vaultId!==payload?.bundle.vaultId;
+  if(!banner.hidden) banner.innerHTML=`督導筆記有未完成的本機加密草稿。<button type="button" data-supervisor-resume="${esc(draft.id)}">繼續輸入</button>`;
+}
+async function flushSupervisorDraft() {
+  clearTimeout(supervisorDraftTimer);supervisorDraftTimer=null;
+  const d=editorContext?.type==='supervisor-inline'?structuredClone(editorContext):null, generation=supervisorDraftGeneration, sessionKey=key;
+  supervisorDraftChain=supervisorDraftChain.catch(()=>{}).then(async()=>{
+    if(!d || generation!==supervisorDraftGeneration || !payload || key!==sessionKey || payload.bundle.vaultId!==d.vaultId) return;
+    await persist({...payload,supervisorDraft:d},{guard:()=>{if(key!==sessionKey || generation!==supervisorDraftGeneration)throw new Error('草稿工作階段已變更。');}});
+    supervisorDraftStatus('草稿已加密保存在本機，尚未儲存成正式筆記。');renderSupervisorDraftBanner();
+  });
+  return supervisorDraftChain;
+}
+document.addEventListener('input',event=>{
+  if(!event.target.matches('#supervisor-personal-note,#supervisor-relationship-note'))return;
+  const form=$('supervisor-note-form'), person=by('person',form.dataset.person);
+  if(!person || busy || updateHolding)return;
+  const previous=supervisorNoteDraft(person.id);
+  editorContext={type:'supervisor-inline',id:person.id,head:previous?.head||form.dataset.head,vaultId:payload.bundle.vaultId,desc:$('supervisor-personal-note').value,relationshipNotes:$('supervisor-relationship-note').value};
+  supervisorDraftGeneration++;supervisorDraftStatus('尚未儲存；正在準備本機加密草稿…');
+  clearTimeout(supervisorDraftTimer);supervisorDraftTimer=setTimeout(()=>{void flushSupervisorDraft().catch(e=>supervisorDraftStatus('草稿保存失敗：'+e.message+'；請保留畫面並重試。'));},500);
+});
+document.addEventListener('click',event=>{
+ const b=event.target.closest('button');if(!b)return;
+ if(b.dataset.supervisorResume){event.preventDefault();event.stopImmediatePropagation();if(editorContext && editorContext.type!=='supervisor-inline')return toast('先完成目前修改。');navigate('person',b.dataset.supervisorResume);return;}
+ if(b.hasAttribute('data-profile-reset')){event.preventDefault();event.stopImmediatePropagation();void run(async()=>{supervisorDraftGeneration++;clearTimeout(supervisorDraftTimer);await supervisorDraftChain.catch(()=>{});await persist({...payload,supervisorDraft:null});if(editorContext?.type==='supervisor-inline')editorContext=null;render();},'supervisor-note-error');return;}
+ if((editorContext?.type==='supervisor-inline' || payload?.supervisorDraft) && !b.closest('#supervisor-note-form') && b.id!=='lock'){event.preventDefault();event.stopImmediatePropagation();toast('請先儲存督導筆記，或按「還原未儲存修改」；草稿會保留。');return;}
+ if(!b.dataset.supervisorReview)return;
+ event.preventDefault();event.stopImmediatePropagation();
+ if(editorContext || payload?.supervisorDraft)return toast('先儲存目前筆記，再審視關係。');
+ void run(async()=>{
+   const ctx=captureCSVSaveContext(),entry=supervisorRelationEntries(b.dataset.reviewPerson).find(e=>e.id===b.dataset.reviewEntry);
+   const bundle=reviewSupervisorRelationship(payload.bundle,b.dataset.reviewPerson,entry,b.dataset.supervisorReview,payload.device);
+   if(bundle===payload.bundle)return;
+   await persist({...payload,bundle,dirty:true},{guard:()=>assertCSVSaveContext(ctx)});render();toast('已記錄「'+supervisorReviewLabels[b.dataset.supervisorReview]+'」，原筆記與歷史保留。');
+ },'supervisor-relation-error');
+},true);
+document.addEventListener('submit',event=>{
+ if(event.target.id!=='supervisor-note-form')return;
+ event.preventDefault();event.stopImmediatePropagation();
+ void run(async()=>{
+  await flushSupervisorDraft();
+  const form=event.target,person=project(payload.bundle).find(r=>r.type==='person'&&r.id===form.dataset.person),draft=supervisorNoteDraft(form.dataset.person);
+  if(!person || person.deleted || person.conflict || person.sameAs || person.heads.length!==1 || person.heads[0].id!==(draft?.head||form.dataset.head))throw new Error('人物已有新版本，原草稿保留；請先複製文字，再核對歷史。');
+  const desc=$('supervisor-personal-note').value,relationshipNotes=$('supervisor-relationship-note').value;
+  const ctx=captureCSVSaveContext(),bundle=structuredClone(payload.bundle);
+  if(desc!==person.desc || relationshipNotes!==(person.relationshipNotes||''))bundle.ops.push(revision('person',person.id,{...person.heads[0].data,desc,relationshipNotes},[person.heads[0].id],payload.device));
+  validateBundle(bundle);
+  await persist({...payload,bundle,dirty:payload.dirty||bundle.ops.length!==payload.bundle.ops.length,supervisorDraft:null},{guard:()=>assertCSVSaveContext(ctx)});
+  supervisorDraftGeneration++;editorContext=null;render();supervisorDraftStatus('已儲存；等待 Mac 同步確認。');
+ },'supervisor-note-error');
+},true);
+window.addEventListener('beforeunload',event=>{if(editorContext?.type==='supervisor-inline'){event.preventDefault();event.returnValue='';}});
+function renderSimpleSupervisor(person) {
+  const stores=supervisedStores(records,person.id), areas=[...new Set(stores.map(s=>s.supervision.areaName))];
+  const draft=supervisorNoteDraft(person.id);
+  if (person.conflict || person.deleted || person.sameAs) { $('focus-detail').innerHTML='<p>人物狀態需要核對，原內容保留。</p>'; return; }
+  document.body.classList.add('supervisor-simple-page');
+  $('explore-view').classList.add('simple-supervisor-view');
+  $('page-title').textContent='督導';
+  $('focus-header').innerHTML=`<div class="simple-profile-heading"><div><span class="simple-eyebrow">小區督導</span><h2>${esc(person.name)}</h2><p>${esc(areas.join('、'))} · ${stores.length} 間門市</p></div>${supervisorOriginStore ? '<button id="supervisor-return-store" class="text-button">← 返回門市</button>':''}</div>`;
+  $('focus-detail').innerHTML=`<section class="simple-store-section"><h3>負責門市 <span>${stores.length}</span></h3><div class="simple-store-links">${stores.map(s=>`<button type="button" data-visit-brief="${esc(s.id)}">${esc(s.name)}</button>`).join('')}</div></section><form id="supervisor-note-form" data-person="${esc(person.id)}" data-head="${esc(person.heads[0].id)}">${supervisorRelationsHTML(person)}<details class="relationship-own-notes"><summary>我補充的關係資訊</summary><p class="muted">可自行新增原始資訊，之後一併納入關聯檢視。</p><textarea id="supervisor-relationship-note" rows="3" maxlength="20000" aria-label="我補充的關係資訊" placeholder="自行補充誰與誰有什麼關係，以及消息來源…">${esc(draft?.relationshipNotes ?? person.relationshipNotes ?? '')}</textarea></details><section class="simple-note-section"><label for="supervisor-personal-note">我的筆記</label><p>記下個人資訊、互動重點或下次想聊的事。</p><textarea id="supervisor-personal-note" rows="5" maxlength="20000" placeholder="在這裡直接新增或修改筆記…">${esc(draft?.desc ?? person.desc ?? '')}</textarea></section><p id="supervisor-note-error" class="error" role="alert"></p><div class="simple-save-row"><span id="supervisor-note-status" role="status">${draft?'尚未儲存':'已儲存的內容顯示於上方'}</span><div><button type="button" data-profile-reset>還原未儲存修改</button><button type="submit" class="primary">儲存筆記與關係</button></div></div></form><div class="simple-profile-history"><button type="button" class="text-button" data-edit="person:${esc(person.id)}">編輯姓名與個人資訊</button> <button type="button" class="text-button" data-history="person:${esc(person.id)}">查看歷史紀錄</button></div>`;
+  $('graph').innerHTML='';$('graph-pager').innerHTML='';$('evidence-list').innerHTML='';$('evidence-count').textContent='0';
+}
+
+
+
 const NEARBY_STORE_LIMIT = 4;
 function reminderOptionsHTML(targetId) {
   return `<fieldset class="reminder-options" data-reminder-options-for="${esc(targetId)}"><legend>快速勾選（可複選）</legend><p class="muted">勾選會加入下方新增待辦；取消只移除尚未儲存的相同項目，已保存的任務與歷史不會改動。</p><div class="reminder-option-grid">${NEXT_REMINDER_OPTIONS.map(option => `<label class="check"><input type="checkbox" data-reminder-option value="${esc(option)}">${esc(option)}</label>`).join('')}</div><div class="reminder-custom-option"><label class="check"><input type="checkbox" data-reminder-custom-toggle>自訂</label><input type="text" data-reminder-custom-input maxlength="120" placeholder="空白，自行填寫" aria-label="自訂下次記得項目" autocomplete="off"></div></fieldset>`;
@@ -489,7 +597,7 @@ function openDialog(dialog, { reviewMode = '' } = {}) {
   requestAnimationFrame(() => { if (dialog.open) resetDialogScroll(dialog); });
 }
 function buttons(disabled) {
-  document.querySelectorAll('button, [data-reminder-complete], #csv-view input, #csv-view select, #regional-view select, #editor input, #editor select, #editor textarea, #review input, #review select, #review textarea, #store-reminder-dialog input, #store-reminder-dialog textarea, #backup-ack, #day-plan-dialog input, #day-plan-dialog select, #day-plan-dialog textarea, #itinerary-view input, #monthly-view input, #monthly-visit-dialog input').forEach(el => {
+  document.querySelectorAll('button, [data-reminder-complete], #csv-view input, #csv-view select, #regional-view select, #supervisor-note-form textarea, #editor input, #editor select, #editor textarea, #review input, #review select, #review textarea, #store-reminder-dialog input, #store-reminder-dialog textarea, #backup-ack, #day-plan-dialog input, #day-plan-dialog select, #day-plan-dialog textarea, #itinerary-view input, #monthly-view input, #monthly-visit-dialog input').forEach(el => {
     if (el.dataset.close || el.closest('#visit-attendance-dialog')) return;
     if (disabled) { el.dataset.busyDisabled = el.disabled ? '1' : '0'; el.disabled = true; }
     else if (el.dataset.busyDisabled !== undefined) { el.disabled = el.dataset.busyDisabled === '1'; delete el.dataset.busyDisabled; }
@@ -931,7 +1039,7 @@ async function openWorkspace() {
   document.body.classList.toggle('privacy-veil', pendingLock);
   try { storagePersistent = await navigator.storage?.persist?.() || false; } catch {}
   restoreTransientResumeState(); renderBackupResult(); await runPeriodicHealthAudit(); clearInterval(autoTimer);
-  autoTimer = setInterval(() => { void insightReviewTick(); if (!document.hidden) { syncScheduler.request('poll'); setTimeout(() => void weeklyTick(), 1500); } }, 15000);
+  autoTimer = setInterval(() => { void insightReviewTick(); supervisorRelationshipTick(); if (!document.hidden) { syncScheduler.request('poll'); setTimeout(() => void weeklyTick(), 1500); } }, 15000);
   setTimeout(() => void weeklyTick(), 3000);
   syncScheduler.request('foreground');
   queueInsightScan(); requestNearbyPosition();
@@ -1004,7 +1112,7 @@ function createSyncScheduler({ ready, attempt, now = Date.now, setTimer = setTim
 }
 function canAutoSync(ignoreFetching = false) {
   return !!(key && payload?.token) && navigator.onLine !== false && !document.hidden && !pendingLock && !updateHolding && !busy && !gateOpening &&
-    (ignoreFetching || !autoFetching) && !syncInProgress && !recoveryExportContext && !weeklyContext && !weeklyRunning && !backupPreview && !editorContext && !singleStoreContext && !inlineTextContext && !reminderContext && !dayPlanContext && !monthlyVisitContext && !attendancePrompt && !payload.inlineTextDraft &&
+    (ignoreFetching || !autoFetching) && !syncInProgress && !recoveryExportContext && !weeklyContext && !weeklyRunning && !backupPreview && !editorContext && !singleStoreContext && !inlineTextContext && !reminderContext && !dayPlanContext && !monthlyVisitContext && !attendancePrompt && !payload.inlineTextDraft && !payload.supervisorDraft &&
     !['review', 'editor', 'quick-text-dialog', 'store-reminder-dialog', 'rebuild-dialog', 'backup-review', 'visit-attendance-dialog', 'day-plan-dialog', 'monthly-visit-dialog', 'insight-changes-dialog'].some(id => $(id)?.open) && !csvImport.hasPending();
 }
 function syncSession() { return { key, meta, token: payload?.token, device: payload?.device, epoch: syncEpoch, inline: inlineTextContext, editor: editorContext, reminder: reminderContext, dayPlan: dayPlanContext, monthly: monthlyVisitContext, single: singleStoreContext, attendance: attendancePrompt }; }
@@ -1038,6 +1146,8 @@ async function autoSync() {
   return result;
 }
 function lockNow(reopen = !document.hidden) {
+  supervisorRelationCache=null;
+  if(editorContext?.type==='supervisor-inline') void flushSupervisorDraft().catch(()=>{});
   resetInsightScan();
   clearWeeklySetup(); $('weekly-dialog')?.close(); weeklyState = null; if ($('weekly-status')) $('weekly-status').textContent = '解鎖後檢查自動備份狀態。';
   clearRecoveryExport();
@@ -1190,6 +1300,7 @@ function status() {
   $('storage-detail').textContent = `離線介面：${offlineReady ? '已備妥' : '尚待確認，請先保持連線'}。持久儲存：${storagePersistent ? '已獲允許' : '瀏覽器尚未允許，請定期同步及備份'}。資料 ${(new TextEncoder().encode(JSON.stringify(payload.bundle)).length / 1048576).toFixed(2)} / 24 MB（包含歷史與附件）。`;
 }
 function switchView(view) {
+  if(view!=='explore') document.body.classList.remove('supervisor-simple-page');
   dismissKeyboard();
   activeView = view; Object.keys(titles).forEach(v => $(`${v}-view`).hidden = v !== view);
   const primary = view === 'itinerary' ? 'visits' : view === 'regional' ? 'stores' : ['quality', 'csv', 'entities', 'explore', 'trash'].includes(view) ? 'sync' : view;
@@ -1496,7 +1607,7 @@ function isMacInsightBackgroundDevice() {
 function insightScanBasis() { return payload ? payload.bundle.vaultId + ':' + payload.bundle.ops.map(op => op.id).sort().join('|') : ''; }
 function insightScanIdle(allowBusy = false) {
   return !!(payload && key) && !pendingLock && !updateHolding && (allowBusy || !busy) && !autoFetching && !syncInProgress && !gateOpening &&
-    !editorContext && !singleStoreContext && !inlineTextContext && !reminderContext && !dayPlanContext && !monthlyVisitContext && !attendancePrompt && !backupPreview && !insightsPreview && !storeMergePreview && !storeMergeSetup && !recoveryExportContext && !weeklyContext && !weeklyRunning && !csvImport.hasPending() &&
+    !editorContext && !payload?.supervisorDraft && !singleStoreContext && !inlineTextContext && !reminderContext && !dayPlanContext && !monthlyVisitContext && !attendancePrompt && !backupPreview && !insightsPreview && !storeMergePreview && !storeMergeSetup && !recoveryExportContext && !weeklyContext && !weeklyRunning && !csvImport.hasPending() &&
     !['editor', 'quick-text-dialog', 'store-reminder-dialog', 'rebuild-dialog', 'backup-review', 'visit-attendance-dialog', 'day-plan-dialog', 'monthly-visit-dialog'].some(id => $(id)?.open) &&
     (!$('review')?.open || $('review').classList.contains('visit-brief-dialog'));
 }
@@ -1785,6 +1896,7 @@ function noteHTML(v, query = '', { showStoreText = true } = {}) {
 }
 function render() {
   if (!payload) return;
+  renderSupervisorDraftBanner();
   records = project(payload.bundle); status(); queueInsightScan(); refreshInsightChangeBadges();
   if (!by(focus.type, focus.id) || by(focus.type, focus.id).deleted) { const first = all('topic').find(t => t.ruleKey === 'ortho') || all('store')[0] || all('topic')[0] || all('person')[0]; focus = first ? { type: first.type, id: first.id } : { type: 'store', id: '' }; }
   if (activeView === 'explore') { renderStores(); renderFocus(); }
@@ -2086,6 +2198,10 @@ function renderStores() {
   if (activeView === 'explore') $('store-list').innerHTML = result.entries.map(({ store: s, group }) => `<button class="store-card ${focus.type === 'store' && focus.id === s.id ? 'active' : ''}" data-node-type="store" data-node-id="${esc(s.id)}"><strong>${esc(s.name)}</strong><small>${esc(group.label)} · ${esc(s.district || '地區未提供')}</small><small>${esc(s.channel || '型態待整理')} · ${related({ type: 'store', id: s.id }).length} 筆</small>${s.conflict ? '<span class="pill warn">有衝突</span>' : ''}${storeIdentityPending(s) ? '<span class="pill warn">需要後續的確認</span>' : ''}</button>`).join('') || empty;
 }
 function renderFocus() {
+  const supervisor = by(focus.type, focus.id);
+  if (supervisor?.type==='person' && supervisor.supervisorKey && !supervisor.conflict && !supervisor.deleted && !supervisor.sameAs) return renderSimpleSupervisor(supervisor);
+  document.body.classList.remove('supervisor-simple-page');
+  $('explore-view').classList.remove('simple-supervisor-view');
   const r = by(focus.type, focus.id);
   if (!r) { $('focus-header').innerHTML = '<h2>建立第一個探索起點</h2><p>先新增門市，再記錄拜訪。</p>'; $('focus-detail').innerHTML = ''; $('graph').innerHTML = ''; $('evidence-list').innerHTML = ''; $('evidence-count').textContent = '0'; return; }
   const vv = related(), storeIDs = r.csvTag ? all('store').filter(s => !storeIdentityPending(s) && sourceTags(s).includes(r.csvTag)).map(s => s.id) : [...new Set(vv.map(v => v.store))];
@@ -2101,7 +2217,7 @@ function renderFocus() {
   drawGraph();
 }
 function drawGraph() {
-  if (!payload || activeView !== 'explore') return;
+  if (!payload || activeView !== 'explore' || (focus.type==='person' && by('person',focus.id)?.supervisorKey)) return;
   const r = by(focus.type, focus.id); if (!r) return;
   if (storeIdentityPending(r)) { $('graph').innerHTML = ''; $('graph-pager').textContent = '門市身分待確認，暫不呈現關聯'; return; }
   const visits = related(), links = [];
@@ -3035,13 +3151,13 @@ async function saveEditor(event) {
 }
 function describeData(type, data) {
   if (type === 'visit') return `${name('store', data.store)} · ${data.date || '原始日期未提供'}\n${data.source}\n${data.sourceMissing ? 'Google 最新匯出：備註缺少（舊文保留）\n' : ''}${data.googleUpdatePending ? `Google 最新文字：${data.googleText}\nApp 文字待人工核對\n` : ''}\n${data.text}\n\n下次跟進：${data.next}\n主題：${data.topics.map(id => name('topic', id)).join('、')}\n人物：${data.people.map(id => name('person', id)).join('、')}\n附件：${data.attachments.map(a => a.name).join('、')}`;
-  const labels = { supervision:'小區與督導', supervisorKey:'督導來源身分識別', address: '地址', mapUrl: '地圖網址', lists: '來源清單', name: '名稱', city: '縣市', district: '地區', channel: '通路', attr: '屬性', contact: '窗口', nextRemember: '下次記得（未轉換文字）', nextRememberTasks: '下次記得任務', nextRememberImports: '提醒轉換原始文字', datePlanOrder: '每日門市順序', datePlans: '行程與準備（不代表實際拜訪）', monthlyVisits: '每月必訪名單（不代表實際拜訪）', preVisitInsights: '拜訪前線索（獨立分析）', preVisitInsightReviews: '線索人工審核與留存', preVisitInsightRelations: '共同人物關係對應', everyTimeMust: '每次必做、必給', desc: '備註', role: '職務', confirmed: '身分已核對', sameAs: '同一人連結', mergedInto: '已整併至門市 ID', mergeDecision: '整併裁定' };
-  const details = Object.entries(data).filter(([k]) => k !== 'csvSources' && k !== 'qualityDistinct').map(([k, v]) => `${labels[k] || k}：${k === 'sameAs' && v ? name('person', v) : ['supervision', 'monthlyVisits', 'datePlans', 'datePlanOrder', 'nextRememberTasks', 'nextRememberImports', 'preVisitInsights', 'preVisitInsightReviews', 'preVisitInsightRelations'].includes(k) ? JSON.stringify(v, null, 2) : v}`);
+  const labels = { relationshipNotes:'我補充的關係資訊', relationshipReviews:'關係審視歷史', supervision:'小區與督導', supervisorKey:'督導來源身分識別', address: '地址', mapUrl: '地圖網址', lists: '來源清單', name: '名稱', city: '縣市', district: '地區', channel: '通路', attr: '屬性', contact: '窗口', nextRemember: '下次記得（未轉換文字）', nextRememberTasks: '下次記得任務', nextRememberImports: '提醒轉換原始文字', datePlanOrder: '每日門市順序', datePlans: '行程與準備（不代表實際拜訪）', monthlyVisits: '每月必訪名單（不代表實際拜訪）', preVisitInsights: '拜訪前線索（獨立分析）', preVisitInsightReviews: '線索人工審核與留存', preVisitInsightRelations: '共同人物關係對應', everyTimeMust: '每次必做、必給', desc: '備註', role: '職務', confirmed: '身分已核對', sameAs: '同一人連結', mergedInto: '已整併至門市 ID', mergeDecision: '整併裁定' };
+  const details = Object.entries(data).filter(([k]) => k !== 'csvSources' && k !== 'qualityDistinct').map(([k, v]) => `${labels[k] || k}：${k === 'sameAs' && v ? name('person', v) : ['relationshipReviews','supervision', 'monthlyVisits', 'datePlans', 'datePlanOrder', 'nextRememberTasks', 'nextRememberImports', 'preVisitInsights', 'preVisitInsightReviews', 'preVisitInsightRelations'].includes(k) ? JSON.stringify(v, null, 2) : v}`);
   if (data.qualityDistinct !== undefined) details.push('此版本保存的不同門市核對：' + data.qualityDistinct.length + ' 組（辨識資料改變後需重新核對）');
   return details.join('\n');
 }
 function reviewHeads(record) { return record.heads.map(h => h.id).sort(); }
-const SAFE_CONFLICT_BLOCKED_FIELDS = new Set(['supervision','supervisorKey','monthlyVisits', 'datePlans', 'datePlanOrder', 'preVisitInsights', 'preVisitInsightReviews', 'preVisitInsightRelations', 'nextRememberTasks', 'nextRememberImports', 'nextRemember', 'attachments', 'csvSources', 'csvIdentityRules', 'qualityDistinct', 'storeMergeHistory', 'storeMergeStaleEntries', 'mergedInto', 'mergeDecision', 'sameAs', 'confirmed', 'googleText', 'googleUpdatePending', 'sourceMissing']);
+const SAFE_CONFLICT_BLOCKED_FIELDS = new Set(['relationshipReviews','relationshipNotes','supervision','supervisorKey','monthlyVisits', 'datePlans', 'datePlanOrder', 'preVisitInsights', 'preVisitInsightReviews', 'preVisitInsightRelations', 'nextRememberTasks', 'nextRememberImports', 'nextRemember', 'attachments', 'csvSources', 'csvIdentityRules', 'qualityDistinct', 'storeMergeHistory', 'storeMergeStaleEntries', 'mergedInto', 'mergeDecision', 'sameAs', 'confirmed', 'googleText', 'googleUpdatePending', 'sourceMissing']);
 function sameReviewValue(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
 function conflictMergeBase(record) {
   const versions = new Map(record.versions.map(version => [version.id, version]));
@@ -3848,7 +3964,7 @@ new ResizeObserver(drawGraph).observe($('graph-wrap'));
 if (!isSecureContext || !crypto.subtle) { $('gate-error').textContent = '需要受信任的 HTTPS 連線。請完成 Mac 與 iPhone 憑證設定，不要略過憑證警告。'; $('gate-submit').disabled = true; }
 else {
   showGate();
-  const draftBusy = () => busy || gateOpening || !!recoveryExportContext || !!weeklyContext || weeklyRunning || !!backupPreview || !!editorContext || !!inlineTextContext || !!reminderContext || !!dayPlanContext || !!monthlyVisitContext || !!payload?.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('store-reminder-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending() || (!$('gate').hidden && [...$('gate-form').querySelectorAll('input')].some(el => el.value && !['device-name'].includes(el.id)));
+  const draftBusy = () => !!payload?.supervisorDraft || busy || gateOpening || !!recoveryExportContext || !!weeklyContext || weeklyRunning || !!backupPreview || !!editorContext || !!inlineTextContext || !!reminderContext || !!dayPlanContext || !!monthlyVisitContext || !!payload?.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('store-reminder-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending() || (!$('gate').hidden && [...$('gate-form').querySelectorAll('input')].some(el => el.value && !['device-name'].includes(el.id)));
   for (const name of ['click', 'submit', 'keydown', 'beforeinput']) document.addEventListener(name, event => { if (updateHolding && event.target.closest('button,input,select,textarea,form,a')) { event.preventDefault(); event.stopImmediatePropagation(); } }, true);
   startUpdates({ api, hasToken: () => !!payload?.token, isBusy: draftBusy, setHold: held => { updateHolding = held; if (held) { syncEpoch++; syncScheduler.pause(); } else syncScheduler.wake(); document.body.classList.toggle('update-holding', held); }, notify: toast, onOfflineReady: () => { offlineReady = true; $('secure-state').textContent = '離線介面已備妥。iPhone 請先加入主畫面，再從主畫面進行配對。'; status(); } });
   if (location.hostname === 'localhost') $('secure-state').textContent = '請使用 Mac 顯示的 .local 網址開啟 App，管理頁才使用 localhost。';
