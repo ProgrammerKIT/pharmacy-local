@@ -374,3 +374,5 @@ button[data-csv-source-snapshot]{flex:none;min-height:44px}
 
 /* Remembered CSV places keep long source labels inside narrow panels. */
 #csv-exclusions,#csv-exclusion-manager{min-width:0;overflow-wrap:anywhere}
+
+.store-supervision{padding:14px 16px;margin:12px 0;border:1px solid var(--line,#c6dcd8);border-left:4px solid #168176;border-radius:12px;background:#f3f9f8}.store-supervision p{margin:8px 0}.supervised-stores{margin:16px 0}.supervision-preview-list article{padding:12px 0;border-bottom:1px solid #d4e2df;overflow-wrap:anywhere}.supervision-preview-list h3{font-size:1rem}.store-supervision .text-button{white-space:normal;overflow-wrap:anywhere}
