@@ -51,7 +51,7 @@ function supervisorRelationshipTick() {
   if(!document.hidden && activeView==='explore' && focus.type==='person' && by('person',focus.id)?.supervisorKey && !document.querySelector('dialog[open]')) renderFocus();
 }
 function supervisorRelationCard(entry, person, interactive=true) {
-  return `<article class="relation-value-card"><span class="relation-kicker">跨店筆記候選</span><h4>${esc(entry.title)}</h4><p class="relation-value"><strong>拜訪價值</strong>${esc(entry.value)}</p><details class="relation-evidence"><summary>查看兩邊筆記依據</summary>${entry.evidence.map(s=>`<div><strong>${esc(s.label)}</strong><blockquote>${esc(s.text)}</blockquote><small>引用版本：${esc(s.revisionId)}</small></div>`).join('')}</details>${interactive?`<div class="relation-review-actions" aria-label="關係審視">${Object.entries(supervisorReviewLabels).map(([status,label])=>`<button type="button" ${status==='confirmed'?'class="primary"':''} data-supervisor-review="${status}" data-review-entry="${esc(entry.id)}" data-review-person="${esc(person.id)}">${label}</button>`).join('')}</div>`:''}</article>`;
+  return `<article class="relation-value-card"><span class="relation-kicker">跨店筆記候選</span><h4>${esc(entry.title)}</h4><p class="relation-value"><strong>拜訪價值</strong>${esc(entry.value)}</p><details class="relation-evidence"><summary>查看兩邊筆記依據</summary>${entry.evidence.map(s=>`<div><strong>${esc(s.label)}</strong><blockquote>${esc(s.text)}</blockquote><small>引用版本：${esc(s.revisionId)}</small></div>`).join('')}</details>${interactive?`<div class="relation-review-actions" aria-label="關係審視">${Object.entries(supervisorReviewLabels).map(([status,label])=>`<button type="button" ${status==='confirmed'?'class="primary"':''} data-supervisor-review="${status}" data-review-entry="${esc(entry.id)}" data-review-person="${esc(person.id)}" data-review-head="${esc(person.heads[0].id)}" data-review-basis="${esc(entry.basis)}" data-review-revisions="${esc(JSON.stringify(entry.evidence.map(s=>s.revisionId)))}">${label}</button>`).join('')}</div>`:''}</article>`;
 }
 function supervisorRelationsHTML(person) {
   const entries=supervisorRelationEntries(person.id), events=supervisorReviewHistory(payload.bundle,person.id), latest=new Map();
@@ -100,6 +100,8 @@ document.addEventListener('click',event=>{
  if(editorContext || payload?.supervisorDraft)return toast('先儲存目前筆記，再審視關係。');
  void run(async()=>{
    const ctx=captureCSVSaveContext(),entry=supervisorRelationEntries(b.dataset.reviewPerson).find(e=>e.id===b.dataset.reviewEntry);
+   const person=by('person',b.dataset.reviewPerson);
+   if(!entry || person?.heads?.[0]?.id!==b.dataset.reviewHead || entry.basis!==b.dataset.reviewBasis || JSON.stringify(entry.evidence.map(s=>s.revisionId))!==b.dataset.reviewRevisions) throw new Error('畫面中的來源或人物已有變更，請重新查看依據再審視。');
    const bundle=reviewSupervisorRelationship(payload.bundle,b.dataset.reviewPerson,entry,b.dataset.supervisorReview,payload.device);
    if(bundle===payload.bundle)return;
    await persist({...payload,bundle,dirty:true},{guard:()=>assertCSVSaveContext(ctx)});render();toast('已記錄「'+supervisorReviewLabels[b.dataset.supervisorReview]+'」，原筆記與歷史保留。');
