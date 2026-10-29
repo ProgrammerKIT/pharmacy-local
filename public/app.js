@@ -1,3 +1,4 @@
+import { planStoreSupervision, applyStoreSupervision, supervisedStores } from './core.js';
 import { setupWeeklyRecovery, prepareWeeklyRecovery, createRecoveryBackup, newMeta, checkEnvelope, derive, seal, unseal, planBackupImport, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates, buildStoreEnrichmentRequest, planStoreEnrichment, applyStoreEnrichment, readonlyHealthAudit, dataSafetySummary, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, addReminderTasks, convertReminderTasks, completeReminderTask, reminderTaskHistory, searchStoreVisitText, scanInsightChanges, storeInsightDisplayForStore, storeInsightEvidenceForEntry, insightReviewForEntry, insightSharedReviewForEntry, storeInsightReviewHistory, planInsightReview, applyInsightReview, planStoreInsights, applyStoreInsights, planStoreInsightRelations, applyStoreInsightRelations, buildStoreInsightsSource, planStoreMerge, applyStoreMerge } from './core.js';
 import { readWeeklyRecovery, writeWeeklyRecovery, readLocal, writeLocal, archiveAndReplaceLocal, listLocalArchives, readLocalArchive } from './db.js';
 import { dayPlanDate, shiftDayPlanDate, dayPlanForStore, dayPlanOverview, dayItineraryBasis, applyDayItineraryAction } from './core.js';
@@ -1433,6 +1434,53 @@ async function saveSingleStoreVisit(event) {
   }, 'single-store-error');
 }
 // Private insights are imported only after an explicit, source-checked preview.
+let supervisionPreview = null, supervisorOriginStore = '';
+function storeSupervisionHTML(store) {
+  const a=store?.supervision; if (!a) return '';
+  const person=by('person',a.personId), usable=person && !person.deleted && !person.conflict && !person.sameAs && !store.conflict;
+  return `<section class="store-supervision"><strong>所屬小區：${esc(a.areaCode)} ${esc(a.areaName)}</strong><p>負責督導：${usable ? `<button class="text-button" data-open-supervisor="${esc(person.id)}" data-supervisor-store="${esc(store.id)}">${esc(person.name)} ›</button>` : '<span>人物狀態待核對</span>'}</p><details><summary>分區來源</summary><p>${esc(a.organization)} · 門市編號 ${esc(a.storeCode)} · ${esc(a.sourceLabel)}</p><p>${esc(a.sourceDocument.name)} · 生效日期：${esc(a.effectiveDate || '來源未提供')}</p><button class="text-button" data-supervision-source="${esc(store.id)}">下載原始分區圖</button></details></section>`;
+}
+function supervisorProfileHTML(person) {
+  const stores=supervisedStores(records,person.id);
+  if (!person.supervisorKey && !stores.length) return '';
+  return `<section class="supervised-stores"><h3>所轄門市 · ${stores.length} 間</h3><p class="muted">依已保存分區資料列出；拜訪原文只計算明確提及此人物的紀錄。</p>${stores.map(s=>`<p><button class="text-button" data-visit-brief="${esc(s.id)}">${esc(s.name)}</button> · ${esc(s.supervision.areaName)}</p>`).join('')}</section>`;
+}
+function openSupervisor(personId,storeId) {
+  if (singleStoreContext || inlineTextContext || editorContext || reminderContext || payload?.draft || payload?.inlineTextDraft || storedReminderDrafts().length) return toast('請先完成或收起目前草稿，再查看督導；原輸入保留。');
+  const person=by('person',personId), store=by('store',storeId);
+  if (!person || person.conflict || person.deleted || person.sameAs || store?.supervision?.personId!==personId) return toast('督導或門市資料已變更，請重新核對。');
+  supervisorOriginStore=storeId; $('review').close(); navigate('person',personId);
+}
+function supervisionSelection() {return [...document.querySelectorAll('[data-supervision-store]:checked')].map(e=>e.dataset.supervisionStore);}
+function updateSupervisionControls(event) {
+  if (event?.target.id==='supervision-all') document.querySelectorAll('[data-supervision-store]').forEach(e=>e.checked=event.target.checked);
+  if (event?.target.id!=='supervision-ack' && $('supervision-ack')) $('supervision-ack').checked=false;
+  const count=supervisionSelection().length;
+  if ($('supervision-count')) $('supervision-count').textContent=`已選 ${count} 間`;
+  if ($('apply-store-supervision')) $('apply-store-supervision').disabled=!count || !$('supervision-ack')?.checked;
+}
+async function previewSupervisionFile(file) {
+  assertInsightsIdle();
+  if (file.size>6*1024*1024) throw new Error('小區督導資料包超過6 MB。');
+  const ctx=captureCSVSaveContext(), packet=JSON.parse(await file.text()), plan=await planStoreSupervision(payload.bundle,packet);
+  assertCSVSaveContext(ctx); assertInsightsIdle();
+  supervisionPreview={ctx,packet,plan};
+  $('review-title').textContent='小區與督導 · 套用前核對';
+  $('review-body').innerHTML=`<p>來源：${esc(packet.sourceDocument.name)}。生效日期：${esc(packet.effectiveDate || '來源未提供')}。</p><p>可套用 ${plan.summary.ready} 間；相同 ${plan.summary.unchanged} 間；待核對 ${plan.summary.review} 項。</p><p>僅追加所選門市的小區與督導版本，以及所需人物與原圖。原有文字、待辦與歷史保留。</p><label class="check"><input type="checkbox" id="supervision-all">全選可套用門市</label><div class="supervision-preview-list">${plan.rows.map(row=>`<article><h3>${row.status==='ready' ? `<label class="check"><input type="checkbox" data-supervision-store="${esc(row.storeId)}">${esc(row.storeName)}</label>` : esc(row.storeName)}</h3><p>${esc(row.areaCode)} ${esc(row.areaName)} ／ ${esc(row.supervisorName)}</p><p class="muted">來源：${esc(row.storeCode)} ${esc(row.sourceLabel)}</p>${row.before ? `<p>原指派：${esc(row.before.areaName)} ／ ${esc(name('person',row.before.personId))}（舊版保留）</p>` : ''}<p>${row.status==='ready' ? '可套用' : row.status==='unchanged' ? '相同，不重複寫入' : esc(row.reason)}</p></article>`).join('')}</div><p id="supervision-count">已選 0 間</p><label class="check"><input type="checkbox" id="supervision-ack">我已核對所選門市、小區、督導及來源，同意保存。</label><p id="supervision-error" class="error" role="alert"></p><p id="supervision-result" role="status"></p><div class="dialog-footer"><button id="supervision-cancel" data-close="review">取消，不修改</button><button id="apply-store-supervision" class="primary" disabled>確認所選名單並加密保存</button></div>`;
+  openDialog($('review'));
+}
+async function commitSupervision() {
+  const preview=supervisionPreview, selected=supervisionSelection();
+  if (!preview || !$('review').open || !$('supervision-ack')?.checked || !selected.length) throw new Error('請選擇門市並核對確認。');
+  assertCSVSaveContext(preview.ctx);
+  const result=await applyStoreSupervision(payload.bundle,preview.packet,preview.plan,selected,payload.device);
+  const guard=()=>{assertCSVSaveContext(preview.ctx);if(supervisionPreview!==preview || !$('review').open || !$('supervision-ack')?.checked || JSON.stringify(supervisionSelection())!==JSON.stringify(selected)) throw new Error('確認畫面已變更；尚未寫入。');};
+  guard(); await persist({...payload,bundle:result.bundle,dirty:true},{guard});
+  supervisionPreview=null; render();
+  $('review-body').innerHTML=`<p id="supervision-result" role="status">已加密保存 ${result.summary.stores} 間門市的小區與督導、新增 ${result.summary.people} 位人物。等待 Mac 同步確認。</p><p>所選名單：${selected.map(id=>esc(name('store',id))).join('、')}</p><div class="dialog-footer"><button data-close="review">完成</button></div>`;
+  toast('小區與督導已保存。');
+}
+
 function assertInsightsIdle() {
   if (!payload || editorContext || singleStoreContext || inlineTextContext || reminderContext || dayPlanContext || monthlyVisitContext || payload.draft || payload.inlineTextDraft || storedReminderDrafts().length || csvImport.hasPending() || backupPreview || $('review').open || $('quick-text-dialog').open || $('store-reminder-dialog').open || $('rebuild-dialog').open || attendancePrompt) throw new Error('請先完成目前編輯、草稿或核對，再處理拜訪前線索。');
   if (pendingLock || document.hidden) throw new Error('請回到 App 後重新操作。');
@@ -1685,7 +1733,7 @@ function openVisitBrief(storeId, { capture = false, restoreDraft = null, preserv
   const explicit = explicitItems ? `<section class="visit-brief-section"><h3>已明確連結的人物與主題</h3><p class="muted">每項連結都保留建立它的拜訪原文。</p><div class="brief-linked-list">${explicitItems}</div></section>` : '';
   singleStoreContext = null; review.dataset.singleStoreId = storeId;
   $('review-title').textContent = '單店拜訪｜' + brief.store.name;
-  reviewBody.innerHTML = `<div class="visit-brief-head"><p>${esc(location)} · ${brief.visitCount} 筆正式拜訪紀錄</p>${storeAttendanceHTML(storeId, true)}</div>${reminders}${storeOriginalTextHTML(brief.store)}${storeMergeOriginsHTML(brief.store)}${singleStoreCaptureHTML()}${storeInsightsHTML(storeId)}${brief.followups.length ? `<section class="visit-brief-section brief-followups"><h3>明確填寫的下次跟進</h3>${followups}</section>` : ''}<details class="brief-history" ${preserved ? preserved.historyOpen ? 'open' : '' : 'open'}><summary>既有拜訪原文 · 全部 ${history.length} 筆（可直接修改）</summary><p class="muted">點一下既有拜訪原文即可直接輸入；修改會先加密保存成本機草稿，核對修改前後差異並最後確認後，才建立同一筆拜訪的新版本。這裡不去重，每筆原文、下次跟進與歷史都保留。</p>${historyHTML}</details><details class="brief-secondary" ${preserved?.secondaryOpen ? 'open' : ''}><summary>查看人物、主題、原文候選與最近拜訪原文</summary><div class="candidate-disclaimer"><strong>內容來源與限制</strong><p>只排列你已填寫的欄位、正式拜訪原文與可追溯候選；不生成或改寫正式拜訪內容。只把全半形、英文字母大小寫與空白差異視為相同內容，標點或用詞不同仍分開；完整歷史永遠保留每一筆。</p></div>${explicit}<section class="visit-brief-section"><h3>原文候選提示</h3><p class="muted">點選每個候選可核對命中的原句、來源與原文狀態。</p><div class="candidate-chip-list">${candidates}</div></section><section class="visit-brief-section"><h3>最近 ${recentCount} 筆拜訪原文${brief.recent.length < recentCount ? ` · 合併顯示 ${brief.recent.length} 組` : ''}</h3>${recent}</section></details>`;
+  reviewBody.innerHTML = `<div class="visit-brief-head"><p>${esc(location)} · ${brief.visitCount} 筆正式拜訪紀錄</p>${storeAttendanceHTML(storeId, true)}</div>${storeSupervisionHTML(brief.store)}${reminders}${storeOriginalTextHTML(brief.store)}${storeMergeOriginsHTML(brief.store)}${singleStoreCaptureHTML()}${storeInsightsHTML(storeId)}${brief.followups.length ? `<section class="visit-brief-section brief-followups"><h3>明確填寫的下次跟進</h3>${followups}</section>` : ''}<details class="brief-history" ${preserved ? preserved.historyOpen ? 'open' : '' : 'open'}><summary>既有拜訪原文 · 全部 ${history.length} 筆（可直接修改）</summary><p class="muted">點一下既有拜訪原文即可直接輸入；修改會先加密保存成本機草稿，核對修改前後差異並最後確認後，才建立同一筆拜訪的新版本。這裡不去重，每筆原文、下次跟進與歷史都保留。</p>${historyHTML}</details><details class="brief-secondary" ${preserved?.secondaryOpen ? 'open' : ''}><summary>查看人物、主題、原文候選與最近拜訪原文</summary><div class="candidate-disclaimer"><strong>內容來源與限制</strong><p>只排列你已填寫的欄位、正式拜訪原文與可追溯候選；不生成或改寫正式拜訪內容。只把全半形、英文字母大小寫與空白差異視為相同內容，標點或用詞不同仍分開；完整歷史永遠保留每一筆。</p></div>${explicit}<section class="visit-brief-section"><h3>原文候選提示</h3><p class="muted">點選每個候選可核對命中的原句、來源與原文狀態。</p><div class="candidate-chip-list">${candidates}</div></section><section class="visit-brief-section"><h3>最近 ${recentCount} 筆拜訪原文${brief.recent.length < recentCount ? ` · 合併顯示 ${brief.recent.length} 組` : ''}</h3>${recent}</section></details>`;
   $('review-persistent-actions').classList.remove('capture-active');
   $('review-persistent-actions').innerHTML = singleStoreIdleActions(storeId);
   $('review-persistent-actions').hidden = false;
@@ -2041,12 +2089,13 @@ function renderFocus() {
   const r = by(focus.type, focus.id);
   if (!r) { $('focus-header').innerHTML = '<h2>建立第一個探索起點</h2><p>先新增門市，再記錄拜訪。</p>'; $('focus-detail').innerHTML = ''; $('graph').innerHTML = ''; $('evidence-list').innerHTML = ''; $('evidence-count').textContent = '0'; return; }
   const vv = related(), storeIDs = r.csvTag ? all('store').filter(s => !storeIdentityPending(s) && sourceTags(s).includes(r.csvTag)).map(s => s.id) : [...new Set(vv.map(v => v.store))];
-  $('focus-header').innerHTML = `<div class="focus-top"><span class="pill ${r.type === 'person' && !r.confirmed ? 'warn' : ''}">${kinds[r.type]}${r.type === 'person' ? r.confirmed ? ' · 已核對' : ' · 待確認' : ''}</span><div class="focus-actions">${trail.length ? '<button id="back-node" class="text-button">← 上一個節點</button>' : ''}<button id="candidate-overview" class="text-button">跨店候選摘要</button></div></div><h2>${esc(r.name)}</h2><p class="muted">${esc(r.type === 'store' ? `${r.city} ${r.district} · ${r.channel}` : r.type === 'person' ? r.role : r.desc)}</p>${r.conflict ? `<button class="danger" data-review="${r.type}:${esc(r.id)}">先處理這個節點的衝突</button>` : ''}`;
+  if (r.type === 'person') for (const store of supervisedStores(records,r.id)) if (!storeIDs.includes(store.id)) storeIDs.push(store.id);
+  $('focus-header').innerHTML = `<div class="focus-top"><span class="pill ${r.type === 'person' && !r.confirmed ? 'warn' : ''}">${kinds[r.type]}${r.type === 'person' ? r.confirmed ? ' · 已核對' : ' · 待確認' : ''}</span><div class="focus-actions">${trail.length ? '<button id="back-node" class="text-button">← 上一個節點</button>' : ''}${r.type === 'person' ? `<button class="text-button" data-edit="person:${esc(r.id)}">編輯個人資訊</button><button class="text-button" data-history="person:${esc(r.id)}">個人資料歷史</button>${supervisorOriginStore ? '<button id="supervisor-return-store" class="text-button">返回原門市</button>' : ''}` : ''}<button id="candidate-overview" class="text-button">跨店候選摘要</button></div></div><h2>${esc(r.name)}</h2><p class="muted">${esc(r.type === 'store' ? `${r.city} ${r.district} · ${r.channel}` : r.type === 'person' ? r.role : r.desc)}</p>${r.conflict ? `<button class="danger" data-review="${r.type}:${esc(r.id)}">先處理這個節點的衝突</button>` : ''}`;
   const pendingIdentity = storeIdentityPending(r), topics = pendingIdentity ? [] : [...new Set(vv.flatMap(v => v.topics))], people = pendingIdentity ? [] : [...new Set(vv.flatMap(v => v.people))];
   if (r.type === 'store' && !pendingIdentity) topics.push(...all('topic').filter(t => t.csvTag && sourceTags(r).includes(t.csvTag)).map(t => t.id));
   const candidates = r.type === 'store' && !pendingIdentity ? relationCandidates(r.id) : [];
   const candidateHTML = r.type === 'store' ? `<h3>原文候選關聯</h3><p class="muted">系統只建立可追溯到原文的唯讀候選，不會把候選當成已確認需求。點節點可查看原句、來源與其他門市。</p><div class="candidate-chip-list">${candidates.map(item => `<button type="button" class="candidate-chip ${esc(item.statusKind)}" data-candidate-key="${esc(item.key)}" data-candidate-store="${esc(r.id)}"><strong>${esc(item.name)}</strong><span>${esc(item.category)} · ${esc(item.statusLabel)} · ${item.visitCount} 筆</span></button>`).join('') || '<span class="muted">目前原文沒有命中可稽核規則；系統不會為了填滿關聯圖而猜測。</span>'}</div>` : '';
-  $('focus-detail').innerHTML = `<div class="metrics"><div><strong>${storeIDs.length}</strong><span>相關門市</span></div><div><strong>${vv.length}</strong><span>相關原文</span></div><div><strong>${vv.filter(v => v.csvSources?.length).length}</strong><span>可追溯 CSV</span></div>${r.type === 'store' ? `<div><strong>${candidates.length}</strong><span>候選關聯</span></div>` : ''}</div>${r.type === 'store' ? `<h3>門市窗口</h3><p>${esc(r.contact)}</p><p class="muted">${esc(r.attr)}</p><p>${esc(r.address || '')}</p><p class="muted">${esc((r.lists || []).join('、'))}</p><p>${sourceTags(r).map(t => `<span class="pill">${esc(t)}</span>`).join(' ')}</p>${sourceButton(r)}` : ''}${r.type === 'person' ? `<p>${esc(r.desc)}</p>${r.sameAs ? `<p>已確認連到 ${chip('person', r.sameAs)}</p>` : ''}` : ''}<h3>已明確連結的主題</h3><div class="chips">${topics.map(id => chip('topic', id)).join('') || '<span class="muted">尚未手動連結主題</span>'}</div><h3>已明確連結的人物</h3><div class="chips">${people.map(id => chip('person', id)).join('') || '<span class="muted">尚未手動連結人物</span>'}</div>${candidateHTML}<div class="insight"><h3>證據層級</h3><p>「已明確連結」與「系統候選」分開顯示。原文提及、否定／未遇到、詢問／待釐清都保留各自狀態；共同提及不能直接當成市場需求或人際關係。</p></div>`;
+  $('focus-detail').innerHTML = `<div class="metrics"><div><strong>${storeIDs.length}</strong><span>相關門市</span></div><div><strong>${vv.length}</strong><span>相關原文</span></div><div><strong>${vv.filter(v => v.csvSources?.length).length}</strong><span>可追溯 CSV</span></div>${r.type === 'store' ? `<div><strong>${candidates.length}</strong><span>候選關聯</span></div>` : ''}</div>${r.type === 'store' ? `${storeSupervisionHTML(r)}<h3>門市窗口</h3><p>${esc(r.contact)}</p><p class="muted">${esc(r.attr)}</p><p>${esc(r.address || '')}</p><p class="muted">${esc((r.lists || []).join('、'))}</p><p>${sourceTags(r).map(t => `<span class="pill">${esc(t)}</span>`).join(' ')}</p>${sourceButton(r)}` : ''}${r.type === 'person' ? `${supervisorProfileHTML(r)}<h3>個人資訊與備註</h3><p>${esc(r.desc || '尚未填寫，可按編輯個人資訊新增。')}</p>${r.sameAs ? `<p>已確認連到 ${chip('person', r.sameAs)}</p>` : ''}` : ''}<h3>已明確連結的主題</h3><div class="chips">${topics.map(id => chip('topic', id)).join('') || '<span class="muted">尚未手動連結主題</span>'}</div><h3>已明確連結的人物</h3><div class="chips">${people.map(id => chip('person', id)).join('') || '<span class="muted">尚未手動連結人物</span>'}</div>${candidateHTML}<div class="insight"><h3>證據層級</h3><p>「已明確連結」與「系統候選」分開顯示。原文提及、否定／未遇到、詢問／待釐清都保留各自狀態；共同提及不能直接當成市場需求或人際關係。</p></div>`;
   if (pendingIdentity) $('focus-detail').innerHTML = '<p class="conflict-card">需要後續的確認：原文保留，門市身分核實前暫不建立關聯。請到編輯門市核實名稱與來源後，明確勾選已核對身分。</p>' + sourceButton(r);
   $('evidence-list').innerHTML = vv.map(noteHTML).join('') || '<p class="empty">尚無相關拜訪紀錄。</p>'; $('evidence-count').textContent = vv.length;
   drawGraph();
@@ -2068,6 +2117,8 @@ function drawGraph() {
     }
   } else if (r.csvTag) all('store').filter(s => !storeIdentityPending(s) && sourceTags(s).includes(r.csvTag)).forEach(s => add('store', s.id));
   else visits.forEach(v => add('store', v.store));
+  if (focus.type === 'store' && r.supervision && supervisedStores(records,r.supervision.personId).some(s=>s.id===r.id)) {add('person',r.supervision.personId);const link=links.find(n=>n.type==='person' && n.id===r.supervision.personId);if(link)link.organizationLabel='負責督導';}
+  if (focus.type === 'person') for (const s of supervisedStores(records,r.id)) {add('store',s.id);const link=links.find(n=>n.type==='store' && n.id===s.id);if(link)link.organizationLabel='所轄門市';}
   if (focus.type === 'person') all('person').filter(p => p.id !== focus.id && (p.name.includes(r.name.replace('（待確認）', '')) || r.name.includes(p.name.replace('（待確認）', '')))).forEach(p => add('person', p.id));
   graphPage = Math.min(graphPage, Math.max(0, Math.ceil(links.length / 8) - 1));
   $('graph-pager').innerHTML = links.length > 8 ? `<button data-graph-page="-1" ${graphPage === 0 ? 'disabled' : ''}>上一頁</button><span>節點 ${graphPage * 8 + 1}–${Math.min(links.length, (graphPage + 1) * 8)}／${links.length}</span><button data-graph-page="1" ${graphPage === Math.ceil(links.length / 8) - 1 ? 'disabled' : ''}>下一頁</button>` : `<span>全部 ${links.length} 個關聯節點</span>`;
@@ -2080,7 +2131,7 @@ function drawGraph() {
     const pending = n.candidate || n.type === 'person' && !e.confirmed || r.type === 'person' && !r.confirmed;
     edges += `<path class="edge ${n.candidate ? 'candidate' : pending ? 'pending' : ''}" d="M${cx} ${cy} Q${cx} ${y} ${x} ${y}"/>`;
     const label = e.name.length > 10 ? e.name.slice(0, 9) + '…' : e.name;
-    const subtitle = n.candidate ? `${n.statusLabel} · ${n.visitCount}筆` : pending ? '同名待核對' : r.csvTag ? '原始標籤相同' : focus.type === 'topic' ? evidenceKind(visits.filter(v => v.store === n.id).map(v => v.text).join('\n'), entityRule(r)).label : kinds[n.type];
+    const subtitle = n.organizationLabel || (n.candidate ? `${n.statusLabel} · ${n.visitCount}筆` : pending ? '同名待核對' : r.csvTag ? '原始標籤相同' : focus.type === 'topic' ? evidenceKind(visits.filter(v => v.store === n.id).map(v => v.text).join('\n'), entityRule(r)).label : kinds[n.type]);
     const attrs = n.candidate ? `data-candidate-key="${esc(n.key)}" data-candidate-store="${esc(n.storeId)}"` : `data-node-type="${n.type}" data-node-id="${esc(n.id)}"`;
     shapes += `<g class="node ${n.candidate ? 'candidate' : pending ? 'pending' : ''}" role="button" tabindex="0" aria-label="${n.candidate ? '查看候選關聯' : '探索'}${esc(e.name)}" ${attrs}><title>${esc(e.name)} · ${esc(n.candidate ? n.category + ' · ' + n.statusLabel + '；系統候選不是已確認事實' : subtitle)}</title><rect x="${x - nw / 2}" y="${y - 27}" width="${nw}" height="54" rx="9"/><text x="${x}" y="${y - 2}" text-anchor="middle">${esc(label)}</text><text class="sub" x="${x}" y="${y + 16}" text-anchor="middle">${esc(subtitle)}</text></g>`;
   });
@@ -2540,7 +2591,7 @@ function openEditor(type, id = null, restoreDraft = null) {
     let fields = input('f-name', `${kinds[type]}名稱`, d.name, 200, true);
     if (type === 'store') fields += `${reminderTasksHTML(old || d, false)}${legacyReminderDraftHTML(d)}${reminderOptionsHTML('f-next-remember')}<label>新增待辦（每行一項）<textarea id="f-next-remember" maxlength="2000" placeholder="自由填寫，換行可新增另一項"></textarea></label><p class="muted">只新增任務，不改動已保存的待辦與完成歷史。勾選完成請回到拜訪頁。</p><label>每次必做、必給<textarea id="f-every-time-must" maxlength="2000">${esc(d.everyTimeMust || '')}</textarea></label><p id="editor-reminder-draft-state" class="draft-state" role="status">${old ? '提醒欄位會加密暫存；重新開啟可從門市提醒繼續。其他門市資料仍須按儲存。' : '請先儲存建立門市；之後填寫門市提醒可使用加密草稿。'}</p>${input('f-contact', '主要窗口', d.contact)}${input('f-attr', '門市特性／客群', d.attr)}<details class="advanced-fields"><summary>地址與系統資料</summary><p class="muted">這些欄位供地理整理與來源核對；不知道時可以留空，不影響拜訪紀錄。</p><div class="field-grid">${input('f-city', '縣市', d.city)}${input('f-district', '地區', d.district)}</div><label>通路<select id="f-channel">${[...new Set(['', '連鎖', '獨立', '加盟', '診所', '其他', ...(d.channel ? [d.channel] : [])])].map(c => `<option value="${esc(c)}" ${c === d.channel ? 'selected' : ''}>${esc(c || '未分類')}</option>`).join('')}</select></label>${input('f-address', '地址', d.address, 2000)}${input('f-map-url', 'Google Maps 網址（只保存，不自動開啟）', d.mapUrl, 2000)}</details>`;
     if (type === 'store' && d.csvIdentityPending) fields += '<label class="check"><input type="checkbox" id="f-identity-reviewed">我已核實此門市身分與來源，解除待確認標記並允許關聯分析</label>';
-    if (type === 'person') fields += `${input('f-role', '職務／與門市的關係', d.role)}${textarea('f-desc', '身分證據與備註', d.desc)}<label class="check"><input type="checkbox" id="f-confirmed" ${d.confirmed ? 'checked' : ''}> 我已核對此人物的身分</label><label>已確認是同一人時，連到<select id="f-same"><option value="">保持獨立人物</option>${all('person').filter(p => p.id !== id && !p.sameAs).map(p => `<option value="${esc(p.id)}" ${d.sameAs === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label><p class="muted">須先勾選已核對身分。此設定只合併探索路徑，不改寫原始拜訪文字。</p>`;
+    if (type === 'person') fields += `${input('f-role', '職務／與門市的關係', d.role)}${textarea('f-desc', '個人資訊與備註', d.desc)}<label class="check"><input type="checkbox" id="f-confirmed" ${d.confirmed ? 'checked' : ''}> 我已核對此人物的身分</label><label>已確認是同一人時，連到<select id="f-same"><option value="">保持獨立人物</option>${all('person').filter(p => p.id !== id && !p.sameAs).map(p => `<option value="${esc(p.id)}" ${d.sameAs === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label><p class="muted">須先勾選已核對身分。此設定只合併探索路徑，不改寫原始拜訪文字。</p>`;
     if (type === 'topic') fields += textarea('f-desc', '主題定義與備註', d.desc);
     $('editor-fields').innerHTML = fields;
     if (type === 'store') {
@@ -2984,13 +3035,13 @@ async function saveEditor(event) {
 }
 function describeData(type, data) {
   if (type === 'visit') return `${name('store', data.store)} · ${data.date || '原始日期未提供'}\n${data.source}\n${data.sourceMissing ? 'Google 最新匯出：備註缺少（舊文保留）\n' : ''}${data.googleUpdatePending ? `Google 最新文字：${data.googleText}\nApp 文字待人工核對\n` : ''}\n${data.text}\n\n下次跟進：${data.next}\n主題：${data.topics.map(id => name('topic', id)).join('、')}\n人物：${data.people.map(id => name('person', id)).join('、')}\n附件：${data.attachments.map(a => a.name).join('、')}`;
-  const labels = { address: '地址', mapUrl: '地圖網址', lists: '來源清單', name: '名稱', city: '縣市', district: '地區', channel: '通路', attr: '屬性', contact: '窗口', nextRemember: '下次記得（未轉換文字）', nextRememberTasks: '下次記得任務', nextRememberImports: '提醒轉換原始文字', datePlanOrder: '每日門市順序', datePlans: '行程與準備（不代表實際拜訪）', monthlyVisits: '每月必訪名單（不代表實際拜訪）', preVisitInsights: '拜訪前線索（獨立分析）', preVisitInsightReviews: '線索人工審核與留存', preVisitInsightRelations: '共同人物關係對應', everyTimeMust: '每次必做、必給', desc: '備註', role: '職務', confirmed: '身分已核對', sameAs: '同一人連結', mergedInto: '已整併至門市 ID', mergeDecision: '整併裁定' };
-  const details = Object.entries(data).filter(([k]) => k !== 'csvSources' && k !== 'qualityDistinct').map(([k, v]) => `${labels[k] || k}：${k === 'sameAs' && v ? name('person', v) : ['monthlyVisits', 'datePlans', 'datePlanOrder', 'nextRememberTasks', 'nextRememberImports', 'preVisitInsights', 'preVisitInsightReviews', 'preVisitInsightRelations'].includes(k) ? JSON.stringify(v, null, 2) : v}`);
+  const labels = { supervision:'小區與督導', supervisorKey:'督導來源身分識別', address: '地址', mapUrl: '地圖網址', lists: '來源清單', name: '名稱', city: '縣市', district: '地區', channel: '通路', attr: '屬性', contact: '窗口', nextRemember: '下次記得（未轉換文字）', nextRememberTasks: '下次記得任務', nextRememberImports: '提醒轉換原始文字', datePlanOrder: '每日門市順序', datePlans: '行程與準備（不代表實際拜訪）', monthlyVisits: '每月必訪名單（不代表實際拜訪）', preVisitInsights: '拜訪前線索（獨立分析）', preVisitInsightReviews: '線索人工審核與留存', preVisitInsightRelations: '共同人物關係對應', everyTimeMust: '每次必做、必給', desc: '備註', role: '職務', confirmed: '身分已核對', sameAs: '同一人連結', mergedInto: '已整併至門市 ID', mergeDecision: '整併裁定' };
+  const details = Object.entries(data).filter(([k]) => k !== 'csvSources' && k !== 'qualityDistinct').map(([k, v]) => `${labels[k] || k}：${k === 'sameAs' && v ? name('person', v) : ['supervision', 'monthlyVisits', 'datePlans', 'datePlanOrder', 'nextRememberTasks', 'nextRememberImports', 'preVisitInsights', 'preVisitInsightReviews', 'preVisitInsightRelations'].includes(k) ? JSON.stringify(v, null, 2) : v}`);
   if (data.qualityDistinct !== undefined) details.push('此版本保存的不同門市核對：' + data.qualityDistinct.length + ' 組（辨識資料改變後需重新核對）');
   return details.join('\n');
 }
 function reviewHeads(record) { return record.heads.map(h => h.id).sort(); }
-const SAFE_CONFLICT_BLOCKED_FIELDS = new Set(['monthlyVisits', 'datePlans', 'datePlanOrder', 'preVisitInsights', 'preVisitInsightReviews', 'preVisitInsightRelations', 'nextRememberTasks', 'nextRememberImports', 'nextRemember', 'attachments', 'csvSources', 'csvIdentityRules', 'qualityDistinct', 'storeMergeHistory', 'storeMergeStaleEntries', 'mergedInto', 'mergeDecision', 'sameAs', 'confirmed', 'googleText', 'googleUpdatePending', 'sourceMissing']);
+const SAFE_CONFLICT_BLOCKED_FIELDS = new Set(['supervision','supervisorKey','monthlyVisits', 'datePlans', 'datePlanOrder', 'preVisitInsights', 'preVisitInsightReviews', 'preVisitInsightRelations', 'nextRememberTasks', 'nextRememberImports', 'nextRemember', 'attachments', 'csvSources', 'csvIdentityRules', 'qualityDistinct', 'storeMergeHistory', 'storeMergeStaleEntries', 'mergedInto', 'mergeDecision', 'sameAs', 'confirmed', 'googleText', 'googleUpdatePending', 'sourceMissing']);
 function sameReviewValue(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
 function conflictMergeBase(record) {
   const versions = new Map(record.versions.map(version => [version.id, version]));
@@ -3514,6 +3565,11 @@ document.addEventListener('click', event => {
     $(b.dataset.close).close(); if (b.dataset.close === 'rebuild-dialog') $('rebuild-connect-form').reset(); if (b.dataset.close === 'editor') editorContext = null; if (b.dataset.close === 'store-reminder-dialog') reminderContext = null; return;
   }
   if (updateHolding || busy || !payload) return;
+  if (b.id==='import-store-supervision') return $('supervision-file').click();
+  if (b.id==='apply-store-supervision') return run(commitSupervision,'supervision-error');
+  if (b.dataset.openSupervisor) return openSupervisor(b.dataset.openSupervisor,b.dataset.supervisorStore);
+  if (b.id==='supervisor-return-store') return openVisitBrief(supervisorOriginStore);
+  if (b.dataset.supervisionSource) {const a=by('store',b.dataset.supervisionSource)?.supervision;if(a) download(unb64(payload.bundle.blobs[a.sourceDocument.blob]),a.sourceDocument.name.replace(/[\/\\]/g,'_'),a.sourceDocument.mime);return;}
   if (b.dataset.insightChanges) return run(() => openInsightChanges(b.dataset.insightChanges), 'insight-review-error');
   if (b.dataset.insightChangeRead) return run(() => readInsightChange(b.dataset.insightChangeRead), 'insight-changes-error');
   if (b.hasAttribute('data-monthly-close')) return closeMonthlyVisitSelection();
@@ -3851,3 +3907,7 @@ $('weekly-download')?.addEventListener('click',()=>run(downloadWeeklyBackup,'wee
 
 $('insight-changes-dialog').addEventListener('close', () => { insightChangesContext = null; $('insight-changes-body').replaceChildren(); $('insight-changes-title').textContent = '線索新變化'; $('insight-changes-error').textContent = ''; syncScheduler.wake(); });
 $('insight-changes-dialog').addEventListener('cancel', event => { if (busy) event.preventDefault(); });
+
+$('supervision-file').addEventListener('change',event=>{const file=event.target.files[0];event.target.value='';if(file) void run(()=>previewSupervisionFile(file));});
+$('review').addEventListener('change',event=>{if(event.target.matches?.('[data-supervision-store],#supervision-all,#supervision-ack')) updateSupervisionControls(event);});
+$('review').addEventListener('close',()=>{if(!$('review').open) supervisionPreview=null;});

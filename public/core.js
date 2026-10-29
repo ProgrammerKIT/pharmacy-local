@@ -661,8 +661,27 @@ function validateCSVExclusionEvents(sourceEntities) {
   }
   if (queue.length !== events.size) throw new Error('CSV 排除與撤銷歷史形成循環。');
 }
+const supervisionText = (value, max) => str(value, max) && !!value.trim() && value === value.trim();
+const supervisionKeys = (value, keys) => plain(value) && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
+const supervisionMimes = ['image/jpeg', 'image/png', 'image/webp'];
+function supervisionDate(value) {
+  return value === '' || str(value, 10) && /^\d{4}-\d\d-\d\d$/.test(value) && Number.isFinite(Date.parse(value + 'T00:00:00.000Z')) && new Date(value + 'T00:00:00.000Z').toISOString().slice(0, 10) === value;
+}
+function validSupervisionDocument(value) {
+  return supervisionKeys(value, ['blob', 'name', 'mime']) && /^[a-f0-9]{64}$/.test(value.blob || '')
+    && supervisionText(value.name, 500) && supervisionMimes.includes(value.mime);
+}
+function validStoreSupervision(value) {
+  return supervisionKeys(value, ['organization', 'areaCode', 'areaName', 'personId', 'storeCode', 'sourceLabel', 'sourceDocument', 'recordedAt', 'effectiveDate'])
+    && ['organization', 'areaName'].every(key => supervisionText(value[key], 200))
+    && ['areaCode', 'personId'].every(key => supervisionText(value[key], 100))
+    && str(value.storeCode, 100) && supervisionText(value.sourceLabel, 500)
+    && validSupervisionDocument(value.sourceDocument) && attendanceInstant(value.recordedAt) && supervisionDate(value.effectiveDate);
+}
 export function validData(type, d) {
   if (!plain(d)) return false;
+  if (d.supervision !== undefined && (type !== 'store' || !validStoreSupervision(d.supervision))) return false;
+  if (d.supervisorKey !== undefined && (type !== 'person' || !supervisionText(d.supervisorKey, 200))) return false;
   if (d.monthlyVisits !== undefined && (type !== 'store' || !validMonthlyVisits(d.monthlyVisits))) return false;
   if (d.datePlans !== undefined && (type !== 'store' || !validDatePlans(d.datePlans))) return false;
   if (d.datePlanOrder !== undefined && (type !== 'store' || !validDatePlanOrder(d.datePlanOrder))) return false;
@@ -736,6 +755,7 @@ export function validateBundle(b) {
     if (s.sourceSnapshot !== undefined) { const snapshot = sourceEntities.get(s.sourceSnapshot); if (!snapshot || snapshot.data.blob !== s.blob) throw new Error('來源列與原始 CSV 快照連結不完整，停止合併。'); }
   }
   for (const o of b.ops) if (o.type === 'source' && !Object.hasOwn(b.blobs, o.data.blob)) throw new Error('原始 CSV 快照缺少檔案內容，停止合併。');
+  for (const o of b.ops) if (o.data.supervision && !Object.hasOwn(b.blobs, o.data.supervision.sourceDocument.blob)) throw new Error('督導分區來源圖缺少檔案內容，停止合併。');
   return b;
 }
 export function merge(a, b) {
@@ -876,6 +896,7 @@ function backupReferenceWarnings(bundle) {
     const references = op.type === 'visit' ? [['store', op.data.store], ...op.data.people.map(id => ['person', id]), ...op.data.topics.map(id => ['topic', id])]
       : op.type === 'person' && op.data.sameAs ? [['person', op.data.sameAs]]
       : op.type === 'store' && op.data.mergedInto ? [['store', op.data.mergedInto]] : [];
+    if (op.data.supervision) references.push(['person', op.data.supervision.personId]);
     if (op.type === 'store') for (const relation of op.data.preVisitInsightRelations || []) for (const member of relation.members) {
       references.push(['store', member.storeId]);
       if (!bundle.ops.some(other => other.type === 'store' && other.entity === member.storeId && other.data.preVisitInsights?.entries.some(entry => insightEntryKey(entry) === insightEntryKey(member.entry)))) {
@@ -2065,4 +2086,62 @@ export async function applyStoreMerge(bundle, plan, device) {
   validateBundle(next);
   if (enc.encode(JSON.stringify(next)).length > MAX_BYTES) throw new Error('整併後資料超過 24 MB 上限，尚未寫入。');
   return { bundle: next, summary: structuredClone(verified.summary) };
+}
+
+// Source-backed organization assignments. These are never inferred visit links.
+export async function planStoreSupervision(bundle, packet) {
+  validateBundle(bundle);
+  const p = structuredClone(packet), source = p?.sourceDocument;
+  if (p?.format !== 'pharmacy-store-supervision-1' || !supervisionText(p.organization, 200) || !supervisionDate(p.effectiveDate) || !source || !validSupervisionDocument({blob:source.blob,name:source.name,mime:source.mime}) || typeof source.base64 !== 'string' || source.base64.length > 4200000 || !/^[A-Za-z0-9+/]*={0,2}$/.test(source.base64) || !Array.isArray(p.people) || p.people.length > 100 || !Array.isArray(p.assignments) || p.assignments.length > 1500) throw new Error('小區督導資料包格式不符。');
+  const bytes = unb64(source.base64);
+  if (!bytes.length || await hashBytes(bytes) !== source.blob) throw new Error('來源圖 SHA256 不符。');
+  const people = new Map();
+  for (const person of p.people) {
+    if (!supervisionText(person.key, 200) || !supervisionText(person.name, 200) || people.has(person.key)) throw new Error('督導身分識別重複或不完整。');
+    people.set(person.key, person);
+  }
+  const records = project(bundle), stores = records.filter(r => r.type === 'store'), persons = records.filter(r => r.type === 'person');
+  const rows = p.assignments.map((a, index) => {
+    if (!people.has(a.personKey) || !supervisionText(a.storeName, 200) || !supervisionText(a.areaCode, 100) || !supervisionText(a.areaName, 200) || !str(a.storeCode, 100) || !supervisionText(a.sourceLabel, 500) || a.storeId !== undefined && !supervisionText(a.storeId,100)) throw new Error('門市對照欄位不完整。');
+    const person = people.get(a.personKey), matches = stores.filter(s => a.storeId ? s.id === a.storeId : s.name === a.storeName);
+    const row = {...a, rowKey:String(index), supervisorName:person.name, storeId:matches.length === 1 ? matches[0].id : '', status:'review', reason:'門市不存在或有同名多筆'};
+    if (matches.length !== 1) return row;
+    const s = matches[0];
+    if (s.name !== a.storeName || s.deleted || s.conflict || s.csvIdentityPending || s.mergedInto) return {...row,reason:'門市狀態或身分需要核對'};
+    if (!a.storeId && stores.some(other => other.id !== s.id && other.versions.some(v => v.data.name === a.storeName))) return {...row,reason:'歷史同名門市需要核對'};
+    const known = persons.filter(r => r.versions.some(v => v.data.supervisorKey === person.key));
+    if (known.length > 1 || known.some(r => r.deleted || r.conflict || r.sameAs || r.supervisorKey !== person.key || r.name !== person.name)) return {...row,reason:'既有督導身分、姓名或狀態需要核對'};
+    if (!known.length && persons.some(r => r.versions.some(v => v.data.name === person.name))) return {...row,reason:'已有同名人物，不能自動合併或另建'};
+    const after = {organization:p.organization,areaCode:a.areaCode,areaName:a.areaName,personId:known[0]?.id || '',storeCode:a.storeCode,sourceLabel:a.sourceLabel,sourceDocument:{blob:source.blob,name:source.name,mime:source.mime},effectiveDate:p.effectiveDate};
+    const before = s.supervision || null, comparison = before ? {...before} : null; if (comparison) delete comparison.recordedAt;
+    return {...row,status:known.length && JSON.stringify(comparison) === JSON.stringify(after) ? 'unchanged' : 'ready',reason:'',personId:known[0]?.id || '',before,after,change:before ? 'update':'add'};
+  });
+  for (const row of rows) if (row.storeId && rows.filter(r => r.storeId === row.storeId).length > 1) {row.status='review'; row.reason='來源多列對應同一門市';}
+  const fingerprint = await hashBytes(enc.encode(JSON.stringify([bundle,p])));
+  return {fingerprint, rows, summary:{ready:rows.filter(r=>r.status==='ready').length,unchanged:rows.filter(r=>r.status==='unchanged').length,review:rows.filter(r=>r.status==='review').length}};
+}
+export async function applyStoreSupervision(bundle, packet, plan, selectedStoreIds, device) {
+  const current = await planStoreSupervision(bundle,packet);
+  if (JSON.stringify(current) !== JSON.stringify(plan) || !Array.isArray(selectedStoreIds) || new Set(selectedStoreIds).size !== selectedStoreIds.length || !supervisionText(device,100)) throw new Error('資料或預覽已改變，請重新核對；尚未寫入。');
+  const selected = selectedStoreIds.map(id=>current.rows.find(r=>r.storeId===id && r.status==='ready'));
+  if (selected.some(r=>!r)) throw new Error('選取項目不在可套用清單內。');
+  const next=structuredClone(bundle), people=new Map(), records=project(bundle);
+  if (!selected.length) return {bundle:next,summary:{stores:0,people:0}};
+  const source=packet.sourceDocument;
+  if (next.blobs[source.blob] && next.blobs[source.blob] !== source.base64) throw new Error('來源圖識別衝突。');
+  next.blobs[source.blob]=source.base64;
+  for (const row of selected) {
+    let personId=row.personId || people.get(row.personKey);
+    if (!personId) {personId=uuid();people.set(row.personKey,personId);next.ops.push(revision('person',personId,{name:row.supervisorName,role:packet.organization+'小區督導',desc:'',confirmed:true,sameAs:'',supervisorKey:row.personKey},[],device));}
+    const store=records.find(r=>r.type==='store' && r.id===row.storeId);
+    next.ops.push(revision('store',store.id,{...store.heads[0].data,supervision:{...row.after,personId,recordedAt:new Date().toISOString()}},store.heads.map(h=>h.id),device));
+  }
+  validateBundle(next);
+  if (enc.encode(JSON.stringify(next)).length>MAX_BYTES) throw new Error('資料超過24 MB上限；尚未寫入。');
+  return {bundle:next,summary:{stores:selected.length,people:people.size}};
+}
+export function supervisedStores(records, personId) {
+  const person=records.find(r=>r.type==='person' && r.id===personId);
+  if (!person || person.deleted || person.conflict || person.sameAs) return [];
+  return records.filter(r=>r.type==='store' && !r.deleted && !r.conflict && !r.csvIdentityPending && !r.mergedInto && r.supervision?.personId===personId);
 }

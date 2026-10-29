@@ -38,7 +38,7 @@ function harness(items, { bundle = bundleFor(items), payloadFields = {} } = {}) 
   };
   const denyWrite = name => () => { attempts.push(name); assert.fail(`Reading must not invoke ${name}`); };
   const payload = freeze({ bundle, ...payloadFields });
-  const ctx = vm.createContext({
+  const ctx = vm.createContext({storeSupervisionHTML:()=>'',
     ...core, storeIdentityPending, originalStoreNames, visitBriefForStore,
     records: freeze(core.project(bundle)), payload, $: node, JSON, Date, Set,
     activeView: 'visits', focus: { type: 'store', id: '' }, inlineTextContext: null, singleStoreContext: null,
