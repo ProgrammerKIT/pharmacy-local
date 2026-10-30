@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import {
   emptyBundle, revision, project, validateBundle, newMeta, derive, seal, unseal, b64,
   NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines,
-  addReminderTasks, convertReminderTasks, completeReminderTask, reminderTaskHistory, makeVisitAttendance, diffTextSegments
+  editReminderTasks, addReminderTasks, convertReminderTasks, completeReminderTask, reminderTaskHistory, makeVisitAttendance, diffTextSegments
 } from '../public/core.js';
 
 // Real application functions and encryption, fictional records and memory-only disk.
@@ -57,7 +57,7 @@ function harness() {
   c = vm.createContext({ syncInProgress: false, autoFetching: false, syncEpoch: 0, localSaveState: 'saved', renderDataSafetyEntry() {},
     syncScheduler: { request() {}, wake() {}, pause() {}, reset() {}, confirmed() {}, failed() {} },
      $, esc, structuredClone, Date, Event, Set, JSON, CSS: { escape: x => x },
-    project, revision, validateBundle, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, addReminderTasks, convertReminderTasks, reminderTaskHistory,
+    project, revision, validateBundle, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, editReminderTasks, addReminderTasks, convertReminderTasks, reminderTaskHistory,
     payload: { bundle: f.bundle, device: 'synthetic-device', dirty: false, pendingSync: { entities: [], unknown: false }, reminderDrafts: [] },
     reminderContext: null, editorContext: null, singleStoreContext: null, inlineTextContext: null, reminderDraftTimer: null, reminderDraftSaveChain: Promise.resolve(), busy: false, updateHolding: false,
     document: { querySelector: selector => selector.includes('data-reminder-options-for') ? group : null },
@@ -400,4 +400,31 @@ test('editMerge refuses an existing same-store draft before opening an editor or
   h.c.openReview('store', 'a', true); const before = clone(h.c.payload), opened = h.state.opened.length, writes = h.state.writes.length;
   assert.throws(() => h.c.editMerge(h.first.id), /未完成提醒草稿/);
   assert.deepEqual(clone(h.c.payload), before); assert.equal(h.c.editorContext, null); assert.equal(h.state.opened.length, opened); assert.equal(h.state.writes.length, writes); assert.equal(h.$('review').open, true);
+});
+
+
+function editingTaskHarness() {
+  const h=harness(),base=h.c.by('store','a'),data=addReminderTasks(base.heads[0].data,'synthetic editable task',created);
+  const op=revision('store','a',data,[base.heads[0].id],'synthetic');h.c.payload.bundle.ops.push(op);
+  const task=data.nextRememberTasks.at(-1);h.c.openStoreReminder('a');
+  const input=h.$('task-edit-input');input.dataset={reminderTaskText:task.id,reminderTaskBefore:task.text};input.value=task.text;
+  const form=h.$('store-reminder-form'),original=form.querySelectorAll;
+  form.querySelectorAll=selector=>selector==='[data-reminder-task-text]'?[input]:[...original(selector),input];
+  return {...h,input,task,edit(text){input.value=text;h.c.scheduleReminderDraftSave();}};
+}
+test('existing task edit survives closing/resuming encrypted draft and changes only its original task',async()=>{
+  const h=editingTaskHarness(),before=clone(h.c.payload.bundle);h.edit('  changed same task <img src=x>  ');await h.c.closeStoreReminder();
+  assertFormalUnchanged(h,before);assert.deepEqual(clone(h.c.payload.reminderDrafts[0].fields.taskEdits),[{id:h.task.id,text:h.input.value}]);
+  h.c.openStoreReminder('a');assert.match(h.$('store-reminder-existing').innerHTML,/changed same task &lt;img/);await h.save();
+  const store=h.c.by('store','a'),task=store.nextRememberTasks.find(t=>t.id===h.task.id);assert.deepEqual(task,{...h.task,text:h.input.value});assert.equal(store.nextRememberTasks.length,2);assert.equal(store.heads[0].visitAttendance,undefined);assert.deepEqual(h.c.payload.bundle.ops.slice(0,before.ops.length),before.ops);assert.equal(h.c.payload.reminderDrafts.length,0);assert.ok(h.state.prompts.some(p=>p.includes('修改前：'+h.task.text)&&p.includes('修改後：'+h.input.value)));
+});
+test('failed task-edit persistence keeps original task and retryable encrypted draft',async()=>{
+  const h=editingTaskHarness(),before=clone(h.c.payload.bundle);h.edit('retry after disk failure');await h.c.flushReminderDraft();h.state.failWhen=next=>next.bundle.ops.length>before.ops.length;
+  await assert.rejects(h.save(),/disk full/);assert.deepEqual(h.c.payload.bundle,before);assert.equal(h.c.payload.reminderDrafts[0].fields.taskEdits[0].text,h.input.value);assert.ok(h.c.reminderContext);
+  h.state.failWhen=()=>false;await h.save();assert.equal(h.c.by('store','a').nextRememberTasks.at(-1).text,h.input.value);
+});
+test('changed or completed task while editing cannot be overwritten; entered text stays in draft',async()=>{
+  const h=editingTaskHarness();h.edit('keep my typed change');await h.c.flushReminderDraft();const store=h.c.by('store','a');
+  h.c.payload.bundle.ops.push(revision('store','a',completeReminderTask(store.heads[0].data,h.task.id,completed),[store.heads[0].id],'other-device'));const received=clone(h.c.payload.bundle);
+  await assert.rejects(h.save(),/新版本/);assert.deepEqual(h.c.payload.bundle,received);assert.equal(h.c.payload.reminderDrafts[0].fields.taskEdits[0].text,h.input.value);
 });

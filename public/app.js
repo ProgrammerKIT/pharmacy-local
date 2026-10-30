@@ -1,5 +1,5 @@
 import { supervisorRelationships, supervisorReviewHistory, reviewSupervisorRelationship, planStoreSupervision, applyStoreSupervision, supervisedStores } from './core.js';
-import { setupWeeklyRecovery, prepareWeeklyRecovery, createRecoveryBackup, newMeta, checkEnvelope, derive, seal, unseal, planBackupImport, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates, buildStoreEnrichmentRequest, planStoreEnrichment, applyStoreEnrichment, readonlyHealthAudit, dataSafetySummary, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, addReminderTasks, convertReminderTasks, completeReminderTask, reminderTaskHistory, searchStoreVisitText, scanInsightChanges, storeInsightDisplayForStore, storeInsightEvidenceForEntry, insightReviewForEntry, insightSharedReviewForEntry, storeInsightReviewHistory, planInsightReview, applyInsightReview, planStoreInsights, applyStoreInsights, planStoreInsightRelations, applyStoreInsightRelations, buildStoreInsightsSource, planStoreMerge, applyStoreMerge } from './core.js';
+import { setupWeeklyRecovery, prepareWeeklyRecovery, createRecoveryBackup, newMeta, checkEnvelope, derive, seal, unseal, planBackupImport, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates, buildStoreEnrichmentRequest, planStoreEnrichment, applyStoreEnrichment, readonlyHealthAudit, dataSafetySummary, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, editReminderTasks, addReminderTasks, convertReminderTasks, completeReminderTask, reminderTaskHistory, searchStoreVisitText, scanInsightChanges, storeInsightDisplayForStore, storeInsightEvidenceForEntry, insightReviewForEntry, insightSharedReviewForEntry, storeInsightReviewHistory, planInsightReview, applyInsightReview, planStoreInsights, applyStoreInsights, planStoreInsightRelations, applyStoreInsightRelations, buildStoreInsightsSource, planStoreMerge, applyStoreMerge } from './core.js';
 import { readWeeklyRecovery, writeWeeklyRecovery, readLocal, writeLocal, archiveAndReplaceLocal, listLocalArchives, readLocalArchive } from './db.js';
 import { dayPlanDate, shiftDayPlanDate, dayPlanForStore, dayPlanOverview, dayItineraryBasis, applyDayItineraryAction } from './core.js';
 import { monthlyVisitMonth, shiftMonthlyVisitMonth, monthlyVisitForStore, monthlyVisitOverview, monthlyVisitBasis, applyMonthlyVisitAction } from './core.js';
@@ -194,7 +194,19 @@ function reminderTasksHTML(store, interactive = true, showCompleted = true) {
   const tasks = store.nextRememberTasks || [], pending = tasks.filter(t => !t.completedAt), completed = showCompleted ? reminderTaskHistory(store) : [];
   if (!pending.length && !completed.length) return '';
   const attrs = `data-reminder-store="${esc(store.id)}" data-reminder-head="${esc(store.heads?.[0]?.id || '')}"`;
-  return `<section class="reminder-task-list">${pending.length ? `<strong>下次記得：待辦 ${pending.length} 項</strong>` + pending.map(task => `<label class="reminder-task-row"><input type="checkbox" ${interactive ? `data-reminder-complete="${esc(task.id)}" ${attrs}` : 'disabled'} aria-label="完成：${esc(task.text)}"><span>${esc(task.text)}</span></label>`).join('') : ''}${completed.length ? `<details class="reminder-task-history"><summary>已完成 · ${completed.length} 項</summary>${completed.map(task => `<div class="reminder-task-done"><span>✓ ${esc(task.text)}</span><small>完成：${esc(dateText(task.completedAt))}${task.historical ? ' · 歷史版本紀錄（目前狀態不同）' : ''}</small>${interactive && !task.historical ? `<button type="button" class="text-button" data-reminder-repeat="${esc(task.id)}" ${attrs}>再加入待辦</button>` : ''}</div>`).join('')}</details>` : ''}</section>`;
+  return `<section class="reminder-task-list">${pending.length ? `<strong>下次記得：待辦 ${pending.length} 項</strong>` + pending.map(task => `<div class="reminder-task-item"><label class="reminder-task-row"><input type="checkbox" ${interactive ? `data-reminder-complete="${esc(task.id)}" ${attrs}` : 'disabled'} aria-label="完成：${esc(task.text)}"><span>${esc(task.text)}</span></label>${interactive ? `<button type="button" class="text-button reminder-task-edit" data-reminder-task-edit="${esc(task.id)}" ${attrs} aria-label="修改待辦：${esc(task.text)}">修改</button>` : ''}</div>`).join('') : ''}${completed.length ? `<details class="reminder-task-history"><summary>已完成 · ${completed.length} 項</summary>${completed.map(task => `<div class="reminder-task-done"><span>✓ ${esc(task.text)}</span><small>完成：${esc(dateText(task.completedAt))}${task.historical ? ' · 歷史版本紀錄（目前狀態不同）' : ''}</small>${interactive && !task.historical ? `<button type="button" class="text-button" data-reminder-repeat="${esc(task.id)}" ${attrs}>再加入待辦</button>` : ''}</div>`).join('')}</details>` : ''}</section>`;
+}
+function reminderTaskEditsFromForm(form, retained = []) {
+  const edits=new Map(retained.map(e=>[e.id,{...e}]));
+  for(const input of form.querySelectorAll?.('[data-reminder-task-text]') || []) {
+    const id=input.dataset?.reminderTaskText; if(!id) continue;
+    if(input.value===input.dataset.reminderTaskBefore) edits.delete(id); else edits.set(id,{id,text:input.value});
+  }
+  return [...edits.values()];
+}
+function reminderTaskEditorHTML(store, edits = []) {
+  const pending=(store.nextRememberTasks||[]).filter(t=>!t.completedAt), values=new Map(edits.map(e=>[e.id,e.text]));
+  return (pending.length ? `<section class="reminder-task-editor"><h3>修改已儲存待辦</h3><p class="muted">展開要修改的項目；儲存後仍是同一筆待辦，舊文字保留在門市歷史。</p>${pending.map(task=>`<details data-reminder-task-panel="${esc(task.id)}"><summary>${esc(task.text)}</summary><label>待辦文字<textarea rows="3" maxlength="2000" data-reminder-task-text="${esc(task.id)}" data-reminder-task-before="${esc(task.text)}" aria-label="修改待辦文字：${esc(task.text)}">${esc(values.get(task.id)??task.text)}</textarea></label></details>`).join('')}</section>` : '') + reminderTasksHTML({...store,nextRememberTasks:(store.nextRememberTasks||[]).filter(t=>t.completedAt)},false);
 }
 function legacyReminderDraftHTML(data) {
   const text = data.nextRemember || '', lines = reminderTaskLines(text);
@@ -203,14 +215,17 @@ function legacyReminderDraftHTML(data) {
 }
 function reminderFormData(data, targetId) {
   const target = $(targetId), convert = target.closest('form').querySelector('[data-reminder-convert]')?.checked;
-  return addReminderTasks(convert ? convertReminderTasks(data) : data, target.value);
+  const edits=reminderTaskEditsFromForm(target.closest('form'));
+  const edited=edits.length ? editReminderTasks(data,edits) : data;
+  return addReminderTasks(convert ? convertReminderTasks(edited) : edited, target.value);
 }
 function confirmReminderChange(before, after) {
   const previous = new Set((before.nextRememberTasks || []).map(t => t.id));
   const added = (after.nextRememberTasks || []).filter(t => !previous.has(t.id));
   const converted = (after.nextRememberImports || []).length > (before.nextRememberImports || []).length;
+  const edited=(after.nextRememberTasks||[]).filter(t=>previous.has(t.id) && (before.nextRememberTasks||[]).find(old=>old.id===t.id)?.text!==t.text);
   const everyChanged = (before.everyTimeMust || '') !== (after.everyTimeMust || '');
-  const impact = [added.length ? `新增 ${added.length} 項待辦：\n${added.map(t => '□ ' + t.text).join('\n')}` : '', converted ? '既有下次記得將改用任務顯示；完整原始文字與舊版本保留。' : '', everyChanged ? `每次必做、必給\n修改前：${before.everyTimeMust || '（空白）'}\n修改後：${after.everyTimeMust || '（空白）'}` : ''].filter(Boolean);
+  const impact = [edited.length ? `修改 ${edited.length} 項待辦（同一筆，保留舊版本）：\n${edited.map(t=>'修改前：'+before.nextRememberTasks.find(old=>old.id===t.id).text+'\n修改後：'+t.text).join('\n\n')}` : '', added.length ? `新增 ${added.length} 項待辦：\n${added.map(t => '□ ' + t.text).join('\n')}` : '', converted ? '既有下次記得將改用任務顯示；完整原始文字與舊版本保留。' : '', everyChanged ? `每次必做、必給\n修改前：${before.everyTimeMust || '（空白）'}\n修改後：${after.everyTimeMust || '（空白）'}` : ''].filter(Boolean);
   return !impact.length || confirm(impact.join('\n\n') + '\n\n確認儲存這間門市的提醒？拜訪原文不會修改。');
 }
 async function changeReminderTask(storeId, taskId, expectedHead, repeat = false) {
@@ -2789,6 +2804,7 @@ function storedReminderDrafts() {
     !Array.isArray(d.parents) || !d.parents.length || d.parents.some(id => !text(id, 100) || !id) ||
     !text(d.baseEvery, 2000) || !text(d.baseLegacy, 2000) || !Number.isFinite(Date.parse(d.savedAt)) ||
     !d.fields || !text(d.fields.next, 2000) || !text(d.fields.every, 2000) || !text(d.fields.customText, 120) || !text(d.fields.customApplied, 120) ||
+    (d.fields.taskEdits !== undefined && (!Array.isArray(d.fields.taskEdits) || d.fields.taskEdits.length>1000 || new Set(d.fields.taskEdits.map(e=>e?.id)).size!==d.fields.taskEdits.length || d.fields.taskEdits.some(e=>!e || !text(e.id,100) || !e.id || !text(e.text,2000)))) ||
     typeof d.fields.convert !== 'boolean' || typeof d.fields.customChecked !== 'boolean')) throw new Error('本機提醒草稿格式無法辨識；原資料保留，沒有自動清除。');
   return drafts;
 }
@@ -2810,7 +2826,7 @@ function captureReminderDraft(ctx = activeReminderDraftContext()) {
   const group = document.querySelector(`[data-reminder-options-for="${targetId}"]`);
   return { format: 'store-reminder-draft-1', storeId: ctx.id, storeName: ctx.storeName, parents: [...ctx.parents],
     baseEvery: ctx.baseEvery, baseLegacy: ctx.baseLegacy, savedAt: new Date().toISOString(),
-    fields: { next: $(targetId).value, every: $(ctx.editor ? 'f-every-time-must' : 'store-reminder-every').value,
+    fields: { taskEdits:reminderTaskEditsFromForm($(ctx.editor?'editor-form':'store-reminder-form'),ctx.taskEdits||[]), next: $(targetId).value, every: $(ctx.editor ? 'f-every-time-must' : 'store-reminder-every').value,
       convert: !!$(ctx.editor ? 'editor-form' : 'store-reminder-form').querySelector('[data-reminder-convert]')?.checked,
       customText: group.querySelector('[data-reminder-custom-input]').value,
       customChecked: group.querySelector('[data-reminder-custom-toggle]').checked, customApplied: group.dataset.customApplied || '' } };
@@ -2881,19 +2897,20 @@ async function discardReminderDraft() {
   reminderContext = null; $('store-reminder-dialog').close(); renderReminderDrafts(); status();
   toast('已捨棄這間門市的本機提醒草稿；正式資料保持原樣。');
 }
-function openStoreReminder(storeId) {
+function openStoreReminder(storeId, taskId = '', expectedHead = '') {
   if (reminderContext) return toast('請先儲存或按「稍後繼續」收起目前的門市提醒。');
   if (editorContext || singleStoreContext) return toast('請先完成或收起目前的拜訪／完整編輯，再修改門市提醒。');
   const store = by('store', storeId), saved = reminderDraftFor(storeId);
+  if(taskId && (!store || store.deleted || store.conflict || expectedHead && store.heads[0].id!==expectedHead || !store.nextRememberTasks?.some(t=>t.id===taskId && !t.completedAt))) return toast('待辦或門市已有變更，請重新開啟核對；尚未修改。');
   if ((!store || store.deleted || store.conflict) && !saved) return toast('這間門市目前有衝突或已移到回收桶，請先完成核對。');
   if (inlineTextContext && inlineTextContext.after !== inlineTextContext.before) return toast('請先完成或取消目前的拜訪文字修改。');
   inlineTextContext = null;
   reminderContext = { id: storeId, storeName: saved?.storeName || store.name, parents: saved ? [...saved.parents] : store.heads.map(head => head.id).sort(),
-    baseEvery: saved?.baseEvery ?? store.everyTimeMust ?? '', baseLegacy: saved?.baseLegacy ?? store.nextRemember ?? '', draftTouched: false, draftGeneration: 0,
+    taskEdits:structuredClone(saved?.fields.taskEdits||[]), baseEvery: saved?.baseEvery ?? store.everyTimeMust ?? '', baseLegacy: saved?.baseLegacy ?? store.nextRemember ?? '', draftTouched: false, draftGeneration: 0,
     briefStoreId: $('review').open && $('review').classList.contains('visit-brief-dialog') ? $('review').dataset.singleStoreId : '' };
   const ctx = reminderContext;
   $('store-reminder-title').textContent = ctx.storeName + ' · 門市提醒';
-  $('store-reminder-existing').innerHTML = (store ? reminderTasksHTML(store, false) : '') + legacyReminderDraftHTML({ nextRemember: ctx.baseLegacy });
+  $('store-reminder-existing').innerHTML = (store ? reminderTaskEditorHTML(store,ctx.taskEdits) : '') + (saved?.fields.taskEdits?.length ? `<details><summary>本機保留的待辦修改草稿</summary>${saved.fields.taskEdits.map(e=>`<pre>${esc(e.text)}</pre>`).join('')}</details>` : '') + legacyReminderDraftHTML({ nextRemember: ctx.baseLegacy });
   $('store-reminder-next').value = saved?.fields.next || '';
   $('store-reminder-every').value = saved?.fields.every ?? ctx.baseEvery;
   resetReminderOptionGroup('store-reminder-next');
@@ -2911,6 +2928,7 @@ function openStoreReminder(storeId) {
   $('discard-reminder-draft').hidden = !saved;
   reminderDraftState(saved ? '已恢復這台裝置的加密提醒草稿；尚未寫入正式紀錄。' : '輸入會加密保存成本機草稿；正式儲存仍需確認。', saved ? 'saved' : '');
   openDialog($('store-reminder-dialog'));
+  if(taskId){const panel=[...$('store-reminder-existing').querySelectorAll('[data-reminder-task-panel]')].find(el=>el.dataset.reminderTaskPanel===taskId);if(panel){panel.open=true;panel.scrollIntoView({block:'nearest'});}}
 }
 async function saveStoreReminder(event) {
   event.preventDefault();
@@ -3727,6 +3745,7 @@ document.addEventListener('click', event => {
   if (b.dataset.inlineReview) { const review = b.closest('#review'), briefStoreId = review?.open && review.classList.contains('visit-brief-dialog') ? review.dataset.singleStoreId || '' : ''; return run(() => reviewInlineTextEdit(b.dataset.inlineReview, briefStoreId), null); }
   if (b.dataset.resumeVisitDraft !== undefined) return resumeVisitDraft();
   if (b.dataset.resumeInlineDraft !== undefined) return resumeInlineTextDraft();
+  if (b.dataset.reminderTaskEdit) return openStoreReminder(b.dataset.reminderStore,b.dataset.reminderTaskEdit,b.dataset.reminderHead);
   if (b.dataset.reminderRepeat) return run(() => changeReminderTask(b.dataset.reminderStore, b.dataset.reminderRepeat, b.dataset.reminderHead, true));
   if (b.dataset.storeReminder) { if (singleStoreContext) return toast('請先完成或收起這次拜訪紀錄，再修改門市提醒。'); if ($('review').open && !$('review').classList.contains('visit-brief-dialog')) $('review').close(); return openStoreReminder(b.dataset.storeReminder); }
   if (b.dataset.quickVisit) return openVisitForStore(b.dataset.quickVisit);

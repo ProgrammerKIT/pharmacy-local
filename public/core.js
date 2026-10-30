@@ -331,6 +331,18 @@ export function convertReminderTasks(data, at = new Date().toISOString(), makeId
   if (!validReminderTasks(next)) throw new Error('轉換歷史超過上限，原提醒保留，本次尚未轉換。');
   return next;
 }
+// Edit existing pending tasks in place; identity, creation/completion and import provenance stay exact.
+export function editReminderTasks(data, edits) {
+  if (!validReminderTasks(data) || !Array.isArray(edits) || edits.length>1000 || new Set(edits.map(e=>e?.id)).size!==edits.length) throw new Error('待辦修改格式不符或識別重複，尚未寫入。');
+  const next=structuredClone(data);
+  for(const edit of edits) {
+    if(!plain(edit) || !str(edit.id,100) || !edit.id || !str(edit.text,2000) || !edit.text.trim()) throw new Error('待辦文字不可空白，每項最多2000個字；請保留原文後重試。');
+    const task=next.nextRememberTasks?.find(t=>t.id===edit.id);
+    if(!task || task.completedAt) throw new Error('待辦已不存在或已完成，請重新核對；原歷史保留。');
+    task.text=edit.text;
+  }
+  return next;
+}
 export function completeReminderTask(data, taskId, at = new Date().toISOString()) {
   if (!validReminderTasks(data) || !taskTime(at)) throw new Error('任務資料格式不符，尚未寫入。');
   const next = structuredClone(data), task = next.nextRememberTasks?.find(t => t.id === taskId);
