@@ -356,7 +356,10 @@ export function createService({ dataDir = defaultDataDir(), host = '0.0.0.0', po
         return send(404, { error: '找不到操作。' });
       }
       if (req.method !== 'GET' && req.method !== 'HEAD') return send(405, { error: '不支援的操作。' });
-      const file = url.pathname === '/' ? 'index.html' : url.pathname === '/admin' ? 'admin.html' : url.pathname.slice(1);
+      const requestedFile = url.pathname === '/' ? 'index.html' : url.pathname === '/admin' ? 'admin.html' : url.pathname.slice(1);
+      // Keep historical icon URLs and Apple's root fallbacks on the same
+      // approved image. These are exact public aliases, never filesystem paths.
+      const file = ['icon.svg', 'icon-512.png', 'apple-touch-icon.png', 'apple-touch-icon-precomposed.png', 'favicon.ico'].includes(requestedFile) ? 'icon-192.png' : requestedFile;
       const allow = ['index.html', 'app.js', 'core.js', 'db.js', 'relations.js', 'csv.js', 'csv-ui.js', 'style.css', 'sw.js', 'version.js', 'update-client.js', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png', 'admin.html', 'admin.js'];
       if (!allow.includes(file)) return send(404, { error: '找不到檔案。' });
       if (file.startsWith('admin') && !isLoopback(req.socket.remoteAddress)) return send(403, { error: '管理頁面限 Mac 本機。' });
