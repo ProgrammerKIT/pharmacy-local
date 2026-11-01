@@ -62,7 +62,7 @@ function harness() {
   };
   let context;
   const records = () => core.project(context.payload.bundle);
-  context = vm.createContext({storeSupervisionHTML:()=>'',
+  context = vm.createContext({ monthlyAnalysisStoreHTML:()=>'', analysisOverviewHTML:()=>'',storeSupervisionHTML:()=>'',
     ...core, visitBriefForStore, storeIdentityPending, $, JSON, Set, Date,
     payload: { bundle: makeFixture(core) }, singleStoreContext: null, insightsPreview: null,
     all: type => records().filter(record => record.type === type),

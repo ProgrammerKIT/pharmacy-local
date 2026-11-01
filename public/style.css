@@ -388,3 +388,9 @@ button[data-csv-source-snapshot]{flex:none;min-height:44px}
 
 /* Editing an existing task is separate from its completion checkbox. */
 .reminder-task-item{display:flex;align-items:flex-start;gap:10px;min-width:0}.reminder-task-item>.reminder-task-row{flex:1;min-width:0}.reminder-task-edit{flex:none;min-height:40px;margin-top:5px}.reminder-task-editor details{padding:10px 0;border-bottom:1px solid var(--line)}.reminder-task-editor summary{cursor:pointer;overflow-wrap:anywhere}.reminder-task-editor textarea{min-height:95px}.reminder-task-editor label{margin-top:8px}
+
+.monthly-analysis .analysis-card, #monthly-analysis-dialog .analysis-card { border-top:1px solid #ccdcd9; padding:12px 0; }
+.analysis-verbatim { white-space:pre-wrap; overflow-wrap:anywhere; }
+#monthly-analysis-dialog { width:min(880px,94vw); max-height:90dvh; overflow:auto; }
+#monthly-analysis-dialog select { width:100%; }
+.monthly-analysis li { margin-bottom:10px; }
