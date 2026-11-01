@@ -692,6 +692,7 @@ function validStoreSupervision(value) {
 }
 export function validData(type, d) {
   if (!plain(d)) return false;
+  if (d.monthlyAnalysis !== undefined && (type !== 'source' || !validMonthlyAnalysis(d.monthlyAnalysis))) return false;
   if (d.supervision !== undefined && (type !== 'store' || !validStoreSupervision(d.supervision))) return false;
   if (d.relationshipNotes !== undefined && (type !== 'person' || !str(d.relationshipNotes, 20000))) return false;
   if (d.relationshipReviews !== undefined && (type !== 'person' || !Array.isArray(d.relationshipReviews) || d.relationshipReviews.length > 2000 || !d.relationshipReviews.every(validSupervisorReview))) return false;
@@ -771,6 +772,30 @@ export function validateBundle(b) {
   }
   for (const o of b.ops) if (o.type === 'source' && !Object.hasOwn(b.blobs, o.data.blob)) throw new Error('原始 CSV 快照缺少檔案內容，停止合併。');
   for (const o of b.ops) if (o.data.supervision && !Object.hasOwn(b.blobs, o.data.supervision.sourceDocument.blob)) throw new Error('督導分區來源圖缺少檔案內容，停止合併。');
+  for (const source of b.ops.filter(op => op.data.monthlyAnalysis)) {
+    const data = source.data, info = data.monthlyAnalysis;
+    for (const id of info.supersedes) {
+      const prior = sourceEntities.get(id);
+      if (!prior || prior.entity === source.entity || !prior.data.monthlyAnalysis || prior.data.monthlyAnalysis.channel !== info.channel || prior.data.monthlyAnalysis.visitMonth !== info.visitMonth || prior.data.monthlyAnalysis.supersedes.includes(source.entity)) throw new Error('每月分析修訂鏈不一致。');
+    }
+    const rows = parseMonthlyAnalysis(unb64(b.blobs[data.blob]));
+    if (rows.length !== info.assignments.length || rows.length !== data.rows || rows.some(row => analysisChannel(row.channel) !== info.channel)) throw new Error('每月分析原文與配對資料不一致。');
+    const assigned = new Set();
+    for (const match of info.assignments) if (match.storeId) {
+      const head = seen.get(match.head);
+      if (!head || head.type !== 'store' || head.entity !== match.storeId || head.deleted || head.data.csvIdentityPending || head.data.mergedInto || head.data.name !== match.name || (head.data.address || '') !== match.address || analysisStoreChannel(head.data) !== info.channel || assigned.has(match.storeId)) throw new Error('每月分析配對缺少正確門市依據。');
+      assigned.add(match.storeId);
+    }
+  }
+  const analysisAncestors = new Map();
+  for (const source of b.ops.filter(op => op.data.monthlyAnalysis)) analysisAncestors.set(source.entity, source.data.monthlyAnalysis.supersedes);
+  const analysisDegrees = new Map(), analysisChildren = new Map(), analysisQueue = [];
+  for (const [id, parents] of analysisAncestors) {
+    analysisDegrees.set(id, parents.length); if (!parents.length) analysisQueue.push(id);
+    for (const parent of parents) { const list = analysisChildren.get(parent) || []; list.push(id); analysisChildren.set(parent, list); }
+  }
+  for (let i = 0; i < analysisQueue.length; i++) for (const child of analysisChildren.get(analysisQueue[i]) || []) { const degree = analysisDegrees.get(child) - 1; analysisDegrees.set(child, degree); if (!degree) analysisQueue.push(child); }
+  if (analysisQueue.length !== analysisAncestors.size) throw new Error('每月分析修訂鏈形成循環。');
   return b;
 }
 export function merge(a, b) {
@@ -2244,5 +2269,100 @@ export function reviewSupervisorRelationship(bundle, personId, entry, status, de
   if(history.filter(e=>e.entry.id===entry.id && e.entry.basis===entry.basis).at(-1)?.status===status) return bundle;
   const next=structuredClone(bundle);
   next.ops.push(revision('person',personId,{...person.heads[0].data,relationshipReviews:[...history,{id:uuid(),status,at:new Date().toISOString(),entry}]},[person.heads[0].id],device));
+  validateBundle(next); return next;
+}
+
+// External monthly analysis is an immutable source, never a visit or a store edit.
+const analysisMonth = value => typeof value === 'string' && /^[0-9]{4}-(0[1-9]|1[0-2])$/.test(value) && !value.startsWith('0000');
+export function analysisChannel(value) {
+  const name = String(value || '').normalize('NFKC').replace(/\s/g, '');
+  if (/^(大樹|大樹藥局|大樹連鎖藥局)$/.test(name)) return '大樹';
+  if (/^(佑全|佑全藥局|佑全保健藥妝)$/.test(name)) return '佑全';
+  return '';
+}
+export function analysisStoreChannel(store) {
+  const field = analysisChannel(store.channel), name = String(store.name || '').normalize('NFKC').replace(/^(?:[A-Za-z]?\d+)[\s.-]*/, '');
+  const prefix = /^(大樹|佑全)/.exec(name)?.[1] || '';
+  return field && prefix && field !== prefix ? '' : field || prefix;
+}
+export function analysisName(value) {
+  return String(value || '').normalize('NFKC').trim().replace(/^[A-Za-z]?\d+[\s.\-－]*/, '')
+    .replace(/^(?:大樹連鎖藥局|大樹藥局|大樹|佑全保健藥妝|佑全藥局|佑全)[\s\-－]*/, '')
+    .replace(/\s/g, '').replace(/店$/, '');
+}
+export function parseMonthlyAnalysis(raw) {
+  if (!(raw instanceof Uint8Array) || raw.length > 2097152) throw new Error('JSON 原檔上限 2 MB。');
+  const root = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(raw).replace(/^\uFEFF/, ''));
+  if (!plain(root) || Object.keys(root).join() !== 'stores' || !Array.isArray(root.stores) || !root.stores.length || root.stores.length > 500) throw new Error('需要 stores 陣列；額外欄位或不支援格式請先核對，原檔不變。');
+  for (const row of root.stores) if (!plain(row) || Object.keys(row).sort().join() !== 'channel,checkpoints,name,reason' || !str(row.name, 500) || !row.name.trim() || !analysisChannel(row.channel) || !str(row.reason, 50000) || !Array.isArray(row.checkpoints) || row.checkpoints.length > 100 || !row.checkpoints.every(text => str(text, 20000))) throw new Error('門市分析欄位不完整或通路不支援，尚未匯入。');
+  const channels = new Set(root.stores.map(row => analysisChannel(row.channel)));
+  if (channels.size !== 1) throw new Error('每個檔案須為單一通路，請先核對來源。');
+  return root.stores;
+}
+export function monthlyAnalysisCandidates(row, stores) {
+  const channel = analysisChannel(row.channel), key = analysisName(row.name);
+  return stores.filter(store => store.type === 'store' && !store.deleted && !store.conflict && !store.mergedInto && !store.csvIdentityPending && analysisStoreChannel(store) === channel)
+    .map(store => ({ store, exact: !!key && analysisName(store.name) === key }))
+    .sort((a, b) => Number(b.exact) - Number(a.exact) || a.store.name.localeCompare(b.store.name, 'zh-Hant'));
+}
+function validMonthlyAnalysis(value) {
+  return plain(value) && Object.keys(value).sort().join() === 'assignments,channel,salesMonth,supersedes,visitMonth'
+    && Array.isArray(value.supersedes) && value.supersedes.length <= 1000 && value.supersedes.every(id => str(id,100) && !!id) && new Set(value.supersedes).size === value.supersedes.length
+    && analysisMonth(value.salesMonth) && analysisMonth(value.visitMonth) && analysisChannel(value.channel) === value.channel
+    && Array.isArray(value.assignments) && value.assignments.length > 0 && value.assignments.length <= 500
+    && value.assignments.every(item => plain(item) && Object.keys(item).sort().join() === 'address,head,name,storeId'
+      && ['storeId','head'].every(k => str(item[k], 100)) && str(item.name, 200) && str(item.address, 2000)
+      && (item.storeId ? !!item.head && !!item.name : !item.head && !item.name && !item.address));
+}
+export function monthlyAnalysisSources(bundle) {
+  return bundle.ops.filter(op => op.type === 'source' && op.data.monthlyAnalysis).map(op => ({ ...op.data.monthlyAnalysis, id: op.entity, at: op.at, batch: op.data.batch, file: op.data.file, blob: op.data.blob, rows: parseMonthlyAnalysis(unb64(bundle.blobs[op.data.blob])) }));
+}
+export function monthlyAnalysisForStore(bundle, storeId, month = monthlyVisitMonth()) {
+  const all = monthlyAnalysisSources(bundle), currentStore = project(bundle).find(s => s.type === 'store' && s.id === storeId);
+  const replaced = new Set(all.flatMap(source => source.supersedes));
+  return all.flatMap(source => source.assignments.flatMap((match, index) => {
+    if (match.storeId !== storeId) return [];
+    const tips = all.filter(s => s.visitMonth === source.visitMonth && s.channel === source.channel && !replaced.has(s.id));
+    const tied = tips.length !== 1;
+    const changed = !currentStore || currentStore.deleted || currentStore.conflict || currentStore.csvIdentityPending || currentStore.mergedInto || currentStore.name !== match.name || (currentStore.address || '') !== match.address || analysisStoreChannel(currentStore) !== source.channel;
+    return [{ ...source, row: source.rows[index], current: source.visitMonth === month && tips[0]?.id === source.id && !tied && !changed, needsReview: !!changed || tied }];
+  })).sort((a, b) => b.visitMonth.localeCompare(a.visitMonth) || b.at.localeCompare(a.at));
+}
+export async function prepareMonthlyAnalysis(bundle, files, salesMonth, visitMonth) {
+  validateBundle(bundle);
+  if (!analysisMonth(salesMonth) || !analysisMonth(visitMonth)) throw new Error('請分別選擇銷量期別與建議拜訪月份。');
+  if (!files.length || files.length > 2) throw new Error('每批請選 1–2 個通路 JSON。');
+  const stores = project(bundle), sources = monthlyAnalysisSources(bundle), result = [], channels = new Set();
+  for (const file of files) {
+    const rows = parseMonthlyAnalysis(file.raw), channel = analysisChannel(rows[0].channel), hash = await hashBytes(file.raw);
+    if (channels.has(channel)) throw new Error('同一批同通路只能有一份檔案。'); channels.add(channel);
+    if (sources.some(s => s.blob === hash && s.salesMonth === salesMonth && s.visitMonth === visitMonth)) throw new Error('此期原檔已匯入，不重複新增；若需修正配對請另行核對。');
+    result.push({ name: file.name, raw: file.raw, rows, channel, hash, replacing: sources.some(s => s.visitMonth === visitMonth && s.channel === channel), candidates: rows.map(row => monthlyAnalysisCandidates(row, stores)) });
+  }
+  return { basis: JSON.stringify(bundle), salesMonth, visitMonth, files: result };
+}
+export async function applyMonthlyAnalysis(bundle, plan, selections, device, replaceAcknowledged = false) {
+  if (!plan || JSON.stringify(bundle) !== plan.basis) throw new Error('資料已改變，請重新預覽與核對；尚未寫入。');
+  if (plan.files.some(file => file.replacing) && !replaceAcknowledged) throw new Error('同月份已有分析，請確認以新批次顯示；舊批次完整保留。');
+  if (!Array.isArray(selections) || selections.length !== plan.files.length) throw new Error('門市核對尚未完成。');
+  // Reparse originals and recompute hashes instead of trusting the displayed plan.
+  const fresh = await prepareMonthlyAnalysis(bundle, plan.files.map(f => ({ name: f.name, raw: f.raw })), plan.salesMonth, plan.visitMonth);
+  const next = structuredClone(bundle), batch = uuid(), used = new Set();
+  for (let f = 0; f < fresh.files.length; f++) {
+    const file = fresh.files[f], choices = selections[f];
+    if (file.hash !== plan.files[f].hash) throw new Error('原檔已改變，請重新讀取核對。');
+    if (!Array.isArray(choices) || choices.length !== file.rows.length) throw new Error('每一列都須確認門市或明確選擇不套用。');
+    const assignments = choices.map((id, index) => {
+      if (id === 'skip') return { storeId:'', head:'', name:'', address:'' };
+      const candidate = file.candidates[index].find(c => c.store.id === id)?.store;
+      if (!candidate || used.has(id)) throw new Error('門市未核對、通路不符或同店重複；尚未寫入。');
+      used.add(id); return { storeId:id, head:candidate.heads[0].id, name:candidate.name, address:candidate.address || '' };
+    });
+    next.blobs[file.hash] = b64(file.raw);
+    const source = revision('source', uuid(), { file:file.name, list:'每月分析 JSON', blob:file.hash, batch, rows:file.rows.length, headers:[], encoding:'UTF-8', delimiter:'', monthlyAnalysis:{ salesMonth:plan.salesMonth, visitMonth:plan.visitMonth, channel:file.channel, supersedes:monthlyAnalysisSources(bundle).filter(s => s.channel === file.channel && s.visitMonth === plan.visitMonth).map(s => s.id), assignments } }, [], device);
+    const earlier = monthlyAnalysisSources(bundle).filter(s => s.channel === file.channel && s.visitMonth === plan.visitMonth).map(s => Date.parse(s.at)).filter(Number.isFinite);
+    source.at = new Date(Math.max(Date.now(), ...earlier.map(at => at + 1))).toISOString();
+    next.ops.push(source);
+  }
   validateBundle(next); return next;
 }
