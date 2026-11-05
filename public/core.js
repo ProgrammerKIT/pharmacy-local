@@ -691,9 +691,9 @@ function validStoreSupervision(value) {
     && validSupervisionDocument(value.sourceDocument) && attendanceInstant(value.recordedAt) && supervisionDate(value.effectiveDate);
 }
 function validPeopleReadingDocument(v) {
-  if(!plain(v)||Object.keys(v).some(k=>!['format','storeId','basis','result','replaces','approvedAt'].includes(k)))return false;
+  if(!plain(v)||Object.keys(v).some(k=>!['format','storeId','basis','result','replaces','approvedAt','generatedAt','mode'].includes(k)))return false;
   const r=v.result;
-  return v.format==='pharmacy-reviewed-reading-1'&&str(v.storeId,100)&&!!v.storeId&&str(v.basis,500000)&&ids(v.replaces)&&new Set(v.replaces).size===v.replaces.length&&attendanceInstant(v.approvedAt)
+  return v.format==='pharmacy-reviewed-reading-1'&&str(v.storeId,100)&&!!v.storeId&&str(v.basis,500000)&&ids(v.replaces)&&new Set(v.replaces).size===v.replaces.length&&(v.mode==='automatic'?v.approvedAt===undefined&&attendanceInstant(v.generatedAt):v.mode===undefined&&attendanceInstant(v.approvedAt))
     &&plain(r)&&r.format==='people-reading-1'&&r.storeId===v.storeId&&r.basis===v.basis&&ids(r.coveredRevisions)&&Array.isArray(r.people)&&r.people.length<=100&&JSON.stringify(r).length<=500000
     &&r.people.every(p=>plain(p)&&str(p.name,100)&&!!p.name&&['local','historical','mentioned','uncertain'].includes(p.kind)&&Array.isArray(p.items)&&p.items.length>0&&p.items.length<=100&&p.items.every(i=>plain(i)&&['background','interaction','relationship','topic'].includes(i.category)&&str(i.text,20000)&&Array.isArray(i.evidence)&&i.evidence.length>0&&i.evidence.length<=100&&i.evidence.every(e=>plain(e)&&str(e.visitId,100)&&str(e.revisionId,100)&&str(e.quote,100000))));
 }

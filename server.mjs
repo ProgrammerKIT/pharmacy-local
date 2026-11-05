@@ -1,9 +1,10 @@
 import https from 'node:https';
+import { validatePeopleBriefResult } from './public/relations.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { randomBytes, randomUUID, createHash, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomUUID, createCipheriv, createDecipheriv, createHash, timingSafeEqual } from 'node:crypto';
 import { execFile, execFileSync } from 'node:child_process';
 import { checkEnvelope } from './public/core.js';
 import { APP_VERSION } from './public/version.js';
@@ -214,7 +215,39 @@ export async function inspectAutostart({
   }
 }
 
-export function createService({ dataDir = defaultDataDir(), host = '0.0.0.0', port, trial = false, updateCommand = null } = {}) {
+// Local encrypted handoff only. The service never invokes a model or an AI API.
+export const peopleAutomationDirectory=()=>path.join(os.homedir(),'Documents','Codex','PrivatePharmacyAutomation');
+export function createPeopleBatch({directory=peopleAutomationDirectory(),getSnapshot=()=>null,now=()=>Date.now()}={}) {
+  const configFile=path.join(directory,'settings.json'),keyFile=path.join(directory,'queue-key');
+  const config=()=>fs.existsSync(configFile)?JSON.parse(fs.readFileSync(configFile,'utf8')):{enabled:false};
+  const ensure=()=>{fs.mkdirSync(directory,{recursive:true,mode:0o700});if(!fs.existsSync(keyFile))fs.writeFileSync(keyFile,randomBytes(32),{mode:0o600,flag:'wx'});};
+  const encode=value=>{ensure();const iv=randomBytes(12),cipher=createCipheriv('aes-256-gcm',fs.readFileSync(keyFile),iv);const data=Buffer.concat([cipher.update(JSON.stringify(value),'utf8'),cipher.final()]);return{iv:iv.toString('base64'),tag:cipher.getAuthTag().toString('base64'),data:data.toString('base64')};};
+  const decode=value=>{const decipher=createDecipheriv('aes-256-gcm',fs.readFileSync(keyFile),Buffer.from(value.iv,'base64'));decipher.setAuthTag(Buffer.from(value.tag,'base64'));return JSON.parse(Buffer.concat([decipher.update(Buffer.from(value.data,'base64')),decipher.final()]).toString('utf8'));};
+  const file=id=>{if(!/^[a-f0-9]{64}$/.test(id))throw Error('工作識別不正確。');return path.join(directory,id+'.job');};
+  const read=id=>decode(JSON.parse(fs.readFileSync(file(id),'utf8'))),write=job=>atomic(file(job.id),encode(job));
+  const jobs=()=>fs.existsSync(directory)?fs.readdirSync(directory).filter(n=>/^[a-f0-9]{64}\.job$/.test(n)).map(n=>read(n.slice(0,-4))):[];
+  const binding=body=>{const snapshot=getSnapshot();if(!body||body.vaultId!==snapshot?.envelope?.vaultId)throw Error('資料庫已變更。');return snapshot;};
+  const summary=job=>({id:job.id,storeId:job.request.store.id,name:job.request.store.name,basisHash:digest(job.request.plan.basis),state:job.state,message:job.message||'',updatedAt:job.updatedAt});
+  const api={
+    configure(enabled,vaultId){if(typeof enabled!=='boolean'||enabled&&(typeof vaultId!=='string'||!vaultId))throw Error('設定不完整。');ensure();atomic(configFile,{format:'pharmacy-codex-batch-1',enabled,vaultId:vaultId||'',scope:'all-eligible-stores',destination:'OpenAI via Codex scheduled task',updatedAt:new Date(now()).toISOString()});return{enabled};},
+    status(body){binding(body);const list=jobs().filter(j=>j.request.vaultId===body.vaultId);return{enabled:config().enabled&&config().vaultId===body.vaultId,entries:list.map(summary),ready:list.filter(j=>j.state==='ready').slice(0,5).map(j=>({id:j.id,basis:j.request.plan.basis,input:j.input})),lastWorkerAt:config().lastWorkerAt||null};},
+    stage(body){const snapshot=binding(body);if(!config().enabled||config().vaultId!==body.vaultId)return{enabled:false};if(body.snapshotVersion!==snapshot.version||!Array.isArray(body.requests)||body.requests.length>5)throw Error('來源或批次數量已變更。');
+      const prepared=body.requests.map(request=>{const p=request?.plan;if(request?.format!=='pharmacy-people-request-1'||request.vaultId!==body.vaultId||typeof request.store?.id!=='string'||typeof request.store.name!=='string'||request.store.name.length>200||p?.format!=='people-reading-1'||p.storeId!==request.store.id||typeof p.basis!=='string'||p.basis.length>500000||!Array.isArray(p.sources)||!p.sources.length||p.sources.length>100||p.sources.some(s=>typeof s.text!=='string'||typeof s.visitId!=='string'||typeof s.revisionId!=='string')||p.sources.reduce((n,s)=>n+s.text.length,0)>100000)throw Error('批次來源不完整；未截斷筆記。');const sanitized={format:request.format,vaultId:request.vaultId,store:request.store,plan:p};const id=digest(JSON.stringify([body.vaultId,p.storeId]));return{id,request:sanitized};});
+      for(const {id,request}of prepared){const existing=fs.existsSync(file(id))?read(id):null;if(existing?.request.plan.basis===request.plan.basis)continue;write({id,request,state:'queued',updatedAt:new Date(now()).toISOString(),attempts:0});}return{enabled:true,staged:prepared.length};},
+    acknowledge(body){binding(body);const job=read(body.id);if(job.request.vaultId!==body.vaultId||job.request.plan.basis!==body.basis||!['saved','stale','failed'].includes(body.outcome))throw Error('工作版本已變更。');job.state=body.outcome;job.message=String(body.message||'').slice(0,500);job.updatedAt=new Date(now()).toISOString();write(job);return{ok:true};},
+    claim(){if(!config().enabled)return null;ensure();const lock=path.join(directory,'worker.lock');let fd;try{fd=fs.openSync(lock,'wx',0o600);}catch{if(now()-fs.statSync(lock).mtimeMs>60000)fs.unlinkSync(lock);return null;}try{const pending=jobs().filter(j=>j.request.vaultId===config().vaultId&&(j.state==='queued'||j.state==='running'&&j.leaseUntil<now()||j.state==='failed'&&j.attempts<3&&j.retryAt<now())).sort((a,b)=>a.updatedAt.localeCompare(b.updatedAt))[0];if(!pending)return null;pending.state='running';pending.lease=randomUUID();pending.leaseUntil=now()+30*60*1000;pending.attempts++;pending.updatedAt=new Date(now()).toISOString();write(pending);atomic(configFile,{...config(),lastWorkerAt:pending.updatedAt});return{id:pending.id,lease:pending.lease,request:pending.request};}finally{fs.closeSync(fd);fs.unlinkSync(lock);}},
+    submit(body){if(!config().enabled)throw Error('批次整理已停用。');const job=read(body.id);if(job.state!=='running'||job.lease!==body.lease||job.leaseUntil<now())throw Error('工作已過期或來源已更新。');if(body.error){job.state='failed';job.retryAt=now()+Math.min(24,job.attempts)*60*60*1000;job.message=String(body.error).slice(0,500);}else{if(body.input?.format!=='pharmacy-people-review-1'||body.input.vaultId!==job.request.vaultId)throw Error('結果資料庫不相符。');validatePeopleBriefResult(job.request.plan,body.input.result);job.input=body.input;job.state='ready';job.message='整理完成；未自動確認人物關係。';}job.updatedAt=new Date(now()).toISOString();delete job.lease;delete job.leaseUntil;write(job);return summary(job);},
+    retry(){for(const job of jobs())if(job.state==='failed'){job.state='queued';job.message='';job.updatedAt=new Date(now()).toISOString();write(job);}return{ok:true};}
+  };
+  // Every writer, including the scheduled helper process, shares one short
+  // transaction lock. A claim cannot overwrite a concurrently staged source.
+  for(const name of ['configure','stage','acknowledge','claim','submit','retry']){
+    const action=api[name];api[name]=(...args)=>{if(name==='claim'&&!config().enabled)return null;ensure();const lock=path.join(directory,'transaction.lock');let fd;try{fd=fs.openSync(lock,'wx',0o600);}catch{if(fs.existsSync(lock)&&now()-fs.statSync(lock).mtimeMs>5*60*1000)fs.unlinkSync(lock);throw Error('佇列正在保存，稍後重試。');}try{return action(...args);}finally{fs.closeSync(fd);fs.unlinkSync(lock);}};
+  }
+  return api;
+}
+
+export function createService({ dataDir = defaultDataDir(), host = '0.0.0.0', port, trial = false, updateCommand = null, peopleDirectory=peopleAutomationDirectory() } = {}) {
   process.umask(0o077);
   const configPath = path.join(dataDir, 'config.json');
   let config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
@@ -223,6 +256,7 @@ export function createService({ dataDir = defaultDataDir(), host = '0.0.0.0', po
   if (snapshot.envelope) checkEnvelope(snapshot.envelope);
   const deviceActive = device => !snapshot.rebuild || device.rebuildId === snapshot.rebuild.id;
   const scheduledRecovery = createScheduledRecoveryStore({ dataDir, getSnapshot: () => snapshot });
+  const peopleBatch=createPeopleBatch({directory:peopleDirectory,getSnapshot:()=>snapshot});
   let pairing = null;
   let generation = null, updateStatus = { configured: false, phase: 'unconfigured', appVersion: APP_VERSION, message: '請以 02-Start 啟動更新管理服務。' };
   const activity = new Map();
@@ -321,6 +355,10 @@ export function createService({ dataDir = defaultDataDir(), host = '0.0.0.0', po
           return send(200, { appVersion: APP_VERSION, maintenance: generation, update: { phase: updateStatus.phase, message: updateStatus.message, configured: updateStatus.configured } });
         }
         if (!req.headers['x-pharmacy-app']) activity.set(`legacy:${device.id}`, { at: Date.now(), busy: true, generation: null });
+        if(['/api/people-batch/status','/api/people-batch/stage','/api/people-batch/ack'].includes(url.pathname)&&req.method==='POST'){
+          const body=await json(req);if(!deviceActive(device))return send(401,{error:'配對工作階段已變更。'});if(generation)return send(503,{error:'更新中，稍後補做。'});
+          return send(200,url.pathname.endsWith('/status')?peopleBatch.status(body):url.pathname.endsWith('/stage')?peopleBatch.stage(body):peopleBatch.acknowledge(body));
+        }
         if (url.pathname === '/api/recovery-backup/status' && req.method === 'GET') return send(200, scheduledRecovery.status());
         if (url.pathname === '/api/recovery-backup/file' && req.method === 'GET') {
           const name = url.searchParams.get('name'), bytes = scheduledRecovery.download(name);

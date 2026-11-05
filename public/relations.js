@@ -485,15 +485,15 @@ export function preparePeopleReading(bundle,input) {
   const request=peopleReadingRequest(bundle,input.result?.storeId),result=validatePeopleBriefResult(request.plan,input.result);
   if(result.people.some(p=>!['local','historical','mentioned','uncertain'].includes(p.kind)||p.items.some(i=>!['background','interaction','relationship','topic'].includes(i.category))))throw new Error('人物分類與內容類別必須完整。');
   const previous=currentPeopleReading(bundle,result.storeId);
-  return {storeId:result.storeId,storeName:request.store.name,result,previous:previous.current?.peopleReading.result||null,priorResults:previous.heads.map(s=>s.peopleReading.result),replaces:previous.heads.map(s=>s.id).sort(),conflict:previous.conflict};
+  return {storeId:result.storeId,storeName:request.store.name,result,previous:previous.current?.peopleReading.result||null,previousMode:previous.current?.peopleReading.mode||'manual',priorResults:previous.heads.map(s=>s.peopleReading.result),replaces:previous.heads.map(s=>s.id).sort(),conflict:previous.conflict};
 }
-export async function applyPeopleReading(bundle,input,expected,device,approvedAt=new Date().toISOString()) {
+export async function applyPeopleReading(bundle,input,expected,device,approvedAt=new Date().toISOString(),mode='manual') {
   const plan=preparePeopleReading(bundle,input);
   if(JSON.stringify(plan)!==JSON.stringify(expected))throw new Error('核對期間來源或整理紀錄已更新，請重新預覽。');
-  if(!device||!Number.isFinite(Date.parse(approvedAt)))throw new Error('裝置或確認時間不完整。');
+  if(!device||!['manual','automatic'].includes(mode)||!Number.isFinite(Date.parse(approvedAt)))throw new Error('裝置或確認時間不完整。');
   const next=structuredClone(bundle),bytes=new TextEncoder().encode(JSON.stringify(input)),blob=await hashBytes(bytes);
-  if(plan.previous&&JSON.stringify(plan.previous)===JSON.stringify(plan.result))throw new Error('這份人物速覽已保存，不重複新增。');
+  if(plan.previous&&JSON.stringify(plan.previous)===JSON.stringify(plan.result)&&(plan.previousMode==='manual'||mode==='automatic'))throw new Error('這份人物速覽已保存，不重複新增。');
   next.schema=Math.max(2,next.schema);next.blobs[blob]=b64(bytes);
-  next.ops.push(revision('source',uuid(),{file:'人物速覽.json',list:'人工核對人物速覽',blob,batch:uuid(),rows:plan.result.people.length,headers:[],encoding:'UTF-8',delimiter:'',peopleReading:{format:'pharmacy-reviewed-reading-1',storeId:plan.storeId,basis:plan.result.basis,result:plan.result,replaces:plan.replaces,approvedAt}},[],device));
+  next.ops.push(revision('source',uuid(),{file:'人物速覽.json',list:'人工核對人物速覽',blob,batch:uuid(),rows:plan.result.people.length,headers:[],encoding:'UTF-8',delimiter:'',peopleReading:{format:'pharmacy-reviewed-reading-1',storeId:plan.storeId,basis:plan.result.basis,result:plan.result,replaces:plan.replaces,...(mode==='automatic'?{mode,generatedAt:approvedAt}:{approvedAt})}},[],device));
   return validateBundle(next);
 }
