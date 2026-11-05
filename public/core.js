@@ -690,8 +690,16 @@ function validStoreSupervision(value) {
     && str(value.storeCode, 100) && supervisionText(value.sourceLabel, 500)
     && validSupervisionDocument(value.sourceDocument) && attendanceInstant(value.recordedAt) && supervisionDate(value.effectiveDate);
 }
+function validPeopleReadingDocument(v) {
+  if(!plain(v)||Object.keys(v).some(k=>!['format','storeId','basis','result','replaces','approvedAt'].includes(k)))return false;
+  const r=v.result;
+  return v.format==='pharmacy-reviewed-reading-1'&&str(v.storeId,100)&&!!v.storeId&&str(v.basis,500000)&&ids(v.replaces)&&new Set(v.replaces).size===v.replaces.length&&attendanceInstant(v.approvedAt)
+    &&plain(r)&&r.format==='people-reading-1'&&r.storeId===v.storeId&&r.basis===v.basis&&ids(r.coveredRevisions)&&Array.isArray(r.people)&&r.people.length<=100&&JSON.stringify(r).length<=500000
+    &&r.people.every(p=>plain(p)&&str(p.name,100)&&!!p.name&&['local','historical','mentioned','uncertain'].includes(p.kind)&&Array.isArray(p.items)&&p.items.length>0&&p.items.length<=100&&p.items.every(i=>plain(i)&&['background','interaction','relationship','topic'].includes(i.category)&&str(i.text,20000)&&Array.isArray(i.evidence)&&i.evidence.length>0&&i.evidence.length<=100&&i.evidence.every(e=>plain(e)&&str(e.visitId,100)&&str(e.revisionId,100)&&str(e.quote,100000))));
+}
 export function validData(type, d) {
   if (!plain(d)) return false;
+  if (d.peopleReading !== undefined && (type !== 'source' || !validPeopleReadingDocument(d.peopleReading))) return false;
   if (d.monthlyAnalysis !== undefined && (type !== 'source' || !validMonthlyAnalysis(d.monthlyAnalysis))) return false;
   if (d.supervision !== undefined && (type !== 'store' || !validStoreSupervision(d.supervision))) return false;
   if (d.relationshipNotes !== undefined && (type !== 'person' || !str(d.relationshipNotes, 20000))) return false;
@@ -750,6 +758,17 @@ export function validateBundle(b) {
     if (Object.hasOwn(o, 'visitAttendance') && !validVisitAttendance(o)) throw new Error('拜訪確認資料不完整或與紀錄不符。');
     seen.set(o.id, o);
   }
+  const readingDocs=[...sourceEntities.values()].filter(o=>o.data.peopleReading),readingByEntity=new Map(readingDocs.map(o=>[o.entity,o]));
+  const readingDegree=new Map(),readingChildren=new Map();
+  for(const op of readingDocs){
+    const doc=op.data.peopleReading;readingDegree.set(op.entity,doc.replaces.length);
+    if(!storeEntities.has(doc.storeId))throw new Error('人物速覽所屬門市不存在。');
+    for(const id of doc.replaces){const before=readingByEntity.get(id);if(!before||id===op.entity||before.data.peopleReading.storeId!==doc.storeId)throw new Error('人物速覽歷史鏈結不完整。');if(!readingChildren.has(id))readingChildren.set(id,[]);readingChildren.get(id).push(op.entity);}
+    for(const person of doc.result.people)for(const item of person.items)for(const evidence of item.evidence){const source=seen.get(evidence.revisionId);if(!source||source.type!=='visit'||source.entity!==evidence.visitId||source.data.store!==doc.storeId||!evidence.quote.trim()||!source.data.text.includes(evidence.quote))throw new Error('人物速覽引句或精確版本不符。');}
+  }
+  const readingQueue=readingDocs.filter(o=>!o.data.peopleReading.replaces.length).map(o=>o.entity);let readingCount=0;
+  for(let i=0;i<readingQueue.length;i++){readingCount++;for(const id of readingChildren.get(readingQueue[i])||[]){readingDegree.set(id,readingDegree.get(id)-1);if(!readingDegree.get(id))readingQueue.push(id);}}
+  if(readingCount!==readingDocs.length)throw new Error('人物速覽歷史不可循環。');
   validateSupervisorReviews(b, seen);
   validateStoreMergeProvenance(b, seen);
   validateCSVExclusionEvents(sourceEntities);

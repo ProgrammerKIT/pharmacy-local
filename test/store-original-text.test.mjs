@@ -38,7 +38,7 @@ function harness(items, { bundle = bundleFor(items), payloadFields = {} } = {}) 
   };
   const denyWrite = name => () => { attempts.push(name); assert.fail(`Reading must not invoke ${name}`); };
   const payload = freeze({ bundle, ...payloadFields });
-  const ctx = vm.createContext({ monthlyAnalysisStoreHTML:()=>'', analysisOverviewHTML:()=>'',storeSupervisionHTML:()=>'',
+  const ctx = vm.createContext({ peopleReadingHTML:()=>'', ensurePeopleReading:async()=>{}, monthlyAnalysisStoreHTML:()=>'', analysisOverviewHTML:()=>'',storeSupervisionHTML:()=>'',
     ...core, storeIdentityPending, originalStoreNames, visitBriefForStore,
     records: freeze(core.project(bundle)), payload, $: node, JSON, Date, Set,
     activeView: 'visits', focus: { type: 'store', id: '' }, inlineTextContext: null, singleStoreContext: null,
@@ -61,7 +61,7 @@ function harness(items, { bundle = bundleFor(items), payloadFields = {} } = {}) 
     source('function sourceButton(', 'function openSources(') +
     source('function briefTraceHTML(', 'function singleStoreCaptureHTML(') +
     source('function noteHTML(', 'function render()') +
-    source('function openVisitBrief(', 'function canonicalPerson('), ctx);
+    source('function readingReminderOverlap(', 'function openVisitBrief(') + source('function openVisitBrief(', 'function canonicalPerson('), ctx);
   return {
     ctx, node, payload, messages, attempts,
     render(query = '') { node('visit-search').value = query; ctx.renderVisits(); return node('visit-list').innerHTML; },

@@ -62,7 +62,7 @@ function harness() {
   };
   let context;
   const records = () => core.project(context.payload.bundle);
-  context = vm.createContext({ monthlyAnalysisStoreHTML:()=>'', analysisOverviewHTML:()=>'',storeSupervisionHTML:()=>'',
+  context = vm.createContext({ peopleReadingHTML:()=>'', ensurePeopleReading:async()=>{}, monthlyAnalysisStoreHTML:()=>'', analysisOverviewHTML:()=>'',storeSupervisionHTML:()=>'',
     ...core, visitBriefForStore, storeIdentityPending, $, JSON, Set, Date,
     payload: { bundle: makeFixture(core) }, singleStoreContext: null, insightsPreview: null,
     all: type => records().filter(record => record.type === type),
@@ -79,7 +79,7 @@ function harness() {
   vm.runInContext(source('const esc = ', 'const titles =')
     + source('function storeOriginalTextFields(', 'function visitStoreNameText(')
     + source('const INSIGHT_REVIEW_LABELS = ', 'function assertInsightReviewReady(')
-    + source('function openVisitBrief(', 'function canonicalPerson(')
+    + source('function readingReminderOverlap(', 'function openVisitBrief(') + source('function openVisitBrief(', 'function canonicalPerson(')
     + source("$('review-body').addEventListener('toggle'", "$('review').addEventListener('close', () => { if (!$('review').open) clearStoreMergePreview(); });"), context);
   const flush = () => {
     while (frames.length) frames.shift()();
