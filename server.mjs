@@ -216,7 +216,7 @@ export async function inspectAutostart({
 }
 
 // Local encrypted handoff only. The service never invokes a model or an AI API.
-export const peopleAutomationDirectory=()=>path.join(os.homedir(),'Documents','Codex','PrivatePharmacyAutomation');
+export const peopleAutomationDirectory=()=>path.join(defaultDataDir(),'people-automation');
 export function createPeopleBatch({directory=peopleAutomationDirectory(),getSnapshot=()=>null,now=()=>Date.now()}={}) {
   const configFile=path.join(directory,'settings.json'),keyFile=path.join(directory,'queue-key');
   const config=()=>fs.existsSync(configFile)?JSON.parse(fs.readFileSync(configFile,'utf8')):{enabled:false};
