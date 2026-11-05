@@ -1059,7 +1059,7 @@ async function openWorkspace() {
   document.body.classList.toggle('privacy-veil', pendingLock);
   try { storagePersistent = await navigator.storage?.persist?.() || false; } catch {}
   restoreTransientResumeState(); renderBackupResult(); await runPeriodicHealthAudit(); clearInterval(autoTimer);
-  autoTimer = setInterval(() => { void insightReviewTick(); void peopleReadingTick(); supervisorRelationshipTick(); if (!document.hidden) { syncScheduler.request('poll'); setTimeout(() => void weeklyTick(), 1500); } }, 15000);
+  autoTimer = setInterval(() => { void insightReviewTick(); void peopleReadingTick(); void peopleBatchTick(); supervisorRelationshipTick(); if (!document.hidden) { syncScheduler.request('poll'); setTimeout(() => void weeklyTick(), 1500); } }, 15000);
   setTimeout(() => void weeklyTick(), 3000);
   syncScheduler.request('foreground');
   queueInsightScan(); requestNearbyPosition();
@@ -1644,7 +1644,7 @@ function queueInsightScan() {
   insightScanTimer = setTimeout(() => { insightScanTimer = null; void insightReviewTick(); if(typeof peopleReadingTick==='function')void peopleReadingTick(); }, 1800);
 }
 function resetInsightScan() {
-  if(typeof peopleReadingViews!=='undefined'){peopleReadingEpoch++;peopleReadingViews.clear();peopleReadingPreview=null;}
+  if(typeof peopleReadingViews!=='undefined'){peopleReadingEpoch++;peopleReadingViews.clear();peopleReadingPreview=null;if(typeof peopleBatchStatus!=='undefined'){peopleBatchStatus=null;peopleBatchChecked=0;$('people-batch-status')?.remove?.();}}
   insightBackgroundActive = null;
   insightScanGeneration++; clearTimeout(insightScanTimer); insightScanTimer = null; insightScanCache = null; insightScanRunning = false; insightScanError = ''; insightChangesContext = null;
   $('insight-changes-body')?.replaceChildren();
@@ -1838,6 +1838,29 @@ async function commitInsights() {
   toast(ctx.kind === 'relations' ? `已保存 ${count} 間門市的人物關係對應；既有審核、原文與實際拜訪日期保持原樣，等待加密同步。` : `已保存 ${count} 間門市的拜訪前線索；原文與實際拜訪日期保持原樣，等待加密同步。`);
 }
 // Derived reading views never write customer revisions or relationship reviews.
+let peopleBatchRunning=false,peopleBatchStatus=null,peopleBatchChecked=0;
+function renderPeopleBatchStatus(){
+ const host=$('sync-view');if(!host)return;let panel=$('people-batch-status');if(!panel){panel=document.createElement('section');panel.id='people-batch-status';panel.className='panel';host.prepend(panel);}
+ const state=peopleBatchStatus,entries=state?.entries||[],count=kind=>entries.filter(j=>j.state===kind).length;
+ panel.innerHTML=`<h2>人物速覽 · 批次自動整理</h2><p>${state?.enabled?'已啟用：由 Codex 排程整理，無需逐店下載或載入 JSON。':state?'尚未啟用批次排程；原人物速覽保留。':'正在確認排程狀態；已保存速覽仍可查看。'}</p><p>可整理 ${state?.eligibleCount??'核對中'} 間；已準備 ${entries.length} 間。</p><p role="status">等待 ${count('queued')} · 整理中 ${count('running')} · 等待保存 ${count('ready')} · 已保存 ${count('saved')} · 失敗 ${count('failed')} · 來源已變 ${count('stale')}</p>${state?.error?`<p class="error">${esc(state.error)}</p>`:''}<p class="muted">AI 速覽不等於 Kit 已確認；不合併人物、不改關係判斷或待辦。Mac、Codex 與網路可執行時才整理，App 解鎖並同步後準備新來源；保留前份速覽與歷史。</p>${state?.lastWorkerAt?`<p>最近排程執行：${esc(dateText(state.lastWorkerAt))}</p>`:''}<details><summary>門市進度及例外 · ${entries.length} 間</summary>${entries.map(j=>`<p>${esc(j.name)}：${esc({queued:'等待整理',running:'整理中',ready:'等待保存',saved:'已保存',failed:'失敗',stale:'待新來源'}[j.state]||j.state)}${j.message?' · '+esc(j.message):''}</p>`).join('')}${(state?.excluded||[]).map(j=>`<p>${esc(j.name)}：${esc(j.reason)}</p>`).join('')}</details>`;
+}
+async function peopleBatchTick(force=false){
+ if(peopleBatchRunning||!canScanInsights()||!payload?.token||payload.dirty||!Number.isSafeInteger(payload.serverVersion)||!force&&Date.now()-peopleBatchChecked<15000)return;
+ peopleBatchRunning=true;const sessionKey=key,epoch=peopleReadingEpoch;
+ const eligible=()=>payload&&key===sessionKey&&peopleReadingEpoch===epoch&&canScanInsights()&&!payload.dirty;
+ try{
+  const vaultId=payload.bundle.vaultId,state=await api('/api/people-batch/status',{method:'POST',body:{vaultId}});if(!eligible())return;peopleBatchStatus=state;peopleBatchChecked=Date.now();renderPeopleBatchStatus();if(!state.enabled)return;
+  const acknowledgements=[];let nextBundle=payload.bundle;
+  for(const item of state.ready||[]){try{const existing=currentPeopleReading(nextBundle,item.input.result.storeId).current?.peopleReading;const plan=preparePeopleReading(nextBundle,item.input);if(!(existing?.basis===plan.result.basis&&(!existing.mode||JSON.stringify(existing.result)===JSON.stringify(plan.result))))nextBundle=await applyPeopleReading(nextBundle,item.input,plan,payload.device,new Date().toISOString(),'automatic');acknowledgements.push({...item,outcome:'saved'});}catch(error){acknowledgements.push({...item,outcome:'stale',message:error.message});}}
+  if(nextBundle!==payload.bundle){const before=payload;const guard=()=>{if(!payload||key!==sessionKey||epoch!==peopleReadingEpoch||payload!==before||payload.dirty||!insightScanIdle())throw Error('整理保存前資料或工作階段已變更，稍後補做。');};guard();await persist({...payload,bundle:nextBundle,dirty:true},{guard});}
+  for(const item of acknowledgements){if(key!==sessionKey||epoch!==peopleReadingEpoch)return;await api('/api/people-batch/ack',{method:'POST',body:{vaultId,id:item.id,basis:item.basis,outcome:item.outcome,message:item.message||''}});const entry=peopleBatchStatus.entries.find(j=>j.id===item.id);if(entry)entry.state=item.outcome;renderPeopleBatchStatus();}
+  if(!eligible())return;
+  const known=new Map(state.entries.map(j=>[j.storeId,j])),requests=[],excluded=[];let eligibleCount=0;
+  for(const store of all('store')){if(store.deleted)continue;try{const request=peopleReadingRequest(payload.bundle,store.id);eligibleCount++;const basis=request.plan.basis,prior=currentPeopleReading(payload.bundle,store.id);if(prior.current?.peopleReading.basis===basis)continue;const hash=await hashBytes(new TextEncoder().encode(basis));if(known.get(store.id)?.basisHash===hash)continue;if(requests.length<5)requests.push(request);}catch(error){excluded.push({name:store.name,reason:error.message});}}
+  peopleBatchStatus.excluded=excluded;peopleBatchStatus.eligibleCount=eligibleCount;renderPeopleBatchStatus();if(requests.length&&eligible())await api('/api/people-batch/stage',{method:'POST',body:{vaultId,snapshotVersion:payload.serverVersion,requests}});
+ }catch(error){peopleBatchStatus={...peopleBatchStatus,error:error.message};renderPeopleBatchStatus();}finally{peopleBatchRunning=false;}
+}
+
 const peopleReadingViews = new Map();
 let peopleReadingEpoch=0, peopleReadingPreview=null;
 function peopleReadingPlan(storeId) {return peopleBriefSourcePlan(storeId,all('visit'),all('store'));}
@@ -1846,9 +1869,10 @@ function peopleEvidenceHTML(evidence) {
 }
 function peopleReadingHTML(storeId) {
   const view=peopleReadingViews.get(storeId),data=view?.result;
-  const state=view?.state==='success'&&data?.basis===view.basis?'已核對至目前筆記版本':view?.state==='conflict'?'有不同整理版本，請重新核對':view?.state==='stale'?'有新來源，待重新整理':'尚未整理';
-  const actions=`<div class="people-reading-actions"><button type="button" data-reading-export="${esc(storeId)}">準備本店整理資料</button><button type="button" data-reading-import="${esc(storeId)}">載入整理結果並核對</button><input type="file" accept=".json,application/json" data-reading-file="${esc(storeId)}" hidden></div><p class="muted">由你請 ChatGPT／Codex 整理，再核對保存；此頁不自動傳送筆記，也不執行 AI。</p>`;
-  const history=view?.history?.length?`<details><summary>人物速覽歷史 · ${view.history.length} 份</summary>${view.history.map(h=>`<details><summary>${esc(dateText(h.peopleReading.approvedAt))} · ${esc(h.id)}</summary><pre>${esc(JSON.stringify(h.peopleReading.result,null,2))}</pre></details>`).join('')}</details>`:'';
+  const state=view?.state==='automatic'&&data?.basis===view.basis?'AI 已整理至目前筆記版本（尚未人工核對）':view?.state==='success'&&data?.basis===view.basis?'已核對至目前筆記版本':view?.state==='conflict'?'有不同整理版本，請重新核對':view?.state==='stale'?'有新來源，待重新整理':'尚未整理';
+  const actions=`${view?.state==='automatic'?`<button type="button" data-reading-approve="${esc(storeId)}">核對這份速覽</button>`:''}<details><summary>手動單店工具（備援）</summary><div class="people-reading-actions"><button type="button" data-reading-export="${esc(storeId)}">準備本店整理資料</button><button type="button" data-reading-import="${esc(storeId)}">載入整理結果並核對</button><input type="file" accept=".json,application/json" data-reading-file="${esc(storeId)}" hidden></div><p class="muted">只在需要手動處理時使用；日常由批次排程接手，不必逐店下載。</p></details>`;
+
+  const history=view?.history?.length?`<details><summary>人物速覽歷史 · ${view.history.length} 份</summary>${view.history.map(h=>`<details><summary>${h.peopleReading.mode==='automatic'?'AI 整理':'人工核對'} · ${esc(dateText(h.peopleReading.approvedAt||h.peopleReading.generatedAt))} · ${esc(h.id)}</summary><pre>${esc(JSON.stringify(h.peopleReading.result,null,2))}</pre></details>`).join('')}</details>`:'';
   if(!data)return `<h2>到店前先掃這一區</h2><p class="people-reading-status" role="status">${esc(state)}</p>${actions}${history}`;
   const names=data.people.map(p=>p.name),sameGroup=name=>{const person=data.people.find(p=>p.name===name);return !!person?.candidateGroup&&data.people.some(p=>p.name!==name&&p.candidateGroup===person.candidateGroup);};
   const card=(person,index)=>{
@@ -1860,7 +1884,7 @@ function peopleReadingHTML(storeId) {
     return `<details class="people-reading-person${sameGroup(person.name)?' people-reading-same':''}" data-reading-person="${esc(person.name)}" data-reading-key="${index}"><summary><strong>${esc(person.name)}</strong><span>${esc(memory)}</span></summary><div>${sameGroup(person.name)?'<p class="muted">同色為疑似同人，資訊仍分開；未經明確確認不合併姓名或人工判斷。</p>':''}${groups}<div class="people-formal-relations"></div></div></details>`;
   };
   const group=(kind,title)=>{const people=data.people.map((p,i)=>({p,i})).filter(({p})=>(p.kind||'uncertain')===kind);return people.length?`<details class="people-reading-tier"><summary>${title} · ${people.length}</summary>${people.map(({p,i})=>card(p,i)).join('')}</details>`:'';};
-  return `<h2>到店前先掃這一區</h2><span data-insight-change-slot="${esc(storeId)}">${insightChangeBadgeHTML(storeId)}</span><p class="people-reading-status" role="status">${esc(state)}${view.generatedAt?' · '+esc(dateText(view.generatedAt)):''}</p>${(view.state!=='success'||data.basis!==view.basis)?'<p class="muted">目前保留前次速覽，以完整原文為準。</p>':''}${data.people.filter(p=>p.kind==='local').length?data.people.map((p,i)=>p.kind==='local'?card(p,i):'').join(''):'<p class="muted">未能安全辨識本店人物；完整原文保留在下方。</p>'}${group('historical','歷史人物')}${group('mentioned','其他門市提及')}${group('uncertain','稱呼待釐清')}${actions}${history}<details><summary>閱讀來源與限制</summary><p>經預覽核對後保存的人物閱讀整理；仍可回查原句。相同稱呼只供閱讀分組，不代表人物已合併；整理不更改原文、日期、關係審核或待辦。沒有新來源不反覆分析。關係原文不等於已人工確認。</p></details>`;
+  return `<h2>到店前先掃這一區</h2><span data-insight-change-slot="${esc(storeId)}">${insightChangeBadgeHTML(storeId)}</span><p class="people-reading-status" role="status">${esc(state)}${view.generatedAt?' · '+esc(dateText(view.generatedAt)):''}</p>${(!['success','automatic'].includes(view.state)||data.basis!==view.basis)?'<p class="muted">目前保留前次速覽，以完整原文為準。</p>':''}${data.people.filter(p=>p.kind==='local').length?data.people.map((p,i)=>p.kind==='local'?card(p,i):'').join(''):'<p class="muted">未能安全辨識本店人物；完整原文保留在下方。</p>'}${group('historical','歷史人物')}${group('mentioned','其他門市提及')}${group('uncertain','稱呼待釐清')}${actions}${history}<details><summary>閱讀來源與限制</summary><p>${view.state==='automatic'?'Codex 自動整理，尚未人工核對；':'經人工核對的閱讀整理；'}可回查原句。相同稱呼只供閱讀分組，不代表人物已合併；整理不更改原文、日期、關係審核或待辦。沒有新來源不反覆分析。關係原文不等於已人工確認。</p></details>`;
 }
 function refreshPeopleReadingPanel(storeId) {
   if(document.hidden||pendingLock||inlineTextContext||editorContext||singleStoreContext||!$('review')?.open||$('review').dataset.singleStoreId!==storeId)return;
@@ -1889,7 +1913,7 @@ function loadPeopleReadingView(storeId) {
   const saved=currentPeopleReading(payload.bundle,storeId);let basis='';
   try{basis=peopleReadingPlan(storeId).basis;}catch{}
   const doc=saved.current?.peopleReading;
-  peopleReadingViews.set(storeId,{basis,result:doc?.result||null,generatedAt:doc?.approvedAt||null,history:saved.history,state:saved.conflict?'conflict':doc?(doc.basis===basis?'success':'stale'):'missing'});
+  peopleReadingViews.set(storeId,{basis,result:doc?.result||null,generatedAt:doc?.approvedAt||doc?.generatedAt||null,history:saved.history,state:saved.conflict?'conflict':doc?(doc.basis===basis?(doc.mode==='automatic'?'automatic':'success'):'stale'):'missing'});
 }
 function peopleReadingTick() {
   if(!payload||pendingLock||document.hidden||!$('review')?.open||!$('review').dataset.singleStoreId)return;
@@ -2015,6 +2039,7 @@ function noteHTML(v, query = '', { showStoreText = true } = {}) {
   return `<article class="note">${v.source ? `<div class="note-head"><span class="pill">${esc(v.source)}</span></div>` : ''}<button class="text-button store-link" ${storeButton}>${visitStoreNameHTML(name('store', v.store), query)}</button>${visitStoreAliasMatchHTML(store, query)}${storeAttendanceHTML(v.store)}${storeNotes}${showStoreText ? storeOriginalTextHTML(store, query) : ''}${v.conflict ? `<div class="conflict-card">這筆有 ${v.heads.length} 個版本。以下僅顯示其中一個，請先核對。 <button class="text-button" data-review="visit:${esc(v.id)}">處理衝突</button></div>` : ''}${sourceState}${hint}${textBlock}<div class="chips">${v.topics.map(id => chip('topic', id, query)).join('')}${v.people.map(id => chip('person', id, query)).join('')}</div>${v.next ? `<p class="next"><strong>下次跟進</strong>${highlightLiteral(v.next, query)}</p>` : ''}<div class="attachments">${(v.attachments || []).map((a, i) => `<button data-attachment="${esc(v.id)}" data-index="${i}">↧ ${esc(a.name)}</button>`).join('')}</div><div class="note-actions">${!v.conflict && store && !store.deleted && !store.conflict ? `<button class="primary" data-new-visit-store="${esc(v.store)}">＋ 記錄這次拜訪</button>` : ''}<details class="more-actions"><summary>更多操作</summary><div>${advanced}</div></details></div></article>`;
 }
 function render() {
+  if(typeof peopleBatchStatus!=='undefined')renderPeopleBatchStatus();
   if (!payload) return;
   renderSupervisorDraftBanner();
   records = project(payload.bundle); status(); queueInsightScan(); refreshInsightChangeBadges();
@@ -4207,6 +4232,7 @@ $('monthly-analysis-dialog').addEventListener('close',()=>{analysisImport=null;}
 $('monthly-analysis-dialog').addEventListener('change', event=>{ if(event.target.matches('[data-analysis-choice]') && analysisImport){delete analysisImport.finalChoices;$('analysis-final').innerHTML='';} if(event.target.matches('#analysis-files,#analysis-sales,#analysis-visit')){analysisImport=null;$('analysis-matches').innerHTML='';} });
 
 $('review').addEventListener('click',event=>{
+ const approveButton=event.target.closest?.('[data-reading-approve]');if(approveButton){const storeId=approveButton.dataset.readingApprove,doc=currentPeopleReading(payload.bundle,storeId).current?.peopleReading;if(doc){const text=JSON.stringify({format:'pharmacy-people-review-1',vaultId:payload.bundle.vaultId,result:doc.result});void run(()=>previewPeopleReadingFile({size:new TextEncoder().encode(text).length,text:async()=>text},storeId));}return;}
  const exportButton=event.target.closest?.('[data-reading-export]');if(exportButton){void run(()=>exportPeopleReading(exportButton.dataset.readingExport));return;}
  const importButton=event.target.closest?.('[data-reading-import]');if(importButton){document.querySelector('[data-reading-file="'+CSS.escape(importButton.dataset.readingImport)+'"]')?.click();return;}
  if(event.target.closest?.('[data-reading-cancel]')){const id=peopleReadingPreview?.plan.storeId;peopleReadingPreview=null;if(id)openVisitBrief(id);return;}
