@@ -1,3 +1,4 @@
+import { project, validateBundle, revision, uuid, hashBytes, b64 } from './core.js';
 // All matching runs on the device. Labels describe text evidence, never clinical advice.
 export function storeIdentityPending(store) {
   return !!store && (store.csvIdentityPending === true || !!store.conflict && (store.heads || []).some(h => h.data.csvIdentityPending === true));
@@ -419,4 +420,80 @@ export function groupCSVNotes(visits) {
     else { const group = { ...visit, evidenceMembers: [visit] }; groups.set(signature, group); output.push(group); }
   }
   return output;
+}
+
+
+// Update state is separate from the analysis provider. A timer completing is
+// never evidence that all current source versions were actually analyzed.
+export const PEOPLE_BRIEF_FORMAT = 'people-reading-1';
+export function peopleBriefSourcePlan(storeId, visits, stores) {
+  const store=stores.find(s=>s.id===storeId);
+  if (!safeRegionalStore(store)) throw new Error('門市身分或版本尚待核對，未更新人物速覽。');
+  const selected=visits.filter(v=>v.store===storeId && !v.deleted).slice().sort((a,b)=>a.id.localeCompare(b.id));
+  if (selected.some(v=>v.conflict||v.googleUpdatePending||v.heads?.length!==1)) throw new Error('本店筆記來源尚待核對，保留上一份速覽。');
+  const sources=selected.map(v=>({visitId:v.id,revisionId:v.heads[0].id,text:String(v.text||''),source:v.source||'',date:v.date||''}));
+  // Include the store head: review/relationship changes must invalidate a view
+// even if visit text did not change. No source date is inferred from op.at.
+  const basis=JSON.stringify([PEOPLE_BRIEF_FORMAT,store.id,(store.heads||[]).map(h=>h.id).sort(),sources]);
+  return {format:PEOPLE_BRIEF_FORMAT,storeId,basis,sources};
+}
+export function validatePeopleBriefResult(plan, result) {
+  if (!result || result.format!==PEOPLE_BRIEF_FORMAT || result.storeId!==plan.storeId || result.basis!==plan.basis || !Array.isArray(result.coveredRevisions) || JSON.stringify(result.coveredRevisions.slice().sort())!==JSON.stringify(plan.sources.map(s=>s.revisionId).sort()) || !Array.isArray(result.people)) throw new Error('人物速覽未完整涵蓋這次來源版本。');
+  if(new Set(result.people.map(p=>p?.name)).size!==result.people.length)throw new Error('人物稱呼重複，未完成整理。');
+  if(result.people.length>100||JSON.stringify(result).length>500000)throw new Error('人物速覽超出範圍。');
+  const sourceMap=new Map(plan.sources.map(s=>[s.revisionId,s]));
+  for (const person of result.people) {
+    if (!person || typeof person.name!=='string'||!person.name.trim()||!Array.isArray(person.items)||!person.items.length||(person.kind!==undefined&&!['local','historical','mentioned','uncertain'].includes(person.kind))) throw new Error('人物速覽格式不完整。');
+    if(person.name.length>100||!plan.sources.some(s=>s.text.includes(person.name))||person.items.length>100||person.candidateGroup!==undefined&&(typeof person.candidateGroup!=='string'||person.candidateGroup.length>100))throw new Error('人物稱呼或疑似同人分組不完整。');
+    for (const item of person.items) {
+      if(!item||typeof item!=='object'||Object.keys(item).some(k=>!['category','text','evidence'].includes(k))||item.category!==undefined&&!['background','interaction','relationship','topic'].includes(item.category))throw new Error('整理不可新增人工判斷或其他欄位。');
+      if (typeof item.text!=='string'||!item.text.trim()||!Array.isArray(item.evidence)||!item.evidence.length) throw new Error('人物整理缺少原文依據。');
+      const quoteText=item.evidence.map(e=>e.quote||'').join('\n');
+      if(/[？?]|好像|可能|應該|感覺|不知道/u.test(quoteText)&&!/[？?]|好像|可能|應該|感覺|不知道|不確定|未核實|待核對|未確認|詢問|曾問|提問/u.test(item.text))throw new Error('原文的不確定性不能變成肯定事實。');
+      if(/共事|同事|與.+同店/u.test(item.text)&&!/共事|同事|一起上班|同時間|同時/u.test(quoteText)&&!/不代表|未確認|不能|未明|尚不/u.test(item.text))throw new Error('任職背景不能直接推定同事關係。');
+      for (const evidence of item.evidence) {
+        if(!evidence||typeof evidence!=='object'||Object.keys(evidence).some(k=>!['visitId','revisionId','quote'].includes(k)))throw new Error('來源依據格式不完整。');
+        const source=sourceMap.get(evidence.revisionId);
+        if (!source || source.visitId!==evidence.visitId || typeof evidence.quote!=='string'||!evidence.quote.trim()||!source.text.includes(evidence.quote)) throw new Error('人物速覽的引句或來源版本不相符。');
+      }
+    }
+  }
+  // Identity merges and review decisions are never accepted from an analyzer.
+  if (Object.keys(result).some(k=>!['format','storeId','basis','coveredRevisions','people'].includes(k)) || result.people.some(p=>Object.keys(p).some(k=>!['name','items','kind','candidateGroup'].includes(k)))) throw new Error('分析結果不可變更人物身分或人工判斷。');
+  return structuredClone(result);
+}
+
+export function peopleReadingSources(bundle,storeId) {
+  return project(bundle).filter(r=>r.type==='source'&&!r.deleted&&r.peopleReading?.storeId===storeId);
+}
+export function currentPeopleReading(bundle,storeId) {
+  const history=peopleReadingSources(bundle,storeId),superseded=new Set(history.flatMap(s=>s.peopleReading.replaces));
+  const heads=history.filter(s=>!superseded.has(s.id));
+  return {history,heads,current:heads.length===1?heads[0]:null,conflict:heads.length>1};
+}
+export function peopleReadingRequest(bundle,storeId) {
+  const records=project(bundle),store=records.find(r=>r.type==='store'&&r.id===storeId);
+  const plan=peopleBriefSourcePlan(storeId,records.filter(r=>r.type==='visit'),records.filter(r=>r.type==='store'));
+  if(!plan.sources.length)throw new Error('本店尚無可整理的拜訪原文。');
+  if(plan.sources.length>100||plan.sources.reduce((n,s)=>n+s.text.length,0)>100000)throw new Error('單店來源過多，請先分批核對；未截斷內容。');
+  return {format:'pharmacy-people-request-1',vaultId:bundle.vaultId,store:{id:storeId,name:store.name},plan,
+    instructions:'僅整理本店人物閱讀速覽；不同稱呼不合併、疑似同人僅填同一candidateGroup。區分本店local、歷史historical、跨店mentioned、稱呼不明uncertain。每項category為background/interaction/relationship/topic，text保留疑問與不確定，evidence逐字引用visitId、revisionId、quote；不推定角色、年份或固定性格，不改人工判斷或待辦。完整核對來源但不必每項都形成摘要。回傳 {format:pharmacy-people-review-1,vaultId,result:{format:people-reading-1,storeId,basis,coveredRevisions,people:[{name,kind,candidateGroup可省略,items:[{category,text,evidence}]}]}}，basis與版本照原資料，不增加其他欄位。'};
+}
+export function preparePeopleReading(bundle,input) {
+  validateBundle(bundle);
+  if(!input||input.format!=='pharmacy-people-review-1'||input.vaultId!==bundle.vaultId||Object.keys(input).some(k=>!['format','vaultId','result'].includes(k)))throw new Error('人物整理檔案或資料庫不相符。');
+  const request=peopleReadingRequest(bundle,input.result?.storeId),result=validatePeopleBriefResult(request.plan,input.result);
+  if(result.people.some(p=>!['local','historical','mentioned','uncertain'].includes(p.kind)||p.items.some(i=>!['background','interaction','relationship','topic'].includes(i.category))))throw new Error('人物分類與內容類別必須完整。');
+  const previous=currentPeopleReading(bundle,result.storeId);
+  return {storeId:result.storeId,storeName:request.store.name,result,previous:previous.current?.peopleReading.result||null,priorResults:previous.heads.map(s=>s.peopleReading.result),replaces:previous.heads.map(s=>s.id).sort(),conflict:previous.conflict};
+}
+export async function applyPeopleReading(bundle,input,expected,device,approvedAt=new Date().toISOString()) {
+  const plan=preparePeopleReading(bundle,input);
+  if(JSON.stringify(plan)!==JSON.stringify(expected))throw new Error('核對期間來源或整理紀錄已更新，請重新預覽。');
+  if(!device||!Number.isFinite(Date.parse(approvedAt)))throw new Error('裝置或確認時間不完整。');
+  const next=structuredClone(bundle),bytes=new TextEncoder().encode(JSON.stringify(input)),blob=await hashBytes(bytes);
+  if(plan.previous&&JSON.stringify(plan.previous)===JSON.stringify(plan.result))throw new Error('這份人物速覽已保存，不重複新增。');
+  next.schema=Math.max(2,next.schema);next.blobs[blob]=b64(bytes);
+  next.ops.push(revision('source',uuid(),{file:'人物速覽.json',list:'人工核對人物速覽',blob,batch:uuid(),rows:plan.result.people.length,headers:[],encoding:'UTF-8',delimiter:'',peopleReading:{format:'pharmacy-reviewed-reading-1',storeId:plan.storeId,basis:plan.result.basis,result:plan.result,replaces:plan.replaces,approvedAt}},[],device));
+  return validateBundle(next);
 }

@@ -394,3 +394,18 @@ button[data-csv-source-snapshot]{flex:none;min-height:44px}
 #monthly-analysis-dialog { width:min(880px,94vw); max-height:90dvh; overflow:auto; }
 #monthly-analysis-dialog select { width:100%; }
 .monthly-analysis li { margin-bottom:10px; }
+
+/* Local reading aid: exact original editors remain outside this container. */
+.people-reading-status{font-size:.83rem;color:var(--muted,#687b80);margin:.4rem 0 1rem}
+.people-reading-person{border:1px solid #cbded5;border-radius:12px;margin:10px 0;overflow:hidden}
+.people-reading-person>summary{padding:12px 16px;background:#f1f8f4;cursor:pointer}
+.people-reading-person>summary strong{font-size:1.1rem}
+.people-reading-person>summary span{display:block;margin-top:5px;color:#34564d;font-size:.9rem;line-height:1.6}
+.people-reading-person>div{padding:4px 18px 18px}
+.people-reading-person h4{margin:16px 0 7px}.people-reading-person p{line-height:1.7}
+.people-reading-same{border:2px solid #aa92c6}.people-reading-same>summary{background:#f3eef9}
+.people-reading-evidence{font-size:.8rem;margin:6px 0 15px}.people-reading-evidence small{display:block;overflow-wrap:anywhere}
+.people-reading-evidence blockquote{white-space:pre-wrap;border-left:3px solid #cbded5;padding-left:12px;margin:10px 0}
+.people-reading-tier{margin:15px 0}.people-reading-tier>summary{padding:12px;background:#f5f7f4;border-radius:8px;cursor:pointer}
+.people-formal-relations:empty{display:none}.people-formal-relations .store-insight-card{margin:12px 0}
+#people-reading-formal-home{margin:15px 0}.reading-overlap>summary{padding:10px;cursor:pointer}
