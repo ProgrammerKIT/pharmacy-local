@@ -413,3 +413,13 @@ button[data-csv-source-snapshot]{flex:none;min-height:44px}
 .people-reading-tier{margin:15px 0}.people-reading-tier>summary{padding:12px;background:#f5f7f4;border-radius:8px;cursor:pointer}
 .people-formal-relations:empty{display:none}.people-formal-relations .store-insight-card{margin:12px 0}
 #people-reading-formal-home{margin:15px 0}.reading-overlap>summary{padding:10px;cursor:pointer}
+
+.monthly-feedback { margin-top: 1rem; padding: 1rem; border: 1px solid var(--line, #d7e3e7); border-radius: 12px; background: #f4f9f8; }
+.monthly-feedback-result { border-top: 1px solid #d7e3e7; padding: .5rem 0; }
+.monthly-feedback-result p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.monthly-feedback-question { display: grid; gap: .5rem; margin: 1rem 0; }
+#monthly-feedback-form textarea { min-height: 90px; max-width: 100%; width: 100%; box-sizing: border-box; }
+#monthly-analysis-dialog .dialog-footer { flex-wrap: wrap; }
+.monthly-alert-list { list-style: none; margin: .7rem 0; padding: 0; }
+.monthly-alert-list li { display: grid; gap: .2rem; padding: .6rem 0; border-bottom: 1px solid #d7e3e7; }
+.monthly-alert-list span { color: #5d7379; font-size: .9em; }

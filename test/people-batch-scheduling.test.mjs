@@ -23,7 +23,7 @@ function harness() {
   }
   let now = 100000, timerId = 0, timers = new Map(), c;
   const control = { statusGate: null, saveGate: null, failSave: false, syncs: 0, weeklyStarts: 0, saves: 0, saveEntered: deferred(), acks: [] };
-  c = vm.createContext({ ...core, ...relations, structuredClone, TextEncoder, Map, Set, Promise,
+  c = vm.createContext({ monthlyFeedbackContext:null,  ...core, ...relations, structuredClone, TextEncoder, Map, Set, Promise,
     key: {}, payload: { token: 'fictional', device: 'fictional', bundle, dirty: false, serverVersion: 1 },
     peopleReadingEpoch: 0, busy: false, gateOpening: false, pendingLock: false, updateHolding: false, autoFetching: false, syncInProgress: false,
     recoveryExportContext: null, weeklyContext: null, weeklyRunning: false, weeklyRetryAt: 0, backupPreview: null, editorContext: null, singleStoreContext: null, inlineTextContext: null, reminderContext: null, dayPlanContext: null, monthlyVisitContext: null, attendancePrompt: null,

@@ -48,7 +48,7 @@ function harness({ platform = 'MacIntel', userAgent = 'Mozilla/5.0 (Macintosh; I
     querySelector: selector => selector === 'dialog[open]' ? [...nodes.values()].find(node => node.open) || null : null,
     querySelectorAll: selector => [...nodes.values()].filter(node => selector === 'dialog[open]' ? node.open : node.dataset.insightChangeSlot),
     addEventListener: (event, fn) => docListeners.set(event, fn) };
-  c = vm.createContext({ ...core, ...Object.fromEntries(controls.map(name => [name, null])), $, Date: TestDate, structuredClone, JSON, Set, Promise,
+  c = vm.createContext({ monthlyFeedbackContext:null,  ...core, ...Object.fromEntries(controls.map(name => [name, null])), $, Date: TestDate, structuredClone, JSON, Set, Promise,
     navigator: { platform, userAgent, maxTouchPoints, onLine: true }, document: doc, window: { addEventListener: (event, fn) => winListeners.set(event, fn) },
     key: { fictional: 'key' }, meta: { vaultId: bundle.vaultId }, payload: { bundle, token: 'fictional-pairing-token', device: 'fictional-device', dirty: false, serverVersion: 115 },
     localRevision: 7, localSaveState: 'saved', syncEpoch: 1, busy: false, pendingLock: false, updateHolding: false, autoFetching: false, syncInProgress: false, gateOpening: false, weeklyRunning: false,

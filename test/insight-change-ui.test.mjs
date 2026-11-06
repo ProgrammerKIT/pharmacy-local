@@ -34,7 +34,7 @@ async function harness({ platform = 'MacIntel', userAgent = 'Mozilla/5.0 (Macint
   };
   class TestDate extends Date { static now() { return state.now; } }
   const contexts = Object.fromEntries(['editorContext', 'singleStoreContext', 'inlineTextContext', 'reminderContext', 'dayPlanContext', 'monthlyVisitContext', 'attendancePrompt', 'backupPreview', 'insightsPreview', 'storeMergePreview', 'storeMergeSetup', 'recoveryExportContext', 'weeklyContext'].map(name => [name, null]));
-  c = vm.createContext({ ...core, ...contexts, $, Date: TestDate, structuredClone, JSON, Set, Promise,
+  c = vm.createContext({ monthlyFeedbackContext:null,  ...core, ...contexts, $, Date: TestDate, structuredClone, JSON, Set, Promise,
     key: fixture.key, meta: structuredClone(fixture.meta), payload: { schema: 1, device: 'fictional-device', token: null, bundle: structuredClone(fixture.bundle), dirty: false, serverVersion: 4, pendingSync: { entities: [], unknown: false } },
     localRevision: 7, slot: state.disk, localSaveState: 'saved', syncEpoch: 1, busy: false, pendingLock: false, updateHolding: false, autoFetching: false, syncInProgress: false, gateOpening: false, weeklyRunning: false,
     navigator: { platform, userAgent, maxTouchPoints },

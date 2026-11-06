@@ -28,7 +28,7 @@ function fixture() {
   bundle.ops.push(revision('visit', 'fictional-original', { store: 'a', date: '', text: '  虛構拜訪原文\r\n保留。 ', next: '', source: 'fictional', people: [], topics: [], attachments: [] }, [], 'fictional-device'));
   const original = structuredClone(bundle), elements = new Map(), writes = [];
   const { node } = uiNodeFixture();
-  const sandbox = vm.createContext({ monthlyAnalysisStoreHTML:()=>'', analysisOverviewHTML:()=>'',
+  const sandbox = vm.createContext({ monthlyFeedbackContext:null,  monthlyAnalysisStoreHTML:()=>'', analysisOverviewHTML:()=>'',
     monthlyVisitContext: null, monthlyVisitSelectedMonth: month, monthlyVisitViewBasis: '', monthlyVisitNotice: '',
     dayPlanContext: null, editorContext: null, reminderContext: null, singleStoreContext: null, inlineTextContext: null,
     key: {}, meta: {}, localRevision: 5, syncEpoch: 9, payload: { bundle, device: 'fictional-device', dirty: false }, records: project(bundle),
