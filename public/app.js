@@ -1132,7 +1132,7 @@ function createSyncScheduler({ ready, attempt, now = Date.now, setTimer = setTim
 }
 function canAutoSync(ignoreFetching = false) {
   return !!(key && payload?.token) && navigator.onLine !== false && !document.hidden && !pendingLock && !updateHolding && !busy && !gateOpening &&
-    (ignoreFetching || !autoFetching) && !syncInProgress && !recoveryExportContext && !weeklyContext && !weeklyRunning && !backupPreview && !editorContext && !singleStoreContext && !inlineTextContext && !reminderContext && !dayPlanContext && !monthlyVisitContext && !attendancePrompt && !payload.inlineTextDraft && !payload.supervisorDraft &&
+    (ignoreFetching || !autoFetching) && !syncInProgress && !peopleBatchRunning && !recoveryExportContext && !weeklyContext && !weeklyRunning && !backupPreview && !editorContext && !singleStoreContext && !inlineTextContext && !reminderContext && !dayPlanContext && !monthlyVisitContext && !attendancePrompt && !payload.inlineTextDraft && !payload.supervisorDraft &&
     !['review', 'editor', 'quick-text-dialog', 'store-reminder-dialog', 'rebuild-dialog', 'backup-review', 'visit-attendance-dialog', 'day-plan-dialog', 'monthly-visit-dialog', 'insight-changes-dialog'].some(id => $(id)?.open) && !csvImport.hasPending();
 }
 function syncSession() { return { key, meta, token: payload?.token, device: payload?.device, epoch: syncEpoch, inline: inlineTextContext, editor: editorContext, reminder: reminderContext, dayPlan: dayPlanContext, monthly: monthlyVisitContext, single: singleStoreContext, attendance: attendancePrompt }; }
@@ -1846,7 +1846,8 @@ function renderPeopleBatchStatus(){
 }
 async function peopleBatchTick(force=false){
  if(peopleBatchRunning||!canScanInsights()||!payload?.token||payload.dirty||!Number.isSafeInteger(payload.serverVersion)||!force&&Date.now()-peopleBatchChecked<15000)return;
- peopleBatchRunning=true;const sessionKey=key,epoch=peopleReadingEpoch;
+ // Hold only scheduled work; edits/lock/source changes still cancel the guarded save.
+ peopleBatchRunning=true;syncScheduler.pause();const sessionKey=key,epoch=peopleReadingEpoch;
  const eligible=()=>payload&&key===sessionKey&&peopleReadingEpoch===epoch&&canScanInsights()&&!payload.dirty;
  try{
   const vaultId=payload.bundle.vaultId,state=await api('/api/people-batch/status',{method:'POST',body:{vaultId}});if(!eligible())return;peopleBatchStatus=state;peopleBatchChecked=Date.now();renderPeopleBatchStatus();if(!state.enabled)return;
@@ -1858,7 +1859,7 @@ async function peopleBatchTick(force=false){
   const known=new Map(state.entries.map(j=>[j.storeId,j])),requests=[],excluded=[];let eligibleCount=0;
   for(const store of all('store')){if(store.deleted)continue;try{const request=peopleReadingRequest(payload.bundle,store.id);eligibleCount++;const basis=request.plan.basis,prior=currentPeopleReading(payload.bundle,store.id);if(prior.current?.peopleReading.basis===basis)continue;const hash=await hashBytes(new TextEncoder().encode(basis));if(known.get(store.id)?.basisHash===hash)continue;if(requests.length<5)requests.push(request);}catch(error){excluded.push({name:store.name,reason:error.message});}}
   peopleBatchStatus.excluded=excluded;peopleBatchStatus.eligibleCount=eligibleCount;renderPeopleBatchStatus();if(requests.length&&eligible())await api('/api/people-batch/stage',{method:'POST',body:{vaultId,snapshotVersion:payload.serverVersion,requests}});
- }catch(error){peopleBatchStatus={...peopleBatchStatus,error:error.message};renderPeopleBatchStatus();}finally{peopleBatchRunning=false;}
+ }catch(error){peopleBatchStatus={...peopleBatchStatus,error:error.message};renderPeopleBatchStatus();}finally{peopleBatchRunning=false;syncScheduler.wake();}
 }
 
 const peopleReadingViews = new Map();
@@ -3556,7 +3557,7 @@ async function saveWeeklySetup() {
   } finally { password=''; $('weekly-password').value=''; $('weekly-proof').value=''; }
 }
 async function weeklyTick(force = false) {
-  if (weeklyRunning || weeklyContext || !weeklyReady() || recoveryExportContext || (Date.now() < weeklyRetryAt && !force)) return;
+  if (weeklyRunning || peopleBatchRunning || weeklyContext || !weeklyReady() || recoveryExportContext || (Date.now() < weeklyRetryAt && !force)) return;
   try { assertWeeklyIdle(); } catch { return; }
   weeklyRunning = true; syncScheduler.pause();
   try {
@@ -4117,7 +4118,7 @@ new ResizeObserver(drawGraph).observe($('graph-wrap'));
 if (!isSecureContext || !crypto.subtle) { $('gate-error').textContent = '需要受信任的 HTTPS 連線。請完成 Mac 與 iPhone 憑證設定，不要略過憑證警告。'; $('gate-submit').disabled = true; }
 else {
   showGate();
-  const draftBusy = () => !!payload?.supervisorDraft || busy || gateOpening || !!recoveryExportContext || !!weeklyContext || weeklyRunning || !!backupPreview || !!editorContext || !!inlineTextContext || !!reminderContext || !!dayPlanContext || !!monthlyVisitContext || !!payload?.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('store-reminder-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending() || (!$('gate').hidden && [...$('gate-form').querySelectorAll('input')].some(el => el.value && !['device-name'].includes(el.id)));
+  const draftBusy = () => !!payload?.supervisorDraft || busy || gateOpening || peopleBatchRunning || !!recoveryExportContext || !!weeklyContext || weeklyRunning || !!backupPreview || !!editorContext || !!inlineTextContext || !!reminderContext || !!dayPlanContext || !!monthlyVisitContext || !!payload?.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('store-reminder-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending() || (!$('gate').hidden && [...$('gate-form').querySelectorAll('input')].some(el => el.value && !['device-name'].includes(el.id)));
   for (const name of ['click', 'submit', 'keydown', 'beforeinput']) document.addEventListener(name, event => { if (updateHolding && event.target.closest('button,input,select,textarea,form,a')) { event.preventDefault(); event.stopImmediatePropagation(); } }, true);
   startUpdates({ api, hasToken: () => !!payload?.token, isBusy: draftBusy, setHold: held => { updateHolding = held; if (held) { syncEpoch++; syncScheduler.pause(); } else syncScheduler.wake(); document.body.classList.toggle('update-holding', held); }, notify: toast, onOfflineReady: () => { offlineReady = true; $('secure-state').textContent = '離線介面已備妥。iPhone 請先加入主畫面，再從主畫面進行配對。'; status(); } });
   if (location.hostname === 'localhost') $('secure-state').textContent = '請使用 Mac 顯示的 .local 網址開啟 App，管理頁才使用 localhost。';
