@@ -1,4 +1,4 @@
-import { project, validateBundle, revision, uuid, hashBytes, b64 } from './core.js';
+import { project, validateBundle, revision, uuid, hashBytes, b64, MAX_BYTES, peopleRelationshipReviewState } from './core.js';
 // All matching runs on the device. Labels describe text evidence, never clinical advice.
 export function storeIdentityPending(store) {
   return !!store && (store.csvIdentityPending === true || !!store.conflict && (store.heads || []).some(h => h.data.csvIdentityPending === true));
@@ -495,5 +495,31 @@ export async function applyPeopleReading(bundle,input,expected,device,approvedAt
   if(plan.previous&&JSON.stringify(plan.previous)===JSON.stringify(plan.result)&&(plan.previousMode==='manual'||mode==='automatic'))throw new Error('這份人物速覽已保存，不重複新增。');
   next.schema=Math.max(2,next.schema);next.blobs[blob]=b64(bytes);
   next.ops.push(revision('source',uuid(),{file:'人物速覽.json',list:'人工核對人物速覽',blob,batch:uuid(),rows:plan.result.people.length,headers:[],encoding:'UTF-8',delimiter:'',peopleReading:{format:'pharmacy-reviewed-reading-1',storeId:plan.storeId,basis:plan.result.basis,result:plan.result,replaces:plan.replaces,...(mode==='automatic'?{mode,generatedAt:approvedAt}:{approvedAt})}},[],device));
+  return validateBundle(next);
+}
+
+export function planPeopleRelationshipReview(bundle, readingId, personIndex, itemIndex, status) {
+  validateBundle(bundle);
+  if(!['confirmed','rejected','pending'].includes(status))throw new Error('請選擇確定、否定或待確認。');
+  const state=peopleRelationshipReviewState(bundle,readingId,personIndex,itemIndex),storeId=state.reading.storeId;
+  const saved=currentPeopleReading(bundle,storeId),request=peopleReadingRequest(bundle,storeId);
+  if(saved.conflict||saved.current?.id!==readingId||state.reading.basis!==request.plan.basis)throw new Error('速覽或來源已變更，請先重新整理核對；舊判斷與原文保留。');
+  return {vaultId:bundle.vaultId,storeId,storeName:request.store.name,readingId,personIndex,itemIndex,status,
+    beforeStatus:state.conflict?'conflict':state.status||'unreviewed',personName:state.person.name,item:structuredClone(state.item),
+    basis:request.plan.basis,replaces:state.heads.map(o=>o.entity).sort(),changed:state.conflict||state.status!==status};
+}
+export async function applyPeopleRelationshipReview(bundle, expected, device, reviewedAt=new Date().toISOString()) {
+  if(!expected)throw new Error('缺少關係審核預覽。');
+  const plan=planPeopleRelationshipReview(bundle,expected.readingId,expected.personIndex,expected.itemIndex,expected.status);
+  if(JSON.stringify(plan)!==JSON.stringify(expected))throw new Error('核對期間關係判斷或來源已變更，請重新核對。');
+  if(!plan.changed)return bundle;
+  if(typeof device!=='string'||!device.trim()||device.length>100||!Number.isFinite(Date.parse(reviewedAt)))throw new Error('裝置或核對時間不完整。');
+  const event={format:'pharmacy-people-relationship-review-1',readingId:plan.readingId,personIndex:plan.personIndex,itemIndex:plan.itemIndex,
+    status:plan.status,replaces:plan.replaces,reviewedAt,reviewedBy:'Kit'};
+  const next=structuredClone(bundle),bytes=new TextEncoder().encode(JSON.stringify(event)),blob=await hashBytes(bytes);
+  next.schema=Math.max(2,next.schema);next.blobs[blob]=b64(bytes);
+  const op=revision('source',uuid(),{file:'人物關係審核.json',list:'逐筆人物關係審核',blob,batch:uuid(),rows:1,headers:[],encoding:'UTF-8',delimiter:'',peopleRelationshipReview:event},[],device);
+  op.at=reviewedAt;next.ops.push(op);
+  if(new TextEncoder().encode(JSON.stringify(next)).length>MAX_BYTES)throw new Error('資料已達24 MB上限；舊歷史完整保留，本次尚未保存。');
   return validateBundle(next);
 }

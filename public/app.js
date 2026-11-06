@@ -1,4 +1,5 @@
-import { peopleBriefSourcePlan, validatePeopleBriefResult, currentPeopleReading, peopleReadingRequest, preparePeopleReading, applyPeopleReading } from './relations.js';
+import { peopleBriefSourcePlan, validatePeopleBriefResult, currentPeopleReading, peopleReadingRequest, preparePeopleReading, applyPeopleReading, planPeopleRelationshipReview, applyPeopleRelationshipReview } from './relations.js';
+import { peopleRelationshipReviewState } from './core.js';
 import { monthlyAnalysisSources, monthlyAnalysisForStore, prepareMonthlyAnalysis, applyMonthlyAnalysis } from './core.js';
 import { supervisorRelationships, supervisorReviewHistory, reviewSupervisorRelationship, planStoreSupervision, applyStoreSupervision, supervisedStores } from './core.js';
 import { setupWeeklyRecovery, prepareWeeklyRecovery, createRecoveryBackup, newMeta, checkEnvelope, derive, seal, unseal, planBackupImport, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates, buildStoreEnrichmentRequest, planStoreEnrichment, applyStoreEnrichment, readonlyHealthAudit, dataSafetySummary, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, editReminderTasks, addReminderTasks, convertReminderTasks, completeReminderTask, reminderTaskHistory, searchStoreVisitText, scanInsightChanges, storeInsightDisplayForStore, storeInsightEvidenceForEntry, insightReviewForEntry, insightSharedReviewForEntry, storeInsightReviewHistory, planInsightReview, applyInsightReview, planStoreInsights, applyStoreInsights, planStoreInsightRelations, applyStoreInsightRelations, buildStoreInsightsSource, planStoreMerge, applyStoreMerge } from './core.js';
@@ -1868,37 +1869,65 @@ function peopleReadingPlan(storeId) {return peopleBriefSourcePlan(storeId,all('v
 function peopleEvidenceHTML(evidence) {
   return `<details class="people-reading-evidence"><summary>原句與來源版本</summary>${evidence.map(e=>`<blockquote>${esc(e.quote)}</blockquote><small>紀錄 ${esc(e.visitId)} · 精確版本 ${esc(e.revisionId)}</small>`).join('')}</details>`;
 }
+const PEOPLE_RELATION_LABELS={confirmed:'確定',rejected:'否定',pending:'待確認',unreviewed:'尚未人工判斷',conflict:'判斷不一致'};
+function peopleRelationshipHTML(storeId,view,person,personIndex,item,itemIndex) {
+  const readingId=view.readingId,state=peopleRelationshipReviewState(payload.bundle,readingId,personIndex,itemIndex);
+  const status=state.conflict?'conflict':state.status||'unreviewed';
+  const current=['success','automatic'].includes(view.state)&&view.result.basis===view.basis;
+  const actions=current?`<div class="people-relation-options" role="group" aria-label="人工判斷 ${esc(person.name)}：${esc(item.text)}">${['confirmed','rejected','pending'].map(s=>`<button type="button" data-reading-relation-status="${s}" data-reading-relation-reading="${esc(readingId)}" data-reading-relation-person="${personIndex}" data-reading-relation-item="${itemIndex}" aria-pressed="${status===s}" ${status===s?'disabled':''}>${PEOPLE_RELATION_LABELS[s]}</button>`).join('')}</div>`:'<p class="muted">來源或速覽已變更；保留當時判斷，待重新整理後再核對。</p>';
+  const content=`${peopleEvidenceHTML(item.evidence)}<p class="people-relation-status" role="status">你的判斷：${PEOPLE_RELATION_LABELS[status]}</p>${state.conflict?'<p class="error">裝置間有不同判斷，請查看歷史再決定；未自動選擇任何一方。</p>':''}${actions}`;
+  return ['confirmed','rejected'].includes(status)?`<details class="people-reading-relation" data-reading-claim="${personIndex}:${itemIndex}"><summary><span>${esc(item.text)}</span><strong>${PEOPLE_RELATION_LABELS[status]}</strong></summary>${content}</details>`:`<article class="people-reading-relation"><p>${esc(item.text)}</p>${content}</article>`;
+}
+function peopleRelationshipHistoryHTML(storeId) {
+  const readings=new Map(payload.bundle.ops.filter(o=>o.type==='source'&&o.data.peopleReading?.storeId===storeId).map(o=>[o.entity,o.data.peopleReading]));
+  const events=payload.bundle.ops.filter(o=>o.type==='source'&&readings.has(o.data.peopleRelationshipReview?.readingId));
+  return events.length?`<details class="people-relation-history"><summary>人物關係審核歷史 · ${events.length} 筆</summary>${events.map(op=>{const e=op.data.peopleRelationshipReview,reading=readings.get(e.readingId),p=reading.result.people[e.personIndex],item=p.items[e.itemIndex];return `<details><summary>${esc(p.name)} · ${PEOPLE_RELATION_LABELS[e.status]} · ${esc(dateText(e.reviewedAt))}</summary><p>${esc(item.text)}</p>${peopleEvidenceHTML(item.evidence)}<small>審核紀錄 ${esc(op.entity)} · 速覽 ${esc(e.readingId)} · 僅供回看，不代表目前判斷。</small></details>`;}).join('')}</details>`:'';
+}
+async function changePeopleRelationshipReview(button) {
+  const storeId=$('review').dataset.singleStoreId;assertInsightReviewReady(storeId);
+  const sessionKey=key,sessionMeta=meta,before=payload,epoch=peopleReadingEpoch;
+  const plan=planPeopleRelationshipReview(payload.bundle,button.dataset.readingRelationReading,Number(button.dataset.readingRelationPerson),Number(button.dataset.readingRelationItem),button.dataset.readingRelationStatus);
+  if(plan.storeId!==storeId)throw new Error('請回到對應門市核對。');if(!plan.changed)return;
+  if(!confirm(`${plan.storeName}／${plan.personName}\n${plan.item.text}\n\n${PEOPLE_RELATION_LABELS[plan.beforeStatus]} → ${PEOPLE_RELATION_LABELS[plan.status]}\n\n只保存這條關係的判斷與歷史；不合併人物，不修改原文、待辦、其他關係或其他門市的判斷。\n確認保存？`))return;
+  const guard=()=>{assertInsightReviewReady(storeId);if(payload!==before||key!==sessionKey||meta!==sessionMeta||peopleReadingEpoch!==epoch)throw new Error('資料或工作階段已變更，請重新核對；尚未保存。');};
+  guard();const bundle=await applyPeopleRelationshipReview(payload.bundle,plan,payload.device);guard();
+  await persist({...payload,bundle,dirty:true},{guard});
+  if(!payload||key!==sessionKey||pendingLock||document.hidden)return;
+  render();openVisitBrief(storeId,{preservePosition:true});toast(`這條關係已保存為「${PEOPLE_RELATION_LABELS[plan.status]}」；原文與其他關係保持。`);
+}
 function peopleReadingHTML(storeId) {
   const view=peopleReadingViews.get(storeId),data=view?.result;
   const state=view?.state==='automatic'&&data?.basis===view.basis?'AI 已整理至目前筆記版本（尚未人工核對）':view?.state==='success'&&data?.basis===view.basis?'已核對至目前筆記版本':view?.state==='conflict'?'有不同整理版本，請重新核對':view?.state==='stale'?'有新來源，待重新整理':'尚未整理';
   const actions=`${view?.state==='automatic'?`<button type="button" data-reading-approve="${esc(storeId)}">核對這份速覽</button>`:''}<details><summary>手動單店工具（備援）</summary><div class="people-reading-actions"><button type="button" data-reading-export="${esc(storeId)}">準備本店整理資料</button><button type="button" data-reading-import="${esc(storeId)}">載入整理結果並核對</button><input type="file" accept=".json,application/json" data-reading-file="${esc(storeId)}" hidden></div><p class="muted">只在需要手動處理時使用；日常由批次排程接手，不必逐店下載。</p></details>`;
 
   const history=view?.history?.length?`<details><summary>人物速覽歷史 · ${view.history.length} 份</summary>${view.history.map(h=>`<details><summary>${h.peopleReading.mode==='automatic'?'AI 整理':'人工核對'} · ${esc(dateText(h.peopleReading.approvedAt||h.peopleReading.generatedAt))} · ${esc(h.id)}</summary><pre>${esc(JSON.stringify(h.peopleReading.result,null,2))}</pre></details>`).join('')}</details>`:'';
-  if(!data)return `<h2>到店前先掃這一區</h2><p class="people-reading-status" role="status">${esc(state)}</p>${actions}${history}`;
+  if(!data)return `<h2>到店前先掃這一區</h2><p class="people-reading-status" role="status">${esc(state)}</p>${actions}${payload?.bundle?peopleRelationshipHistoryHTML(storeId):''}${history}`;
   const names=data.people.map(p=>p.name),sameGroup=name=>{const person=data.people.find(p=>p.name===name);return !!person?.candidateGroup&&data.people.some(p=>p.name!==name&&p.candidateGroup===person.candidateGroup);};
   const card=(person,index)=>{
     const memory=(person.items.find(i=>i.category==='interaction')||person.items.find(i=>i.category==='background')||person.items[0])?.text||'';
     const groups=[['background','背景與角色'],['interaction','互動記憶'],['relationship','關係紀錄'],['topic','可接續話題']].map(([category,title])=>{
       const items=person.items.filter(item=>item.category===category);if(!items.length)return '';
-      return `<h4>${title}</h4>${items.map(item=>`<p>${esc(item.text)}</p>${peopleEvidenceHTML(item.evidence)}`).join('')}`;
+      return `<h4>${title}</h4>${items.map(item=>category==='relationship'&&view.readingId?peopleRelationshipHTML(storeId,view,person,index,item,person.items.indexOf(item)):`<p>${esc(item.text)}</p>${peopleEvidenceHTML(item.evidence)}`).join('')}`;
     }).join('');
     return `<details class="people-reading-person${sameGroup(person.name)?' people-reading-same':''}" data-reading-person="${esc(person.name)}" data-reading-key="${index}"><summary><strong>${esc(person.name)}</strong><span>${esc(memory)}</span></summary><div>${sameGroup(person.name)?'<p class="muted">同色為疑似同人，資訊仍分開；未經明確確認不合併姓名或人工判斷。</p>':''}${groups}<div class="people-formal-relations"></div></div></details>`;
   };
   const group=(kind,title)=>{const people=data.people.map((p,i)=>({p,i})).filter(({p})=>(p.kind||'uncertain')===kind);return people.length?`<details class="people-reading-tier"><summary>${title} · ${people.length}</summary>${people.map(({p,i})=>card(p,i)).join('')}</details>`:'';};
-  return `<h2>到店前先掃這一區</h2><span data-insight-change-slot="${esc(storeId)}">${insightChangeBadgeHTML(storeId)}</span><p class="people-reading-status" role="status">${esc(state)}${view.generatedAt?' · '+esc(dateText(view.generatedAt)):''}</p>${(!['success','automatic'].includes(view.state)||data.basis!==view.basis)?'<p class="muted">目前保留前次速覽，以完整原文為準。</p>':''}${data.people.filter(p=>p.kind==='local').length?data.people.map((p,i)=>p.kind==='local'?card(p,i):'').join(''):'<p class="muted">未能安全辨識本店人物；完整原文保留在下方。</p>'}${group('historical','歷史人物')}${group('mentioned','其他門市提及')}${group('uncertain','稱呼待釐清')}${actions}${history}<details><summary>閱讀來源與限制</summary><p>${view.state==='automatic'?'Codex 自動整理，尚未人工核對；':'經人工核對的閱讀整理；'}可回查原句。相同稱呼只供閱讀分組，不代表人物已合併；整理不更改原文、日期、關係審核或待辦。沒有新來源不反覆分析。關係原文不等於已人工確認。</p></details>`;
+  return `<h2>到店前先掃這一區</h2><span data-insight-change-slot="${esc(storeId)}">${insightChangeBadgeHTML(storeId)}</span><p class="people-reading-status" role="status">${esc(state)}${view.generatedAt?' · '+esc(dateText(view.generatedAt)):''}</p>${(!['success','automatic'].includes(view.state)||data.basis!==view.basis)?'<p class="muted">目前保留前次速覽，以完整原文為準。</p>':''}${data.people.filter(p=>p.kind==='local').length?data.people.map((p,i)=>p.kind==='local'?card(p,i):'').join(''):'<p class="muted">未能安全辨識本店人物；完整原文保留在下方。</p>'}${group('historical','歷史人物')}${group('mentioned','其他門市提及')}${group('uncertain','稱呼待釐清')}<p id="people-relation-error" class="error" role="alert"></p>${actions}${view.readingId?peopleRelationshipHistoryHTML(storeId):''}${history}<details><summary>閱讀來源與限制</summary><p>${view.state==='automatic'?'Codex 自動整理，尚未人工核對；':'經人工核對的閱讀整理；'}可回查原句。相同稱呼只供閱讀分組，不代表人物已合併；整理不更改原文、日期、關係審核或待辦。沒有新來源不反覆分析。關係原文不等於已人工確認。逐筆「確定／否定／待確認」只作用於當前人物下的這條具體說法；不連帶確認同名人物或跨店關係。既有關係卡的判斷獨立保留，不以相似姓名或引句自動互相覆蓋；整份速覽核對不代替關係核實。</p></details>`;
 }
 function refreshPeopleReadingPanel(storeId) {
   if(document.hidden||pendingLock||inlineTextContext||editorContext||singleStoreContext||!$('review')?.open||$('review').dataset.singleStoreId!==storeId)return;
   const slot=$('people-reading-panel');if(!slot)return;
-  const snapshot=peopleReadingViews.get(storeId);const signature=JSON.stringify([snapshot?.state,snapshot?.basis,snapshot?.generatedAt,snapshot?.result,snapshot?.progress]);if(slot.dataset.readingSignature===signature)return;
+  const snapshot=peopleReadingViews.get(storeId);const signature=JSON.stringify([snapshot?.state,snapshot?.readingId,snapshot?.basis,snapshot?.generatedAt,snapshot?.result,snapshot?.progress,payload?.bundle.ops.filter(o=>o.data.peopleRelationshipReview)]);if(slot.dataset.readingSignature===signature)return;
   // Preserve open people/evidence and source focus; never rerender the editor.
   const open=[...slot.querySelectorAll('[data-reading-key][open]')].map(n=>n.dataset.readingPerson);
+  const tiers=[...slot.querySelectorAll('.people-reading-tier[open]')].map(n=>n.querySelector('summary')?.textContent);
   // Move old formal cards back before replacing their reading containers.
   for(const card of slot.querySelectorAll('[data-reading-formal-card]')) {
     const home=document.getElementById(card.dataset.readingFormalCard);if(home)home.append(card);
   }
   slot.innerHTML=peopleReadingHTML(storeId);slot.dataset.readingSignature=signature;
   for(const node of slot.querySelectorAll('[data-reading-key]'))node.open=open.includes(node.dataset.readingPerson);
+  for(const node of slot.querySelectorAll('.people-reading-tier'))node.open=tiers.includes(node.querySelector('summary')?.textContent);
   const formal=$('people-reading-formal-home');
   if(formal){
     const error=formal.querySelector('#insight-review-error');if(error)slot.after(error);
@@ -1914,7 +1943,7 @@ function loadPeopleReadingView(storeId) {
   const saved=currentPeopleReading(payload.bundle,storeId);let basis='';
   try{basis=peopleReadingPlan(storeId).basis;}catch{}
   const doc=saved.current?.peopleReading;
-  peopleReadingViews.set(storeId,{basis,result:doc?.result||null,generatedAt:doc?.approvedAt||doc?.generatedAt||null,history:saved.history,state:saved.conflict?'conflict':doc?(doc.basis===basis?(doc.mode==='automatic'?'automatic':'success'):'stale'):'missing'});
+  peopleReadingViews.set(storeId,{basis,readingId:saved.current?.id,result:doc?.result||null,generatedAt:doc?.approvedAt||doc?.generatedAt||null,history:saved.history,state:saved.conflict?'conflict':doc?(doc.basis===basis?(doc.mode==='automatic'?'automatic':'success'):'stale'):'missing'});
 }
 function peopleReadingTick() {
   if(!payload||pendingLock||document.hidden||!$('review')?.open||!$('review').dataset.singleStoreId)return;
@@ -1967,6 +1996,8 @@ function openVisitBrief(storeId, { capture = false, restoreDraft = null, preserv
     secondaryOpen: !!reviewBody.querySelector('.brief-secondary')?.open,
     historyOpen: !!reviewBody.querySelector('.brief-history')?.open,
     tasksOpen: !!reviewBody.querySelector('.reminder-task-history')?.open,
+    readingPeople: [...reviewBody.querySelectorAll('[data-reading-person][open]')].map(el=>el.dataset.readingPerson),
+    readingTiers: [...reviewBody.querySelectorAll('.people-reading-tier[open]')].map(el=>el.querySelector('summary')?.textContent),
     insightDetails: [...reviewBody.querySelectorAll('[data-insight-detail][open]')].map(el => el.dataset.insightDetail),
     confirmedInsights: [...reviewBody.querySelectorAll('[data-insight-confirmed][open]')].map(el => el.dataset.insightConfirmed)
   } : null;
@@ -1994,6 +2025,8 @@ function openVisitBrief(storeId, { capture = false, restoreDraft = null, preserv
   $('review-persistent-actions').hidden = false;
   if (preserving) {
     setReviewMode('visit-brief');
+    for(const detail of reviewBody.querySelectorAll('[data-reading-person]'))detail.open=preserved.readingPeople.includes(detail.dataset.readingPerson);
+    for(const detail of reviewBody.querySelectorAll('.people-reading-tier'))detail.open=preserved.readingTiers.includes(detail.querySelector('summary')?.textContent);
     const taskHistory = reviewBody.querySelector('.reminder-task-history'); if (taskHistory) taskHistory.open = preserved.tasksOpen;
     for (const detail of reviewBody.querySelectorAll('[data-insight-detail]')) detail.open = preserved.insightDetails.includes(detail.dataset.insightDetail);
     for (const detail of reviewBody.querySelectorAll('[data-insight-confirmed]')) detail.open = preserved.confirmedInsights.includes(detail.dataset.insightConfirmed);
@@ -4233,6 +4266,7 @@ $('monthly-analysis-dialog').addEventListener('close',()=>{analysisImport=null;}
 $('monthly-analysis-dialog').addEventListener('change', event=>{ if(event.target.matches('[data-analysis-choice]') && analysisImport){delete analysisImport.finalChoices;$('analysis-final').innerHTML='';} if(event.target.matches('#analysis-files,#analysis-sales,#analysis-visit')){analysisImport=null;$('analysis-matches').innerHTML='';} });
 
 $('review').addEventListener('click',event=>{
+ const relationButton=event.target.closest?.('[data-reading-relation-status]');if(relationButton){void run(()=>changePeopleRelationshipReview(relationButton),'people-relation-error');return;}
  const approveButton=event.target.closest?.('[data-reading-approve]');if(approveButton){const storeId=approveButton.dataset.readingApprove,doc=currentPeopleReading(payload.bundle,storeId).current?.peopleReading;if(doc){const text=JSON.stringify({format:'pharmacy-people-review-1',vaultId:payload.bundle.vaultId,result:doc.result});void run(()=>previewPeopleReadingFile({size:new TextEncoder().encode(text).length,text:async()=>text},storeId));}return;}
  const exportButton=event.target.closest?.('[data-reading-export]');if(exportButton){void run(()=>exportPeopleReading(exportButton.dataset.readingExport));return;}
  const importButton=event.target.closest?.('[data-reading-import]');if(importButton){document.querySelector('[data-reading-file="'+CSS.escape(importButton.dataset.readingImport)+'"]')?.click();return;}
