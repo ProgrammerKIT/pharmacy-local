@@ -2387,6 +2387,16 @@ function validMonthlyAnalysis(value) {
 export function monthlyAnalysisSources(bundle) {
   return bundle.ops.filter(op => op.type === 'source' && op.data.monthlyAnalysis).map(op => ({ ...op.data.monthlyAnalysis, id: op.entity, at: op.at, batch: op.data.batch, file: op.data.file, blob: op.data.blob, rows: parseMonthlyAnalysis(unb64(bundle.blobs[op.data.blob])) }));
 }
+function monthlyAnalysisIdentityChanged(store, match, channel) {
+  return !store || store.deleted || store.conflict || store.csvIdentityPending || store.mergedInto || store.name !== match.name || (store.address || '') !== match.address || analysisStoreChannel(store) !== channel;
+}
+export function monthlyAlertStoreIds(bundle, month = monthlyVisitMonth()) {
+  const sources = monthlyAnalysisSources(bundle), replaced = new Set(sources.flatMap(source => source.supersedes));
+  const tips = sources.filter(source => source.visitMonth === month && !replaced.has(source.id));
+  const stores = new Map(project(bundle).filter(store => store.type === 'store').map(store => [store.id, store]));
+  return new Set(tips.filter(source => tips.filter(other => other.channel === source.channel).length === 1)
+    .flatMap(source => source.assignments.filter(match => match.storeId && !monthlyAnalysisIdentityChanged(stores.get(match.storeId), match, source.channel)).map(match => match.storeId)));
+}
 export function monthlyAnalysisForStore(bundle, storeId, month = monthlyVisitMonth()) {
   const all = monthlyAnalysisSources(bundle), currentStore = project(bundle).find(s => s.type === 'store' && s.id === storeId);
   const replaced = new Set(all.flatMap(source => source.supersedes));
@@ -2394,7 +2404,7 @@ export function monthlyAnalysisForStore(bundle, storeId, month = monthlyVisitMon
     if (match.storeId !== storeId) return [];
     const tips = all.filter(s => s.visitMonth === source.visitMonth && s.channel === source.channel && !replaced.has(s.id));
     const tied = tips.length !== 1;
-    const changed = !currentStore || currentStore.deleted || currentStore.conflict || currentStore.csvIdentityPending || currentStore.mergedInto || currentStore.name !== match.name || (currentStore.address || '') !== match.address || analysisStoreChannel(currentStore) !== source.channel;
+    const changed = monthlyAnalysisIdentityChanged(currentStore, match, source.channel);
     return [{ ...source, row: source.rows[index], current: source.visitMonth === month && tips[0]?.id === source.id && !tied && !changed, needsReview: !!changed || tied }];
   })).sort((a, b) => b.visitMonth.localeCompare(a.visitMonth) || b.at.localeCompare(a.at));
 }

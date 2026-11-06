@@ -53,7 +53,7 @@ function harness({ platform = 'MacIntel', userAgent = 'Mozilla/5.0 (Macintosh; I
     key: { fictional: 'key' }, meta: { vaultId: bundle.vaultId }, payload: { bundle, token: 'fictional-pairing-token', device: 'fictional-device', dirty: false, serverVersion: 115 },
     localRevision: 7, localSaveState: 'saved', syncEpoch: 1, busy: false, pendingLock: false, updateHolding: false, autoFetching: false, syncInProgress: false, gateOpening: false, weeklyRunning: false,
     csvImport: { hasPending: () => state.pendingCSV }, syncScheduler: { pause: () => events.push('pause'), request: reason => state.requests.push(reason) },
-    dateText: value => value, renderDataSafetyEntry() {},
+    dateText: value => value, renderDataSafetyEntry() {}, refreshMonthlyAlertBadges() {},
     setTimeout(fn, delay) { const id = ++serial; timers.set(id, { fn, at: state.now + delay }); return id; }, clearTimeout: id => timers.delete(id),
     scanInsightChanges: async current => { state.scans++; return state.scanHook ? state.scanHook(current) : core.scanInsightChanges(current); },
     dismissKeyboard: () => events.push('dismiss-keyboard'), finishAttendancePrompt: () => events.push('finish-attendance'), clearNearbyPosition: () => events.push('clear-position'), requestNearbyPosition: () => events.push('request-position'),

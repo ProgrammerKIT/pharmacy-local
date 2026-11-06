@@ -1,6 +1,6 @@
 import { peopleBriefSourcePlan, validatePeopleBriefResult, currentPeopleReading, peopleReadingRequest, preparePeopleReading, applyPeopleReading, planPeopleRelationshipReview, applyPeopleRelationshipReview } from './relations.js';
 import { peopleRelationshipReviewState } from './core.js';
-import { monthlyAnalysisSources, monthlyAnalysisForStore, prepareMonthlyAnalysis, applyMonthlyAnalysis, monthlyFeedbackState, prepareMonthlyFeedback, applyMonthlyFeedback, rememberedMonthlyAnalysisChoice, exportMonthlyFeedback, monthlyAnalysisChangeSummary } from './core.js';
+import { monthlyAlertStoreIds, monthlyAnalysisSources, monthlyAnalysisForStore, prepareMonthlyAnalysis, applyMonthlyAnalysis, monthlyFeedbackState, prepareMonthlyFeedback, applyMonthlyFeedback, rememberedMonthlyAnalysisChoice, exportMonthlyFeedback, monthlyAnalysisChangeSummary } from './core.js';
 import { supervisorRelationships, supervisorReviewHistory, reviewSupervisorRelationship, planStoreSupervision, applyStoreSupervision, supervisedStores } from './core.js';
 import { setupWeeklyRecovery, prepareWeeklyRecovery, createRecoveryBackup, newMeta, checkEnvelope, derive, seal, unseal, planBackupImport, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates, buildStoreEnrichmentRequest, planStoreEnrichment, applyStoreEnrichment, readonlyHealthAudit, dataSafetySummary, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, editReminderTasks, addReminderTasks, convertReminderTasks, completeReminderTask, reminderTaskHistory, searchStoreVisitText, scanInsightChanges, storeInsightDisplayForStore, storeInsightEvidenceForEntry, insightReviewForEntry, insightSharedReviewForEntry, storeInsightReviewHistory, planInsightReview, applyInsightReview, planStoreInsights, applyStoreInsights, planStoreInsightRelations, applyStoreInsightRelations, buildStoreInsightsSource, planStoreMerge, applyStoreMerge } from './core.js';
 import { readWeeklyRecovery, writeWeeklyRecovery, readLocal, writeLocal, archiveAndReplaceLocal, listLocalArchives, readLocalArchive } from './db.js';
@@ -744,7 +744,7 @@ function renderQuickVisit() {
   const fallback = mobile && !located.length ? '<p class="nearby-fallback-label">先顯示最近使用的門市（不是距離排序）</p>' : '';
   $('recent-store-list').innerHTML = fallback + entries.map(({ store, distance }) => {
     const range = Number.isFinite(distance) ? (distance < 1000 ? `約 ${Math.round(distance / 10) * 10} 公尺` : `約 ${(distance / 1000).toFixed(1)} 公里`) + ' · 直線距離' : store.district || '地區未提供';
-    return `<button type="button" class="recent-store" ${storeIdentityPending(store) ? `data-quick-visit="${esc(store.id)}"` : `data-visit-brief="${esc(store.id)}"`}><strong>${esc(store.name)}</strong><small>${esc(range)}</small>${storeIdentityPending(store) ? '<small>身分待確認 · 直接記錄拜訪</small>' : ''}</button>`;
+    return `<button type="button" class="recent-store" ${storeIdentityPending(store) ? `data-quick-visit="${esc(store.id)}"` : `data-visit-brief="${esc(store.id)}"`}><strong>${esc(store.name)}${monthlyAlertBadgeHTML(store.id)}</strong><small>${esc(range)}</small>${storeIdentityPending(store) ? '<small>身分待確認 · 直接記錄拜訪</small>' : ''}</button>`;
   }).join('') || '<p class="muted">目前沒有可用門市，可按「新增拜訪」開始記錄。</p>';
 }
 function requestNearbyPosition(force = false) {
@@ -1061,7 +1061,7 @@ async function openWorkspace() {
   document.body.classList.toggle('privacy-veil', pendingLock);
   try { storagePersistent = await navigator.storage?.persist?.() || false; } catch {}
   restoreTransientResumeState(); renderBackupResult(); await runPeriodicHealthAudit(); clearInterval(autoTimer);
-  autoTimer = setInterval(() => { void insightReviewTick(); void peopleReadingTick(); void peopleBatchTick(); supervisorRelationshipTick(); if (!document.hidden) { syncScheduler.request('poll'); setTimeout(() => void weeklyTick(), 1500); } }, 15000);
+  autoTimer = setInterval(() => { void insightReviewTick(); void peopleReadingTick(); void peopleBatchTick(); supervisorRelationshipTick(); if (!document.hidden) { refreshMonthlyAlertBadges(); syncScheduler.request('poll'); setTimeout(() => void weeklyTick(), 1500); } }, 15000);
   setTimeout(() => void weeklyTick(), 3000);
   syncScheduler.request('foreground');
   queueInsightScan(); requestNearbyPosition();
@@ -2071,7 +2071,7 @@ function noteHTML(v, query = '', { showStoreText = true } = {}) {
   const textBlock = inlineVisitTextHTML(v, query);
   const storeButton = store && !store.conflict && !storeIdentityPending(store) ? `data-visit-brief="${esc(v.store)}"` : `data-node-type="store" data-node-id="${esc(v.store)}"`;
   const advanced = `${sourceButton(v)}<button class="text-button" data-edit="visit:${esc(v.id)}">完整編輯</button><button class="text-button" data-history="visit:${esc(v.id)}">歷史 ${v.versions.length}</button><button class="text-button danger" data-delete="visit:${esc(v.id)}">移到回收桶</button>`;
-  return `<article class="note">${v.source ? `<div class="note-head"><span class="pill">${esc(v.source)}</span></div>` : ''}<button class="text-button store-link" ${storeButton}>${visitStoreNameHTML(name('store', v.store), query)}</button>${visitStoreAliasMatchHTML(store, query)}${storeAttendanceHTML(v.store)}${storeNotes}${showStoreText ? storeOriginalTextHTML(store, query) : ''}${v.conflict ? `<div class="conflict-card">這筆有 ${v.heads.length} 個版本。以下僅顯示其中一個，請先核對。 <button class="text-button" data-review="visit:${esc(v.id)}">處理衝突</button></div>` : ''}${sourceState}${hint}${textBlock}<div class="chips">${v.topics.map(id => chip('topic', id, query)).join('')}${v.people.map(id => chip('person', id, query)).join('')}</div>${v.next ? `<p class="next"><strong>下次跟進</strong>${highlightLiteral(v.next, query)}</p>` : ''}<div class="attachments">${(v.attachments || []).map((a, i) => `<button data-attachment="${esc(v.id)}" data-index="${i}">↧ ${esc(a.name)}</button>`).join('')}</div><div class="note-actions">${!v.conflict && store && !store.deleted && !store.conflict ? `<button class="primary" data-new-visit-store="${esc(v.store)}">＋ 記錄這次拜訪</button>` : ''}<details class="more-actions"><summary>更多操作</summary><div>${advanced}</div></details></div></article>`;
+  return `<article class="note">${v.source ? `<div class="note-head"><span class="pill">${esc(v.source)}</span></div>` : ''}<button class="text-button store-link" ${storeButton}>${visitStoreNameHTML(name('store', v.store), query)}${monthlyAlertBadgeHTML(v.store)}</button>${visitStoreAliasMatchHTML(store, query)}${storeAttendanceHTML(v.store)}${storeNotes}${showStoreText ? storeOriginalTextHTML(store, query) : ''}${v.conflict ? `<div class="conflict-card">這筆有 ${v.heads.length} 個版本。以下僅顯示其中一個，請先核對。 <button class="text-button" data-review="visit:${esc(v.id)}">處理衝突</button></div>` : ''}${sourceState}${hint}${textBlock}<div class="chips">${v.topics.map(id => chip('topic', id, query)).join('')}${v.people.map(id => chip('person', id, query)).join('')}</div>${v.next ? `<p class="next"><strong>下次跟進</strong>${highlightLiteral(v.next, query)}</p>` : ''}<div class="attachments">${(v.attachments || []).map((a, i) => `<button data-attachment="${esc(v.id)}" data-index="${i}">↧ ${esc(a.name)}</button>`).join('')}</div><div class="note-actions">${!v.conflict && store && !store.deleted && !store.conflict ? `<button class="primary" data-new-visit-store="${esc(v.store)}">＋ 記錄這次拜訪</button>` : ''}<details class="more-actions"><summary>更多操作</summary><div>${advanced}</div></details></div></article>`;
 }
 function render() {
   if(typeof peopleBatchStatus!=='undefined')renderPeopleBatchStatus();
@@ -2467,6 +2467,24 @@ function storeOriginalTextHTML(store, query = '') {
 function visitStoreNameText(value) {
   return String(value ?? '').replace(/[\r\n]/g, '');
 }
+var monthlyAlertBadgeCache;
+function monthlyAlertBadgeContent(storeId) {
+  const bundle = payload?.bundle, month = monthlyVisitMonth();
+  if (!bundle) return '';
+  if (monthlyAlertBadgeCache?.bundle !== bundle || monthlyAlertBadgeCache.month !== month) monthlyAlertBadgeCache = { bundle, month, ids: monthlyAlertStoreIds(bundle, month) };
+  return monthlyAlertBadgeCache.ids.has(storeId) ? '<span class="monthly-alert-badge"><span aria-hidden="true">⚠</span> 本月警示店</span>' : '';
+}
+function monthlyAlertBadgeHTML(storeId) {
+  return `<span class="monthly-alert-slot" data-monthly-alert-store="${esc(storeId)}">${monthlyAlertBadgeContent(storeId)}</span>`;
+}
+function refreshMonthlyAlertBadges() {
+  if (!payload || document.hidden) return;
+  document.querySelectorAll('#recent-store-list [data-monthly-alert-store], #visit-list [data-monthly-alert-store]').forEach(slot => {
+    // Keep title buttons and editable notes in place when the calendar changes.
+    const badge = monthlyAlertBadgeContent(slot.dataset.monthlyAlertStore);
+    if (slot.innerHTML !== badge) slot.innerHTML = badge;
+  });
+}
 function visitStoreNameHTML(value, query = '') {
   const text = String(value ?? ''), needle = visitStoreNameText(query).trim();
   if (!needle || !/[\r\n]/.test(text)) return highlightLiteral(text, needle);
@@ -2506,7 +2524,7 @@ function visitStoreCardHTML(store, query = '', unresolvedVisits = []) {
   const actions = store.conflict ? `<button type="button" class="secondary" data-review="store:${esc(store.id)}">比較並處理衝突</button>` : associationPending ? '' : `${!pending ? `<button type="button" class="secondary" data-visit-brief="${esc(store.id)}">單店拜訪</button>` : ''}<button type="button" class="primary" data-new-visit-store="${esc(store.id)}">＋ 記錄這次拜訪</button>`;
   const associationActions = unresolvedVisits.map((visit, index) => `<button type="button" class="secondary" data-review="visit:${esc(visit.id)}">核對拜訪衝突${unresolvedVisits.length > 1 ? ' ' + (index + 1) : ''}</button>`).join('');
   const noteStatus = associationPending ? '<p class="conflict-card">有拜訪紀錄的門市歸屬待核對</p><p class="muted">未決版本提到此門市，不代表拜訪已歸屬此店；請先核對衝突版本。</p>' : `<p class="muted">${storeOriginalTextFields(store).length ? '尚未另建拜訪紀錄；既有內容請見上方「門市原有文字」。' : '尚無拜訪紀錄。'}</p>`;
-  return `<article class="note" data-visit-empty-store="${esc(store.id)}"${associationPending ? ' data-visit-association-pending="true"' : ''}><button type="button" class="text-button store-link" ${target}>${visitStoreNameHTML(store.name, query)}</button>${visitStoreAliasMatchHTML(store, query)}${storeAttendanceHTML(store.id)}${reminders}${storeOriginalTextHTML(store, query)}${noteStatus}${notice}<div class="note-actions">${actions}${associationActions}</div></article>`;
+  return `<article class="note" data-visit-empty-store="${esc(store.id)}"${associationPending ? ' data-visit-association-pending="true"' : ''}><button type="button" class="text-button store-link" ${target}>${visitStoreNameHTML(store.name, query)}${monthlyAlertBadgeHTML(store.id)}</button>${visitStoreAliasMatchHTML(store, query)}${storeAttendanceHTML(store.id)}${reminders}${storeOriginalTextHTML(store, query)}${noteStatus}${notice}<div class="note-actions">${actions}${associationActions}</div></article>`;
 }
 function visitSearchRank(v, needle) {
   if (!needle) return 0;
@@ -2547,7 +2565,7 @@ function renderVisitSearchGroup(group, query) {
   const lead = matches[0]?.v, total = group.allVisits.length, store = by('store', group.storeId);
   const target = store && !store.conflict && !storeIdentityPending(store) ? `data-visit-brief="${esc(group.storeId)}"` : `data-node-type="store" data-node-id="${esc(group.storeId)}"`;
   const matchLabel = group.storeTextMatch ? `門市原有文字命中 · 拜訪命中 ${group.matches.length} 筆 · 共 ${total} 筆` : `${group.matches.length} 筆命中 · 共 ${total} 筆`;
-  return `<section class="visit-search-group"><div class="visit-search-group-head"><button class="text-button store-link" ${target}>${visitStoreNameHTML(name('store', group.storeId), query)}</button><span class="pill${group.storeTextMatch ? ' visit-search-profile-match' : ''}">${matchLabel}</span></div>${storeAttendanceHTML(group.storeId)}${storeOriginalTextHTML(store, query)}<div class="visit-search-preview">${lead ? visitSearchPreview(lead, query) : ''}</div><details class="visit-search-details"><summary>展開這間藥局全部 ${total} 筆拜訪紀錄</summary><div class="visit-search-expanded">${group.allVisits.map(v => noteHTML(v, query, { showStoreText: false })).join('')}</div></details></section>`;
+  return `<section class="visit-search-group"><div class="visit-search-group-head"><button class="text-button store-link" ${target}>${visitStoreNameHTML(name('store', group.storeId), query)}${monthlyAlertBadgeHTML(group.storeId)}</button><span class="pill${group.storeTextMatch ? ' visit-search-profile-match' : ''}">${matchLabel}</span></div>${storeAttendanceHTML(group.storeId)}${storeOriginalTextHTML(store, query)}<div class="visit-search-preview">${lead ? visitSearchPreview(lead, query) : ''}</div><details class="visit-search-details"><summary>展開這間藥局全部 ${total} 筆拜訪紀錄</summary><div class="visit-search-expanded">${group.allVisits.map(v => noteHTML(v, query, { showStoreText: false })).join('')}</div></details></section>`;
 }
 // Day itinerary actions only change datePlans / datePlanOrder. They never call
 // task completion, attendance confirmation, or note editing.
@@ -4031,12 +4049,12 @@ function handleAppVisibilityChange() {
     if (pendingLock || !payload) { pendingLock = false; document.body.classList.remove('privacy-veil'); showGate(); }
     else { document.body.classList.remove('privacy-veil'); requestNearbyPosition(); }
     resumeDayPlanContext(); resumeMonthlyVisitContext(); syncScheduler.request('foreground');
-    refreshInsightChangeBadges(); queueInsightScan();
+    refreshMonthlyAlertBadges(); refreshInsightChangeBadges(); queueInsightScan();
   }
 }
 document.addEventListener('visibilitychange', handleAppVisibilityChange);
 window.addEventListener('pagehide', () => { syncEpoch++; syncScheduler.pause(); finishAttendancePrompt(); dismissKeyboard(); clearNearbyPosition(); if(monthlyFeedbackContext)void flushMonthlyFeedbackDraft().catch(()=>{}); if (editorContext?.type === 'visit' || singleStoreContext) void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); if (activeReminderDraftContext()) void flushReminderDraft().catch(() => {}); if (payload || busy || backupPreview) lockNow(false); });
-window.addEventListener('pageshow', () => { dismissKeyboard(); if (!payload && !document.hidden) { document.body.classList.remove('privacy-veil'); showGate(); } if (!document.hidden) { resumeDayPlanContext(); resumeMonthlyVisitContext(); syncScheduler.request('foreground'); queueInsightScan(); } });
+window.addEventListener('pageshow', () => { dismissKeyboard(); if (!payload && !document.hidden) { document.body.classList.remove('privacy-veil'); showGate(); } if (!document.hidden) { refreshMonthlyAlertBadges(); resumeDayPlanContext(); resumeMonthlyVisitContext(); syncScheduler.request('foreground'); queueInsightScan(); } });
 window.addEventListener('online', () => syncScheduler.request('online'));
 window.addEventListener('offline', () => syncScheduler.pause());
 $('visit-attendance-form').addEventListener('submit', event => {

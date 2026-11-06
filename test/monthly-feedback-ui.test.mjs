@@ -41,3 +41,13 @@ test('export confirmation cancel is inert and unknown replies are exported witho
  h.ctx.accept=false;h.ctx.downloadMonthlyFeedbackExport();assert.equal(h.ctx.downloaded,undefined);
  h.ctx.accept=true;h.ctx.downloadMonthlyFeedbackExport();const output=JSON.parse(h.ctx.downloaded.text);assert.equal(output.stores[0].status,'not-reported');assert.equal(output.stores[0].feedback.length,0);assert.ok(!h.ctx.downloaded.text.includes('原始筆記'));assert.equal(h.writes.length,0);
 });
+test('calendar refresh removes stale homepage markers without re-rendering titles, drafts or notes',async()=>{
+ const bundle=await makeFixture(c),slots=[{dataset:{monthlyAlertStore:'qa-alert-a'},innerHTML:''},{dataset:{monthlyAlertStore:'qa-alert-other'},innerHTML:''}];
+ let scans=0,period=c.monthlyVisitMonth();
+ const ctx=vm.createContext({payload:{bundle},document:{hidden:false,querySelectorAll:()=>slots},monthlyVisitMonth:()=>period,monthlyAlertStoreIds:(...args)=>{scans++;return c.monthlyAlertStoreIds(...args);},esc:value=>String(value)});
+ vm.runInContext(source.slice(source.indexOf('var monthlyAlertBadgeCache;'),source.indexOf('function visitStoreNameHTML(')),ctx);
+ ctx.refreshMonthlyAlertBadges();assert.match(slots[0].innerHTML,/本月警示店/);assert.equal(slots[1].innerHTML,'');
+ ctx.refreshMonthlyAlertBadges();assert.equal(scans,1);
+ period='9999-12';ctx.refreshMonthlyAlertBadges();assert.equal(slots[0].innerHTML,'');assert.equal(scans,2);
+ assert.equal(ctx.payload.bundle,bundle);
+});

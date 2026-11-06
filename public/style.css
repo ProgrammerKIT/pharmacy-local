@@ -423,3 +423,6 @@ button[data-csv-source-snapshot]{flex:none;min-height:44px}
 .monthly-alert-list { list-style: none; margin: .7rem 0; padding: 0; }
 .monthly-alert-list li { display: grid; gap: .2rem; padding: .6rem 0; border-bottom: 1px solid #d7e3e7; }
 .monthly-alert-list span { color: #5d7379; font-size: .9em; }
+
+/* Monthly external-analysis marker; original store names are never rewritten. */
+.monthly-alert-slot:empty{display:none}.monthly-alert-badge{display:inline-flex;align-items:center;gap:4px;vertical-align:middle;margin:3px 0 3px 8px;padding:4px 9px;border:1px solid #8b1a12;border-radius:7px;background:#b42318;color:#fff;font-size:13px;font-weight:800;line-height:1.4;white-space:nowrap;text-decoration:none;box-shadow:0 1px 3px #7a271a26}.recent-store .monthly-alert-badge{margin-left:0}.recent-store .monthly-alert-slot{display:block}.recent-store .monthly-alert-slot:empty{display:none}

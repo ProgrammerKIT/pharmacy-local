@@ -52,3 +52,20 @@ test('forged parents, raw mismatch, cycles and a feedback placed on a visit are 
  const raw=structuredClone(b);raw.blobs[op.data.blob]=c.b64(new TextEncoder().encode('{}'));assert.throws(()=>c.validateBundle(raw),/原件/);
  const cycle=structuredClone(b);cycle.ops.at(-1).data.monthlyFeedback.replaces=[op.entity];cycle.blobs[op.data.blob]=c.b64(new TextEncoder().encode(JSON.stringify(cycle.ops.at(-1).data.monthlyFeedback)));assert.throws(()=>c.validateBundle(cycle),/接替/);
 });
+
+test('homepage alerts follow the selected calendar month and immutable confirmed store identity without modifying records',async()=>{
+ const b=await imported(),before=JSON.stringify(b);
+ assert.deepEqual([...c.monthlyAlertStoreIds(b,month)],['a']);
+ assert.equal(c.monthlyAlertStoreIds(b,'2026-10').size,0);assert.equal(c.monthlyAlertStoreIds(b,'2026-12').size,0);
+ const reported=await add(b,['0','已詢問']);assert.deepEqual([...c.monthlyAlertStoreIds(reported,month)],['a']);
+ assert.equal(JSON.stringify(b),before);
+ const s=c.project(b).find(s=>s.id==='a'),changed=structuredClone(b);changed.ops.push(c.revision('store','a',{...s.heads[0].data,address:'虛構異動路2號'},s.heads.map(h=>h.id),'test'));
+ assert.equal(c.monthlyAlertStoreIds(changed,month).size,0);
+});
+test('homepage alerts exclude superseded, skipped and conflicting monthly sources rather than choosing a name or clock winner',async()=>{
+ const b=await imported(),p=await c.prepareMonthlyAnalysis(b,[file('修訂乙')],sales,month);
+ const left=await c.applyMonthlyAnalysis(b,p,[['b']],'left',true),right=await c.applyMonthlyAnalysis(b,p,[['a']],'right',true);
+ assert.deepEqual([...c.monthlyAlertStoreIds(left,month)],['b']);
+ assert.equal(c.monthlyAlertStoreIds(c.merge(left,right),month).size,0);
+ const skipped=await c.applyMonthlyAnalysis(b,p,[['skip']],'test',true);assert.equal(c.monthlyAlertStoreIds(skipped,month).size,0);
+});

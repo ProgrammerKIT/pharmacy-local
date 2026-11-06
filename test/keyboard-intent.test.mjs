@@ -161,7 +161,7 @@ test('background and bfcache lifecycle dismiss focus synchronously without remov
     flushVisitDraft() { f.events.push(['flush-visit']); }, flushInlineTextDraft() { f.events.push(['flush-inline']); },
     async flushReminderDraft() { f.events.push(['flush-reminder']); }
   });
-  Object.assign(f.context, { insightBackgroundActive: null, canRetainInsightBackground: () => false, queueInsightScan() {}, refreshInsightChangeBadges() {} });
+  Object.assign(f.context, { insightBackgroundActive: null, canRetainInsightBackground: () => false, queueInsightScan() {}, refreshMonthlyAlertBadges() {}, refreshInsightChangeBadges() {} });
   vm.runInContext(app.slice(app.indexOf('function activeReminderDraftContext('), app.indexOf('function reminderDraftState(')) + app.slice(app.indexOf('function handleAppVisibilityChange()'), app.indexOf("$('visit-attendance-form').addEventListener('submit'")), f.context);
   const field = f.editable('composed-text', true);
   for (const [type, hidden] of [['visibilitychange', true], ['visibilitychange', false], ['pagehide', true], ['pageshow', false]]) {
