@@ -2,7 +2,7 @@ import { RUNTIME_FILES } from '../update/package.mjs';
 // Positive allowlist; never publish a recursive copy of the working directory.
 export const CODE_FILES = [...RUNTIME_FILES,
   'supervisor.mjs', 'update/package.mjs', 'update/download.mjs', 'update/engine.mjs',
-  'scripts/people-automation.mjs', 'test/people-batch.test.mjs',
+  'scripts/people-automation.mjs', 'test/people-batch.test.mjs', 'test/people-batch-scheduling.test.mjs',
   'scripts/code-files.mjs', 'scripts/release.mjs', 'scripts/configure-updates.mjs',
   'scripts/upgrade.mjs', 'scripts/autostart.mjs', 'scripts/manage.mjs',
   'scripts/google-maps-enrichment.mjs', 'scripts/chrome-maps-browser.mjs',
