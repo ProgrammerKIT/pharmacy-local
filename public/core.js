@@ -697,8 +697,56 @@ function validPeopleReadingDocument(v) {
     &&plain(r)&&r.format==='people-reading-1'&&r.storeId===v.storeId&&r.basis===v.basis&&ids(r.coveredRevisions)&&Array.isArray(r.people)&&r.people.length<=100&&JSON.stringify(r).length<=500000
     &&r.people.every(p=>plain(p)&&str(p.name,100)&&!!p.name&&['local','historical','mentioned','uncertain'].includes(p.kind)&&Array.isArray(p.items)&&p.items.length>0&&p.items.length<=100&&p.items.every(i=>plain(i)&&['background','interaction','relationship','topic'].includes(i.category)&&str(i.text,20000)&&Array.isArray(i.evidence)&&i.evidence.length>0&&i.evidence.length<=100&&i.evidence.every(e=>plain(e)&&str(e.visitId,100)&&str(e.revisionId,100)&&str(e.quote,100000))));
 }
+function validPeopleRelationshipReview(v) {
+  return supervisionKeys(v, ['format','readingId','personIndex','itemIndex','status','replaces','reviewedAt','reviewedBy'])
+    && v.format === 'pharmacy-people-relationship-review-1' && supervisionText(v.readingId,100)
+    && Number.isSafeInteger(v.personIndex) && v.personIndex >= 0 && v.personIndex < 100
+    && Number.isSafeInteger(v.itemIndex) && v.itemIndex >= 0 && v.itemIndex < 100
+    && ['confirmed','rejected','pending'].includes(v.status) && ids(v.replaces)
+    && new Set(v.replaces).size === v.replaces.length && attendanceInstant(v.reviewedAt) && v.reviewedBy === 'Kit';
+}
+// Exact statement and evidence identity; never match people or claims by name alone.
+export function peopleRelationshipKey(storeId, person, item) {
+  return JSON.stringify([storeId,person.name,person.kind,person.candidateGroup || '',item.category,item.text,
+    item.evidence.map(e=>[e.visitId,e.revisionId,e.quote]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)))]);
+}
+function relationshipTarget(sourceEntities, review) {
+  const reading=sourceEntities.get(review.readingId)?.data.peopleReading;
+  const person=reading?.result.people[review.personIndex],item=person?.items[review.itemIndex];
+  if (!item || item.category !== 'relationship') throw new Error('關係審核缺少對應速覽、人物或原句。');
+  return {reading,person,item,key:peopleRelationshipKey(reading.storeId,person,item)};
+}
+function validatePeopleRelationshipReviews(sourceEntities, bundle) {
+  const events=new Map([...sourceEntities].filter(([,o])=>o.data.peopleRelationshipReview));
+  const keys=new Map([...events].map(([id,o])=>[id,relationshipTarget(sourceEntities,o.data.peopleRelationshipReview).key]));
+  const degrees=new Map(),children=new Map(),queue=[];
+  for(const [id,op] of events) {
+    const event=op.data.peopleRelationshipReview;
+    if(op.data.peopleReading || JSON.stringify(JSON.parse(dec.decode(unb64(bundle.blobs[op.data.blob] || ''))))!==JSON.stringify(event)) throw new Error('關係審核原件與保存內容不符。');
+    degrees.set(id,event.replaces.length);if(!event.replaces.length)queue.push(id);
+    for(const parent of event.replaces) {
+      if(!events.has(parent)||keys.get(parent)!==keys.get(id))throw new Error('關係審核不可接替其他人物、關係或來源版本的判斷。');
+      if(!children.has(parent))children.set(parent,[]);children.get(parent).push(id);
+    }
+  }
+  for(let i=0;i<queue.length;i++)for(const id of children.get(queue[i])||[]) {
+    degrees.set(id,degrees.get(id)-1);if(!degrees.get(id))queue.push(id);
+  }
+  if(queue.length!==events.size)throw new Error('關係審核歷史不可循環。');
+}
+export function peopleRelationshipReviewState(bundle, readingId, personIndex, itemIndex) {
+  const sources=new Map(bundle.ops.filter(o=>o.type==='source').map(o=>[o.entity,o]));
+  const target=relationshipTarget(sources,{readingId,personIndex,itemIndex});
+  const history=[...sources.values()].filter(o=>o.data.peopleRelationshipReview &&
+    relationshipTarget(sources,o.data.peopleRelationshipReview).key===target.key);
+  const superseded=new Set(history.flatMap(o=>o.data.peopleRelationshipReview.replaces));
+  const heads=history.filter(o=>!superseded.has(o.entity));
+  const statuses=new Set(heads.map(o=>o.data.peopleRelationshipReview.status));
+  return {...target,history,heads,status:statuses.size===1?[...statuses][0]:null,conflict:statuses.size>1};
+}
 export function validData(type, d) {
   if (!plain(d)) return false;
+  if (d.peopleRelationshipReview !== undefined && (type !== 'source' || !validPeopleRelationshipReview(d.peopleRelationshipReview))) return false;
   if (d.peopleReading !== undefined && (type !== 'source' || !validPeopleReadingDocument(d.peopleReading))) return false;
   if (d.monthlyAnalysis !== undefined && (type !== 'source' || !validMonthlyAnalysis(d.monthlyAnalysis))) return false;
   if (d.supervision !== undefined && (type !== 'store' || !validStoreSupervision(d.supervision))) return false;
@@ -769,6 +817,7 @@ export function validateBundle(b) {
   const readingQueue=readingDocs.filter(o=>!o.data.peopleReading.replaces.length).map(o=>o.entity);let readingCount=0;
   for(let i=0;i<readingQueue.length;i++){readingCount++;for(const id of readingChildren.get(readingQueue[i])||[]){readingDegree.set(id,readingDegree.get(id)-1);if(!readingDegree.get(id))readingQueue.push(id);}}
   if(readingCount!==readingDocs.length)throw new Error('人物速覽歷史不可循環。');
+  validatePeopleRelationshipReviews(sourceEntities, b);
   validateSupervisorReviews(b, seen);
   validateStoreMergeProvenance(b, seen);
   validateCSVExclusionEvents(sourceEntities);
