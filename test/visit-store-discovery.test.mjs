@@ -425,3 +425,21 @@ test('name line-break handling does not normalize note text, tabs, other spaces,
   const h = fixture([store('literal', '虛構甲\t乙－台北 店'), visit('literal-note', 'literal', { text: '虛構原文甲\n乙', next: '虛構跟進甲\r\n乙' })]);
   for (const query of ['虛構原文甲乙', '虛構跟進甲乙', '虛構甲乙', '虛構甲 乙', '台北店', '臺北 店', '乙-台北']) assert.match(h.render(query), /沒有符合/);
 });
+
+
+test('expanded store history shows shared reminders once while keeping every note and its own follow-up', () => {
+ const s=store('one','虛構青禾藥局',{nextRemember:'本店共同提醒',everyTimeMust:'本店例行提醒',nextRememberTasks:[{id:'task-one',text:'共同待辦',createdAt:'2026-11-01T00:00:00.000Z',completedAt:''}]}),notes=[1,2,3].map(n=>visit('note-'+n,s.id,{text:'第'+n+'筆完整原文',next:'第'+n+'筆自己的跟進'}));
+ const h=fixture([s,...notes]);h.useNoteRenderer();const before=JSON.stringify(h.ctx.records),html=h.render('青禾');
+ assert.equal((html.match(/data-store-reminder="one"/g)||[]).length,1);assert.equal((html.match(/data-reminder-complete="task-one"/g)||[]).length,1);
+ assert.equal((html.match(/本店共同提醒/g)||[]).length,1);assert.equal((html.match(/本店例行提醒/g)||[]).length,1);
+ for(let n=1;n<=3;n++){assert.ok(html.includes('第'+n+'筆完整原文'));assert.ok(html.includes('第'+n+'筆自己的跟進'));assert.ok(html.includes('data-history="visit:note-'+n+'"'));}
+ assert.equal(JSON.stringify(h.ctx.records),before);
+});
+test('default history deduplicates reminders by store ID, not by equal names or task text', () => {
+ const a=store('a','虛構同名藥局',{nextRemember:'同樣提醒'}),b=store('b','虛構同名藥局',{nextRemember:'同樣提醒'}),h=fixture([a,b,visit('a1','a'),visit('b1','b'),visit('a2','a'),visit('b2','b')]);h.useNoteRenderer();
+ for(const query of ['', '同名']){const html=h.render(query);assert.equal((html.match(/data-store-reminder="a"/g)||[]).length,1);assert.equal((html.match(/data-store-reminder="b"/g)||[]).length,1);assert.equal((html.match(/同樣提醒/g)||[]).length,2);}
+});
+test('grouped equal-source evidence does not repeat store reminders within its retained individual sources', () => {
+ const s=store('a','虛構來源藥局',{nextRemember:'共同來源提醒'}),members=[visit('v1','a'),visit('v2','a')],h=fixture([s,...members]);h.useNoteRenderer();
+ const html=h.ctx.noteHTML({...members[0],evidenceMembers:members});assert.equal((html.match(/data-store-reminder="a"/g)||[]).length,1);assert.ok(html.includes('data-history="visit:v1"'));assert.ok(html.includes('data-history="visit:v2"'));
+});
