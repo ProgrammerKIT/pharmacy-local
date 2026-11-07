@@ -658,3 +658,9 @@ node test/qa/backup-restore-browser.mjs
 - Codex內建瀏覽器桌面及393×852手機尺寸實際檢查：三筆原文均有直接修改輸入區，各自下次跟進完整；未調整原有固定手機畫布。只屬尺寸驗收，非實體iPhone／Safari鍵盤驗收。
 - 開啟第一項待辦修改，正確定位該門市及原待辦；未變更文字並關閉。唯讀核對originalOpsPreserved、notesAndStoreHeadsUnchanged、peopleBasisUnchanged、savedPeopleReadingStillCurrent、sourceHashesMatch均true，newSourceCount=0。
 - 未操作正式App或資料；正式發布與Mac／iPhone版本仍待另外授權及核對，不替使用者勾選任何正式任務或拜訪。
+
+
+## v1.5.98 每月JSON詳細資訊收合（本機候選，2026-11-07）
+
+獨立127.0.0.1虛構庫，全部正式API封鎖；桌面及393×852手機尺寸通過。單店初開「分析原因與數據」「現場詢問與執行·2項」皆收合，現場結果按鈕直接可見；逐一展開完整長篇原文與所有問題。開啟填答再退出未填寫的虛構表單後，兩區仍展開；離開再開同店則恢復收合。並未填寫或保存正式／虛構回報。
+原文、共享版本、門市heads、人物速覽及basis、來源雜湊均保持；新增來源0。沒有存取正式資料庫或配對。手機尺寸檢查不冒稱實體iPhone／Safari鍵盤已驗收；正式發布及真機版本待另外授權核對。
