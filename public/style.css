@@ -244,6 +244,7 @@ dialog:focus{outline:none}
 .attendance-history section { padding: .5rem 0; border-bottom: 1px solid #dbe4e8; }
 .attendance-history small { display: block; font-size: .75rem; }
 #visit-attendance-dialog { max-width: 560px; }
+#visit-attendance-scope { white-space: pre-line; }
 .attendance-check { padding: 1rem; border: 1px solid #bddcd7; border-radius: .75rem; background: #edf7f5; font-weight: 700; }
 
 /* A compact route to existing safety details; no overlay or input focus. */

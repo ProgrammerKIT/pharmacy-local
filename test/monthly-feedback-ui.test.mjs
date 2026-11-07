@@ -9,8 +9,8 @@ async function harness(){
  const b=await makeFixture(c),analysis=c.monthlyAnalysisSources(b)[0],plan=c.prepareMonthlyFeedback(b,analysis.id,0),nodes=new Map(),answers=[{value:'0'},{value:''}],writes=[];
  const $=id=>{if(!nodes.has(id))nodes.set(id,{value:'',textContent:'',open:true,close(){this.open=false;}});return nodes.get(id);};
  $('monthly-feedback-date').value='';$('monthly-feedback-notes').value='';
- const ctx=vm.createContext({JSON,Date,Number,Set,Map,Promise,clearTimeout,setTimeout,key:{},meta:{},syncEpoch:0,payload:{bundle:b,device:'qa'},monthlyFeedbackContext:null,pendingLock:false,updateHolding:false,syncInProgress:false,document:{hidden:false,querySelectorAll:()=>answers},$,monthlyVisitMonth:c.monthlyVisitMonth,monthlyFeedbackState:c.monthlyFeedbackState,prepareMonthlyFeedback:c.prepareMonthlyFeedback,applyMonthlyFeedback:c.applyMonthlyFeedback,exportMonthlyFeedback:c.exportMonthlyFeedback,
-  esc:v=>String(v??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])),dateText:v=>v,run:async fn=>fn(),render(){},openVisitBrief(){},toast:t=>ctx.toastText=t,confirm:()=>ctx.accept,syncScheduler:{wake(){}},download:(text,name)=>ctx.downloaded={text,name},
+ const ctx=vm.createContext({JSON,Date,Number,Set,Map,Promise,clearTimeout,setTimeout,key:{},meta:{},syncEpoch:0,payload:{bundle:b,device:'qa'},monthlyFeedbackContext:null,pendingLock:false,updateHolding:false,syncInProgress:false,document:{hidden:false,querySelectorAll:()=>answers},$,monthlyVisitMonth:c.monthlyVisitMonth,monthlyFeedbackState:c.monthlyFeedbackState,prepareMonthlyFeedback:c.prepareMonthlyFeedback,applyMonthlyFeedback:c.applyMonthlyFeedback,applyMonthlyFeedbackWithAttendance:c.applyMonthlyFeedbackWithAttendance,attendanceTaipeiDate:c.attendanceTaipeiDate,exportMonthlyFeedback:c.exportMonthlyFeedback,
+  esc:v=>String(v??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])),dateText:v=>v,run:async fn=>fn(),render(){},openVisitBrief(){},toast:t=>ctx.toastText=t,confirm:()=>ctx.accept,confirmStoreSave:async()=>{if(ctx.onAttendancePrompt)ctx.onAttendancePrompt();return ctx.accept?{attendance:ctx.attendance}:null;},syncScheduler:{wake(){}},download:(text,name)=>ctx.downloaded={text,name},
   persist:async(next,{guard}={})=>{if(ctx.beforePersist)ctx.beforePersist(next);guard?.();writes.push(next);ctx.payload=next;}});
  vm.runInContext(source.slice(source.indexOf('function monthlyFeedbackHTML('),source.indexOf("$('monthly-analysis-dialog').addEventListener('submit',event=>{if(event.target.id==='monthly-feedback-form')")),ctx);
  ctx.monthlyFeedbackContext={plan,bundle:b,key:ctx.key,meta:ctx.meta,epoch:0,chain:Promise.resolve(),generation:0};
@@ -50,4 +50,21 @@ test('calendar refresh removes stale homepage markers without re-rendering title
  ctx.refreshMonthlyAlertBadges();assert.equal(scans,1);
  period='9999-12';ctx.refreshMonthlyAlertBadges();assert.equal(slots[0].innerHTML,'');assert.equal(scans,2);
  assert.equal(ctx.payload.bundle,bundle);
+});
+
+test('checked final confirmation updates today and persists feedback plus attendance in one formal write',async()=>{
+ const h=await harness();h.ctx.accept=true;h.ctx.attendance=c.makeVisitAttendance(h.plan.storeId);h.$('monthly-feedback-date').value='2000-01-01';
+ await h.ctx.saveMonthlyFeedback({preventDefault(){}});
+ const formal=h.writes.filter(w=>w.bundle!==h.b);assert.equal(formal.length,1);
+ assert.equal(c.visitAttendanceForStore(h.ctx.payload.bundle,h.plan.storeId).latestDate,h.ctx.attendance.date);
+ assert.equal(h.ctx.payload.bundle.ops.findLast(op=>op.data.monthlyFeedback).data.monthlyFeedback.visitDate,h.ctx.attendance.date);
+ assert.match(h.ctx.toastText,/已確認今天拜訪/);
+});
+test('source changes during final confirmation abort both feedback and attendance',async()=>{
+ const h=await harness();h.ctx.accept=true;h.ctx.attendance=c.makeVisitAttendance(h.plan.storeId);h.ctx.onAttendancePrompt=()=>h.ctx.syncEpoch++;
+ await assert.rejects(h.ctx.saveMonthlyFeedback({preventDefault(){}}));assert.equal(h.writes.filter(w=>w.bundle!==h.b).length,0);assert.ok(h.ctx.payload.monthlyFeedbackDraft);assert.equal(h.ctx.toastText,undefined);
+});
+test('checked save failure keeps corrected-date draft and writes neither feedback nor attendance',async()=>{
+ const h=await harness();h.ctx.accept=true;h.ctx.attendance=c.makeVisitAttendance(h.plan.storeId);h.$('monthly-feedback-date').value='2000-01-01';h.ctx.beforePersist=next=>{if(next.bundle!==h.b)throw Error('synthetic disk failure');};
+ await assert.rejects(h.ctx.saveMonthlyFeedback({preventDefault(){}}));assert.equal(h.ctx.payload.bundle,h.b);assert.equal(h.ctx.payload.monthlyFeedbackDraft.visitDate,h.ctx.attendance.date);assert.equal(h.ctx.toastText,undefined);
 });

@@ -173,6 +173,24 @@ function validVisitAttendance(op) {
       !(op.type === 'store' && op.entity === attendance.store || op.type === 'visit' && op.data?.store === attendance.store)) return false;
   try { return attendance.date === attendanceTaipeiDate(attendance.at); } catch { return false; }
 }
+// An explicit human confirmation is a separate immutable source. It does not
+// create a note/store revision or invalidate any existing people-reading basis.
+const manualAttendanceFormat = 'pharmacy-manual-visit-attendance-1';
+function validManualVisitAttendance(op) {
+  const a = op?.data?.manualVisitAttendance, d = op?.data;
+  if (op?.type !== 'source' || op.deleted !== false || op.parents?.length !== 0 || !plain(a) ||
+      Object.keys(a).sort().join(',') !== 'at,date,format,store' || a.format !== manualAttendanceFormat ||
+      !str(a.store, 100) || !a.store.trim() || !attendanceInstant(a.at) || a.at !== op.at ||
+      d.file !== '人工拜訪確認.json' || d.list !== '人工拜訪確認' || d.rows !== 1 ||
+      d.encoding !== 'UTF-8' || d.delimiter !== '' || d.headers?.length !== 0 ||
+      Object.keys(d).sort().join(',') !== 'batch,blob,delimiter,encoding,file,headers,list,manualVisitAttendance,rows') return false;
+  try { return a.date === attendanceTaipeiDate(a.at); } catch { return false; }
+}
+export function visitAttendanceEvidence(op) {
+  if (validVisitAttendance(op)) return op.visitAttendance;
+  if (validManualVisitAttendance(op)) { const { store, date, at } = op.data.manualVisitAttendance; return { store, date, at }; }
+  return null;
+}
 // Read evidence from all retained revisions, not only the current head. A later
 // ordinary edit or restore neither copies an attendance event nor erases it.
 // Bundles are validated at their input boundary; this read never validates or
@@ -180,8 +198,8 @@ function validVisitAttendance(op) {
 export function visitAttendanceForStore(bundle, storeId, now = Date.now()) {
   const today = attendanceTaipeiDate(now), dates = new Map(), ops = Array.isArray(bundle?.ops) ? bundle.ops : [];
   for (const op of ops) {
-    if (op?.visitAttendance?.store !== storeId || !str(op.id, 100) || !op.id || !validVisitAttendance(op) || !validData(op.type, op.data)) continue;
-    const attendance = op.visitAttendance;
+    const attendance = visitAttendanceEvidence(op);
+    if (attendance?.store !== storeId || !str(op.id, 100) || !op.id || !validData(op.type, op.data)) continue;
     if (!dates.has(attendance.date)) dates.set(attendance.date, []);
     dates.get(attendance.date).push({ entityId: op.entity, type: op.type, revisionId: op.id, at: attendance.at });
   }
@@ -797,6 +815,7 @@ export function peopleAliasReviewState(bundle,readingId,personIndices) {
 }
 export function validData(type, d) {
   if (!plain(d)) return false;
+  if (d.manualVisitAttendance !== undefined && !validManualVisitAttendance({ type, data: d, deleted: false, parents: [], at: d.manualVisitAttendance?.at })) return false;
   if(d.peopleAliasReview!==undefined&&(type!=='source'||!validPeopleAliasReview(d.peopleAliasReview)||['peopleReading','peopleRelationshipReview','monthlyAnalysis','monthlyFeedback','csvExclusionEvents','csvExclusionAuditOf'].some(k=>d[k]!==undefined)))return false;
   if (d.monthlyFeedback !== undefined && (type !== 'source' || !validMonthlyFeedback(d.monthlyFeedback) || d.monthlyAnalysis !== undefined || d.peopleReading !== undefined || d.peopleRelationshipReview !== undefined)) return false;
   if (d.peopleRelationshipReview !== undefined && (type !== 'source' || !validPeopleRelationshipReview(d.peopleRelationshipReview))) return false;
@@ -893,6 +912,10 @@ export function validateBundle(b) {
     if (s.sourceSnapshot !== undefined) { const snapshot = sourceEntities.get(s.sourceSnapshot); if (!snapshot || snapshot.data.blob !== s.blob) throw new Error('來源列與原始 CSV 快照連結不完整，停止合併。'); }
   }
   for (const o of b.ops) if (o.type === 'source' && !Object.hasOwn(b.blobs, o.data.blob)) throw new Error('原始 CSV 快照缺少檔案內容，停止合併。');
+  for (const o of b.ops) if (Object.hasOwn(o.data, 'manualVisitAttendance')) {
+    if (!validManualVisitAttendance(o) || !storeEntities.has(o.data.manualVisitAttendance.store)) throw new Error('人工拜訪確認資料或門市不符。');
+    if (dec.decode(unb64(b.blobs[o.data.blob])) !== JSON.stringify(o.data.manualVisitAttendance)) throw new Error('人工拜訪確認與原件不符。');
+  }
   for (const o of b.ops) if (o.data.supervision && !Object.hasOwn(b.blobs, o.data.supervision.sourceDocument.blob)) throw new Error('督導分區來源圖缺少檔案內容，停止合併。');
   for (const source of b.ops.filter(op => op.data.monthlyAnalysis)) {
     const data = source.data, info = data.monthlyAnalysis;
@@ -1109,11 +1132,12 @@ export async function planBackupImport(currentBundle, incomingBundle) {
   const beforeByKey = new Map(beforeRecords.map(record => [recordKey(record), record]));
   const existingOps = new Set((current?.ops || []).map(op => op.id));
   const addedOps = incoming.ops.filter(op => !existingOps.has(op.id));
-  const beforeAttendance = (current?.ops || []).filter(op => op.visitAttendance), afterAttendance = bundle.ops.filter(op => op.visitAttendance);
+  const attendanceOps = ops => ops.flatMap(op => { const attendance = visitAttendanceEvidence(op); return attendance ? [{ ...op, visitAttendance: attendance }] : []; });
+  const beforeAttendance = attendanceOps(current?.ops || []), afterAttendance = attendanceOps(bundle.ops);
   const attendanceDay = op => JSON.stringify([op.visitAttendance.store, op.visitAttendance.date]);
   const beforeAttendanceDays = new Set(beforeAttendance.map(attendanceDay)), afterAttendanceDays = new Set(afterAttendance.map(attendanceDay));
   const addedAttendanceByEntity = new Map();
-  for (const op of addedOps) if (op.visitAttendance) {
+  for (const op of attendanceOps(addedOps)) {
     const key = JSON.stringify([op.type, op.entity]);
     if (!addedAttendanceByEntity.has(key)) addedAttendanceByEntity.set(key, []);
     addedAttendanceByEntity.get(key).push(op);
@@ -2568,6 +2592,22 @@ export async function applyMonthlyFeedback(bundle, plan, input, device, month=mo
   next.blobs[blob]=b64(raw);
   const op=revision('source',uuid(),{file:'每月現場回報.json',list:'每月分析現場回報',blob,batch:uuid(),rows:1,headers:[],encoding:'UTF-8',delimiter:'',monthlyFeedback:value},[],device);
   op.at=value.createdAt;next.ops.push(op);return validateBundle(next);
+}
+// The caller must obtain a fresh, unchecked-by-default human confirmation.
+// External JSON import and ordinary feedback saves never call this implicitly.
+export async function applyMonthlyFeedbackWithAttendance(bundle, plan, input, device, attendance, now = new Date().toISOString()) {
+  if (!attendanceInstant(now)) throw new Error('拜訪確認時間不正確。');
+  if (attendance !== undefined && (!plain(attendance) || Object.keys(attendance).sort().join(',') !== 'at,date,store' ||
+      attendance.store !== plan?.storeId || !attendanceInstant(attendance.at) || attendance.at > now ||
+      attendance.date !== attendanceTaipeiDate(attendance.at) || attendance.date !== attendanceTaipeiDate(now) || input.visitDate !== attendance.date)) throw new Error('拜訪日期或門市有變，請重新確認；尚未寫入。');
+  const feedback = await applyMonthlyFeedback(bundle, plan, input, device, monthlyVisitMonth(now));
+  if (attendance === undefined) return feedback;
+  const value = { format: manualAttendanceFormat, ...attendance }, raw = enc.encode(JSON.stringify(value)), blob = await hashBytes(raw);
+  const next = structuredClone(feedback);
+  next.blobs[blob] = b64(raw);
+  const op = revision('source', uuid(), { file: '人工拜訪確認.json', list: '人工拜訪確認', blob, batch: uuid(), rows: 1, headers: [], encoding: 'UTF-8', delimiter: '', manualVisitAttendance: value }, [], device);
+  op.at = attendance.at; next.ops.push(op);
+  return validateBundle(next);
 }
 export function rememberedMonthlyAnalysisChoice(bundle,row) {
   const stores=project(bundle),candidates=monthlyAnalysisCandidates(row,stores);

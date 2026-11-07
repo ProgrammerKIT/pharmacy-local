@@ -1,6 +1,6 @@
 import { peopleBriefSourcePlan, validatePeopleBriefResult, currentPeopleReading, peopleReadingRequest, preparePeopleReading, applyPeopleReading, planPeopleRelationshipReview, applyPeopleRelationshipReview, peopleAliasLayout, planPeopleAliasReview, applyPeopleAliasReview } from './relations.js';
 import { peopleRelationshipReviewState, peopleAliasGroups, peopleAliasReviewState } from './core.js';
-import { monthlyAlertStoreIds, monthlyAnalysisSources, monthlyAnalysisForStore, prepareMonthlyAnalysis, applyMonthlyAnalysis, monthlyFeedbackState, prepareMonthlyFeedback, applyMonthlyFeedback, rememberedMonthlyAnalysisChoice, exportMonthlyFeedback, monthlyAnalysisChangeSummary } from './core.js';
+import { monthlyAlertStoreIds, monthlyAnalysisSources, monthlyAnalysisForStore, prepareMonthlyAnalysis, applyMonthlyAnalysis, monthlyFeedbackState, prepareMonthlyFeedback, applyMonthlyFeedback, applyMonthlyFeedbackWithAttendance, rememberedMonthlyAnalysisChoice, exportMonthlyFeedback, monthlyAnalysisChangeSummary } from './core.js';
 import { supervisorRelationships, supervisorReviewHistory, reviewSupervisorRelationship, planStoreSupervision, applyStoreSupervision, supervisedStores } from './core.js';
 import { setupWeeklyRecovery, prepareWeeklyRecovery, createRecoveryBackup, newMeta, checkEnvelope, derive, seal, unseal, planBackupImport, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates, buildStoreEnrichmentRequest, planStoreEnrichment, applyStoreEnrichment, readonlyHealthAudit, dataSafetySummary, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, editReminderTasks, addReminderTasks, convertReminderTasks, completeReminderTask, reminderTaskHistory, searchStoreVisitText, scanInsightChanges, storeInsightDisplayForStore, storeInsightEvidenceForEntry, insightReviewForEntry, insightSharedReviewForEntry, storeInsightReviewHistory, planInsightReview, applyInsightReview, planStoreInsights, applyStoreInsights, planStoreInsightRelations, applyStoreInsightRelations, buildStoreInsightsSource, planStoreMerge, applyStoreMerge } from './core.js';
 import { readWeeklyRecovery, writeWeeklyRecovery, readLocal, writeLocal, archiveAndReplaceLocal, listLocalArchives, readLocalArchive } from './db.js';
@@ -10,7 +10,7 @@ import { createCSVImport } from './csv-ui.js';
 import { PROFILE_FIELDS, FILL_FIELDS, scanQuality, setDistinctReview, sourceSuggestions, fillProfile, csvSourceSupplements, sourceListKey } from './csv.js';
 import { entityRule, evidenceKind, sourceTags, groupCSVNotes, storeIdentityPending, relationVisitAllowed, retailChannel, originalStoreNames, filterStoreDirectory, candidateRelationsForStore, candidateOverview, candidateTrend, visitBriefForStore, regionalOptions, regionalInsights } from './relations.js';
 import { APP_VERSION } from './version.js';
-import { makeVisitAttendance, visitAttendanceForStore, attendanceTaipeiDate } from './core.js';
+import { makeVisitAttendance, visitAttendanceEvidence, visitAttendanceForStore, attendanceTaipeiDate } from './core.js';
 import { startUpdates, requestLocal, diagnoseConnection } from './update-client.js';
 
 const $ = id => document.getElementById(id);
@@ -487,8 +487,9 @@ function storeAttendance(storeId) {
   const today = attendanceTaipeiDate(Date.now());
   if (attendanceCache?.bundle !== payload.bundle || attendanceCache.today !== today) {
     const grouped = new Map();
-    for (const op of payload.bundle.ops) if (op.visitAttendance) {
-      const id = op.visitAttendance.store;
+    for (const op of payload.bundle.ops) {
+      const attendance = visitAttendanceEvidence(op); if (!attendance) continue;
+      const id = attendance.store;
       if (!grouped.has(id)) grouped.set(id, []);
       grouped.get(id).push(op);
     }
@@ -501,7 +502,7 @@ function storeAttendanceHTML(storeId, history = false) {
   const summary = storeAttendance(storeId);
   const elapsed = `距離${summary.daysSince} 天`;
   const text = summary.latestDate ? `最近拜訪：${summary.latestDate} · ${summary.hasFutureDates ? '日期晚於今天，請核對裝置時間' : elapsed}` : '尚無已確認的拜訪日期';
-  return `<div class="store-attendance">${esc(text)}${history && summary.history.length ? `<details class="attendance-history"><summary>已確認拜訪日 · ${summary.history.length} 天</summary><p class="muted">以台北日期計算；同日多次勾選合併顯示，以下保留每次確認來源。</p>${summary.history.map(day => `<section data-attendance-date="${esc(day.date)}"><strong>${esc(day.date)}</strong>${day.occurrences.map(item => `<p>${esc(new Date(item.at).toLocaleTimeString('zh-TW', { timeZone: 'Asia/Taipei', hour12: false }))} · ${item.type === 'visit' ? '拜訪筆記儲存時確認' : '門市資料／待辦儲存時確認'}<small>來源版本：${esc(item.revisionId)}</small></p>`).join('')}</section>`).join('')}</details>` : ''}</div>`;
+  return `<div class="store-attendance">${esc(text)}${history && summary.history.length ? `<details class="attendance-history"><summary>已確認拜訪日 · ${summary.history.length} 天</summary><p class="muted">以台北日期計算；同日多次勾選合併顯示，以下保留每次確認來源。</p>${summary.history.map(day => `<section data-attendance-date="${esc(day.date)}"><strong>${esc(day.date)}</strong>${day.occurrences.map(item => `<p>${esc(new Date(item.at).toLocaleTimeString('zh-TW', { timeZone: 'Asia/Taipei', hour12: false }))} · ${item.type === 'visit' ? '拜訪筆記儲存時確認' : item.type === 'source' ? '現場回報儲存時人工確認' : '門市資料／待辦儲存時確認'}<small>來源版本：${esc(item.revisionId)}</small></p>`).join('')}</section>`).join('')}</details>` : ''}</div>`;
 }
 function assertSaveParents(type, id, parents) {
   const current = project(payload.bundle).find(record => record.type === type && record.id === id);
@@ -515,7 +516,7 @@ function finishAttendancePrompt(result = null) {
   $('visit-attendance-check').checked = false;
   prompt.resolve(result);
 }
-async function confirmStoreSave(storeId, storeName, changed = true) {
+async function confirmStoreSave(storeId, storeName, changed = true, scope = '') {
   // Complete draft writes first; no formal data is committed while the prompt is open.
   await Promise.all([draftSaveChain, inlineDraftSaveChain, reminderDraftSaveChain]);
   if (!payload || document.hidden || pendingLock) throw new Error('請先回到 App 解鎖後再儲存，原修改仍保留。');
@@ -525,7 +526,7 @@ async function confirmStoreSave(storeId, storeName, changed = true) {
   const dialog = $('visit-attendance-dialog');
   $('visit-attendance-check').checked = false;
   $('visit-attendance-store').textContent = storeName;
-  $('visit-attendance-scope').textContent = changed ? '確認後才儲存剛才的修改。未勾選代表單純更新資料，不改變最近實際拜訪日期。' : '內容沒有變更。勾選後只新增本次實際拜訪的確認紀錄；未勾選則不寫入任何資料。';
+  $('visit-attendance-scope').textContent = scope || (changed ? '確認後才儲存剛才的修改。未勾選代表單純更新資料，不改變最近實際拜訪日期。' : '內容沒有變更。勾選後只新增本次實際拜訪的確認紀錄；未勾選則不寫入任何資料。');
   $('visit-attendance-error').textContent = '';
   const result = await new Promise(resolve => {
     attendancePrompt = { resolve, storeId, date: attendanceTaipeiDate(Date.now()) };
@@ -4348,7 +4349,7 @@ function monthlyFeedbackHTML(item) {
   const rowIndex=item.assignments.findIndex(match=>match.storeId===item.storeId),state=monthlyFeedbackState(payload.bundle,item.id,rowIndex);
   const replyHTML=op=>{const value=op.data.monthlyFeedback;return `<article class="monthly-feedback-result"><p>回報日期：${esc(value.visitDate || '未提供')} · 保存 ${esc(dateText(value.createdAt))}</p>${value.answers.map(answer=>`<p><strong>${esc(answer.question)}</strong><br>${esc(answer.text || '尚未填答')}</p>`).join('')}${value.notes?`<p>補充：${esc(value.notes)}</p>`:''}</article>`;};
   const draft=payload.monthlyFeedbackDraft?.analysisId===item.id && payload.monthlyFeedbackDraft.rowIndex===rowIndex;
-  return `<section class="monthly-feedback"><h4>現場回報</h4><p>${state.conflict?'有不同回報版本，請核對後另存修訂':state.current?`已填 ${state.current.data.monthlyFeedback.answers.filter(answer=>answer.text.trim()).length}／${item.row.checkpoints.length} 題`:'尚未回報；未回答不代表零或未執行'}${draft?' · 有本機未完成草稿':''}</p>${state.heads.map(replyHTML).join('')}${item.current || draft?`<button type="button" data-feedback-open="${esc(item.id)}" data-feedback-row="${rowIndex}">${draft?'繼續現場回報':state.history.length?'修改／補充現場回報':'填寫現場結果'}</button>`:'<p class="muted">歷史分析與回報留存，不自動帶入新一期。</p>'}${state.history.length>state.heads.length?`<details><summary>過去回報 · ${state.history.length-state.heads.length} 份</summary>${state.history.filter(op=>!state.heads.some(head=>head.entity===op.entity)).map(replyHTML).join('')}</details>`:''}<p class="muted">獨立保存，不改原筆記、人物關係或待辦，也不自動標記已拜訪。</p></section>`;
+  return `<section class="monthly-feedback"><h4>現場回報</h4><p>${state.conflict?'有不同回報版本，請核對後另存修訂':state.current?`已填 ${state.current.data.monthlyFeedback.answers.filter(answer=>answer.text.trim()).length}／${item.row.checkpoints.length} 題`:'尚未回報；未回答不代表零或未執行'}${draft?' · 有本機未完成草稿':''}</p>${state.heads.map(replyHTML).join('')}${item.current || draft?`<button type="button" data-feedback-open="${esc(item.id)}" data-feedback-row="${rowIndex}">${draft?'繼續現場回報':state.history.length?'修改／補充現場回報':'填寫現場結果'}</button>`:'<p class="muted">歷史分析與回報留存，不自動帶入新一期。</p>'}${state.history.length>state.heads.length?`<details><summary>過去回報 · ${state.history.length-state.heads.length} 份</summary>${state.history.filter(op=>!state.heads.some(head=>head.entity===op.entity)).map(replyHTML).join('')}</details>`:''}<p class="muted">獨立保存，不改原筆記、人物關係或待辦；只有保存時親自勾選今天實際拜訪，才更新最近拜訪與本月已訪狀態。</p></section>`;
 }
 function assertMonthlyFeedbackCurrent(ctx) {
   if(!ctx || monthlyFeedbackContext!==ctx || !payload || key!==ctx.key || meta!==ctx.meta || payload.bundle!==ctx.bundle || syncEpoch!==ctx.epoch || document.hidden || pendingLock || updateHolding || syncInProgress || !$('monthly-analysis-dialog').open || (!ctx.readOnly && monthlyVisitMonth()!==ctx.plan.visitMonth))throw new Error('來源、工作階段或月份有變，請重新核對；輸入保留。');
@@ -4384,7 +4385,7 @@ async function openMonthlyFeedback(analysisId,rowIndex) {
   const value=draft || current || {visitDate:attendanceTaipeiDate(Date.now()),answers:plan.questions.map(()=>''),notes:''};
   const ctx={plan,bundle:payload.bundle,key,meta,epoch:syncEpoch,chain:Promise.resolve(),generation:0,timer:null,readOnly};monthlyFeedbackContext=ctx;syncScheduler.pause();
   const answers=draft?draft.answers:current?current.answers.map(answer=>answer.text):value.answers;
-  $('monthly-analysis-dialog').innerHTML=`<h2 id="analysis-title" data-dialog-focus tabindex="-1" autofocus>現場回報 · ${esc(plan.storeName)}</h2><p>銷量 ${esc(plan.salesMonth)} → 拜訪 ${esc(plan.visitMonth)}。每一題可單獨填寫，未填保留未知。</p>${readOnly?'<p class="error">這份草稿來源已變更或已過期，只供閱讀、複製或明確捨棄；不套用到新期。</p>':''}${plan.state.conflict?'<p class="error">有並行回報，請先查看原店卡各版本；保存這次修訂將明確接替目前全部分支，歷史仍保留。</p>':''}<form id="monthly-feedback-form"><label>實際回報的拜訪日期（未知可留空）<input type="date" id="monthly-feedback-date" value="${esc(value.visitDate)}"></label>${plan.questions.map((question,index)=>`<label class="monthly-feedback-question"><strong>${index+1}. ${esc(question)}</strong><textarea data-feedback-answer="${index}" maxlength="20000" placeholder="記錄實際結果；不確定可寫不確定，不必為了保存而猜填">${esc(answers[index] || '')}</textarea></label>`).join('')}<label>其他現場補充（選填）<textarea id="monthly-feedback-notes" maxlength="20000">${esc(value.notes || '')}</textarea></label><p id="monthly-feedback-draft-state" class="muted" role="status">輸入先保存成本機加密草稿；正式保存才進入同步與完整備份。</p><p id="monthly-feedback-error" class="error" role="alert"></p><p>只新增獨立回報，不修改原筆記、人物、待辦，不自動建立拜訪確認。</p><div class="dialog-footer"><button type="button" data-feedback-close>關閉，保留草稿</button><button type="button" data-feedback-discard>捨棄草稿</button>${readOnly?'':'<button type="submit" class="primary">核對並保存現場回報</button>'}</div></form>`;
+  $('monthly-analysis-dialog').innerHTML=`<h2 id="analysis-title" data-dialog-focus tabindex="-1" autofocus>現場回報 · ${esc(plan.storeName)}</h2><p>銷量 ${esc(plan.salesMonth)} → 拜訪 ${esc(plan.visitMonth)}。每一題可單獨填寫，未填保留未知。</p>${readOnly?'<p class="error">這份草稿來源已變更或已過期，只供閱讀、複製或明確捨棄；不套用到新期。</p>':''}${plan.state.conflict?'<p class="error">有並行回報，請先查看原店卡各版本；保存這次修訂將明確接替目前全部分支，歷史仍保留。</p>':''}<form id="monthly-feedback-form"><label>實際回報的拜訪日期（未知可留空）<input type="date" id="monthly-feedback-date" value="${esc(value.visitDate)}"></label>${plan.questions.map((question,index)=>`<label class="monthly-feedback-question"><strong>${index+1}. ${esc(question)}</strong><textarea data-feedback-answer="${index}" maxlength="20000" placeholder="記錄實際結果；不確定可寫不確定，不必為了保存而猜填">${esc(answers[index] || '')}</textarea></label>`).join('')}<label>其他現場補充（選填）<textarea id="monthly-feedback-notes" maxlength="20000">${esc(value.notes || '')}</textarea></label><p id="monthly-feedback-draft-state" class="muted" role="status">輸入先保存成本機加密草稿；正式保存才進入同步與完整備份。</p><p id="monthly-feedback-error" class="error" role="alert"></p><p>保存前會詢問今天是否就是實際拜訪日。只有親自勾選才另存人工拜訪確認，更新最近拜訪與本月已訪狀態；未勾選只存獨立回報。原筆記、人物分析、關係與待辦不變。</p><div class="dialog-footer"><button type="button" data-feedback-close>關閉，保留草稿</button><button type="button" data-feedback-discard>捨棄草稿</button>${readOnly?'':'<button type="submit" class="primary">核對並保存現場回報</button>'}</div></form>`;
   if(readOnly)$('monthly-analysis-dialog').querySelectorAll('input,textarea').forEach(node=>node.readOnly=true);
   openDialog($('monthly-analysis-dialog'));
 }
@@ -4399,10 +4400,15 @@ async function closeMonthlyFeedback(discard=false) {
 async function saveMonthlyFeedback(event) {
   event.preventDefault();await run(async()=>{
     const ctx=monthlyFeedbackContext;if(ctx?.readOnly)throw new Error('過期草稿僅供查看，不可套用。');assertMonthlyFeedbackCurrent(ctx);await flushMonthlyFeedbackDraft();assertMonthlyFeedbackCurrent(ctx);
-    const input=monthlyFeedbackInput(),bundle=await applyMonthlyFeedback(payload.bundle,ctx.plan,input,payload.device);assertMonthlyFeedbackCurrent(ctx);
-    if(!confirm(`保存「${ctx.plan.storeName}」的 ${ctx.plan.visitMonth} 現場回報？\n已填 ${input.answers.filter(text=>text.trim()).length}／${ctx.plan.questions.length} 題。未回答保留未知。\n只新增獨立回報版本，不修改原筆記、人物關係或待辦，也不自動標記已拜訪。`))return;
-    assertMonthlyFeedbackCurrent(ctx);await persist({...payload,bundle,dirty:payload.dirty || bundle!==payload.bundle,monthlyFeedbackDraft:null},{guard:()=>assertMonthlyFeedbackCurrent(ctx)});
-    clearTimeout(ctx.timer);monthlyFeedbackContext=null;$('monthly-analysis-dialog').close();render();openVisitBrief(ctx.plan.storeId,{preservePosition:true});toast('現場回報已加密保存；Mac可連線時同步。原筆記與待辦未更改。');
+    const input=monthlyFeedbackInput();await applyMonthlyFeedback(payload.bundle,ctx.plan,input,payload.device);assertMonthlyFeedbackCurrent(ctx);
+    const choice=await confirmStoreSave(ctx.plan.storeId,ctx.plan.storeName,true,`${ctx.plan.visitMonth} 現場回報：已填 ${input.answers.filter(text=>text.trim()).length}／${ctx.plan.questions.length} 題，未回答保留未知。回報日期：${input.visitDate || '未提供'}。\n未勾選：只保存獨立回報，不更新最近拜訪或每月已訪。\n勾選：確認今天實際到店，回報日期改為下方今天日期，另存人工拜訪確認並更新最近拜訪及本月已訪狀態。不新增必訪名單，不改原筆記、人物分析、關係或待辦。`);
+    if(!choice)return;
+    assertMonthlyFeedbackCurrent(ctx);
+    if(choice.attendance){input.visitDate=choice.attendance.date;$('monthly-feedback-date').value=input.visitDate;await flushMonthlyFeedbackDraft();assertMonthlyFeedbackCurrent(ctx);}
+    const assertConfirmed=()=>{assertMonthlyFeedbackCurrent(ctx);if(choice.attendance && attendanceTaipeiDate(Date.now())!==choice.attendance.date)throw new Error('日期已跨日，請重新確認今天的拜訪日期；輸入保留。');};
+    assertConfirmed();const bundle=await applyMonthlyFeedbackWithAttendance(payload.bundle,ctx.plan,input,payload.device,choice.attendance);assertConfirmed();
+    await persist({...payload,bundle,dirty:payload.dirty || bundle!==payload.bundle,monthlyFeedbackDraft:null},{guard:assertConfirmed});
+    clearTimeout(ctx.timer);monthlyFeedbackContext=null;$('monthly-analysis-dialog').close();render();openVisitBrief(ctx.plan.storeId,{preservePosition:true});toast(choice.attendance?'現場回報已加密保存；已確認今天拜訪，最近拜訪與本月已訪狀態已更新。':'現場回報已加密保存；未勾選實際拜訪，最近拜訪與每月已訪狀態未更改。');
   },'monthly-feedback-error');
 }
 function openMonthlyFeedbackExport() {
