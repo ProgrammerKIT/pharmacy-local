@@ -408,6 +408,7 @@ button[data-csv-source-snapshot]{flex:none;min-height:44px}
 .people-reading-person>div{padding:4px 18px 18px}
 .people-reading-person h4{margin:16px 0 7px}.people-reading-person p{line-height:1.7}
 .people-reading-same{border:2px solid #aa92c6}.people-reading-same>summary{background:#f3eef9}
+.people-alias-candidate{margin:12px 0 18px}.people-alias-candidate>.people-reading-person{margin:6px 0}.people-alias-review{margin:8px 0;font-size:.9rem;overflow-wrap:anywhere}.people-alias-review>summary{padding:10px 4px;cursor:pointer;color:#60417e}.people-alias-review select{width:100%;min-height:44px;margin:6px 0 12px}.people-alias-origin{display:block;color:#687b80;margin-top:12px}.people-alias-history{margin:16px 0}.people-alias-history>summary{cursor:pointer;padding:10px}.people-alias-history small{overflow-wrap:anywhere}
 .people-reading-evidence{font-size:.8rem;margin:6px 0 15px}.people-reading-evidence small{display:block;overflow-wrap:anywhere}
 .people-reading-evidence blockquote{white-space:pre-wrap;border-left:3px solid #cbded5;padding-left:12px;margin:10px 0}
 .people-reading-tier{margin:15px 0}.people-reading-tier>summary{padding:12px;background:#f5f7f4;border-radius:8px;cursor:pointer}
