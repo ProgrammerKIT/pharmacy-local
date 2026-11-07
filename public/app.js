@@ -2035,6 +2035,7 @@ function openVisitBrief(storeId, { capture = false, restoreDraft = null, preserv
     secondaryOpen: !!reviewBody.querySelector('.brief-secondary')?.open,
     historyOpen: !!reviewBody.querySelector('.brief-history')?.open,
     tasksOpen: !!reviewBody.querySelector('.reminder-task-history')?.open,
+    analysisDetails: [...reviewBody.querySelectorAll('[data-analysis-detail][open]')].map(el => el.dataset.analysisDetail),
     readingPeople: [...reviewBody.querySelectorAll('[data-reading-person][open]')].map(el=>el.dataset.readingPerson),
     readingTiers: [...reviewBody.querySelectorAll('.people-reading-tier[open]')].map(el=>el.querySelector('summary')?.textContent),
     insightDetails: [...reviewBody.querySelectorAll('[data-insight-detail][open]')].map(el => el.dataset.insightDetail),
@@ -2067,6 +2068,7 @@ function openVisitBrief(storeId, { capture = false, restoreDraft = null, preserv
     for(const detail of reviewBody.querySelectorAll('[data-reading-person]'))detail.open=preserved.readingPeople.includes(detail.dataset.readingPerson);
     for(const detail of reviewBody.querySelectorAll('.people-reading-tier'))detail.open=preserved.readingTiers.includes(detail.querySelector('summary')?.textContent);
     const taskHistory = reviewBody.querySelector('.reminder-task-history'); if (taskHistory) taskHistory.open = preserved.tasksOpen;
+    for (const detail of reviewBody.querySelectorAll('[data-analysis-detail]')) detail.open = preserved.analysisDetails.includes(detail.dataset.analysisDetail);
     for (const detail of reviewBody.querySelectorAll('[data-insight-detail]')) detail.open = preserved.insightDetails.includes(detail.dataset.insightDetail);
     for (const detail of reviewBody.querySelectorAll('[data-insight-confirmed]')) detail.open = preserved.confirmedInsights.includes(detail.dataset.insightConfirmed);
     const restorePosition = () => { reviewBody.scrollTop = preserved.scrollTop; };
@@ -4278,7 +4280,7 @@ $('review').addEventListener('close',()=>{if(!$('review').open) supervisionPrevi
 
 
 function analysisCardHTML(item) {
-  return `<article class="analysis-card"><p class="muted">拜訪 ${esc(item.visitMonth)} · 銷量 ${esc(item.salesMonth)} · ${esc(item.channel)}${item.needsReview ? ' · 門市資料有變化，需重新核對' : ''}</p><h4>${esc(item.row.name)}</h4><p class="analysis-verbatim">${esc(item.row.reason)}</p><h4>現場詢問與執行</h4><ol>${item.row.checkpoints.map(text => `<li class="analysis-verbatim">${esc(text)}</li>`).join('')}</ol>${monthlyFeedbackHTML(item)}<details><summary>來源與配對依據</summary><p>${esc(item.file)} · ${esc(item.at)}</p><p>SHA256：${esc(item.blob)}</p><p>確認時名稱：${esc(item.assignments.find(m=>m.storeId === item.storeId)?.name || '')}</p><p>外部分析建議，並非已完成拜訪或已證實事實。</p></details></article>`;
+  return `<article class="analysis-card"><p class="muted">拜訪 ${esc(item.visitMonth)} · 銷量 ${esc(item.salesMonth)} · ${esc(item.channel)}${item.needsReview ? ' · 門市資料有變化，需重新核對' : ''}</p><h4>${esc(item.row.name)}</h4><details class="analysis-detail" data-analysis-detail="${esc(item.id)}:reason"><summary>分析原因與數據</summary><p class="analysis-verbatim">${esc(item.row.reason)}</p></details><details class="analysis-detail" data-analysis-detail="${esc(item.id)}:checkpoints"><summary>現場詢問與執行 · ${item.row.checkpoints.length} 項</summary><ol>${item.row.checkpoints.map(text => `<li class="analysis-verbatim">${esc(text)}</li>`).join('')}</ol></details>${monthlyFeedbackHTML(item)}<details><summary>來源與配對依據</summary><p>${esc(item.file)} · ${esc(item.at)}</p><p>SHA256：${esc(item.blob)}</p><p>確認時名稱：${esc(item.assignments.find(m=>m.storeId === item.storeId)?.name || '')}</p><p>外部分析建議，並非已完成拜訪或已證實事實。</p></details></article>`;
 }
 function monthlyAnalysisStoreHTML(store) {
   const items = monthlyAnalysisForStore(payload.bundle, store.id).map(item=>({...item,storeId:store.id})), current = items.filter(item=>item.current), history = items.filter(item=>!item.current);
