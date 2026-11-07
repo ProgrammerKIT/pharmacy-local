@@ -746,6 +746,7 @@ export function peopleRelationshipReviewState(bundle, readingId, personIndex, it
 }
 export function validData(type, d) {
   if (!plain(d)) return false;
+  if (d.monthlyFeedback !== undefined && (type !== 'source' || !validMonthlyFeedback(d.monthlyFeedback) || d.monthlyAnalysis !== undefined || d.peopleReading !== undefined || d.peopleRelationshipReview !== undefined)) return false;
   if (d.peopleRelationshipReview !== undefined && (type !== 'source' || !validPeopleRelationshipReview(d.peopleRelationshipReview))) return false;
   if (d.peopleReading !== undefined && (type !== 'source' || !validPeopleReadingDocument(d.peopleReading))) return false;
   if (d.monthlyAnalysis !== undefined && (type !== 'source' || !validMonthlyAnalysis(d.monthlyAnalysis))) return false;
@@ -864,6 +865,7 @@ export function validateBundle(b) {
   }
   for (let i = 0; i < analysisQueue.length; i++) for (const child of analysisChildren.get(analysisQueue[i]) || []) { const degree = analysisDegrees.get(child) - 1; analysisDegrees.set(child, degree); if (!degree) analysisQueue.push(child); }
   if (analysisQueue.length !== analysisAncestors.size) throw new Error('每月分析修訂鏈形成循環。');
+  validateMonthlyFeedbackSources(b, sourceEntities, seen);
   return b;
 }
 export function merge(a, b) {
@@ -2385,6 +2387,16 @@ function validMonthlyAnalysis(value) {
 export function monthlyAnalysisSources(bundle) {
   return bundle.ops.filter(op => op.type === 'source' && op.data.monthlyAnalysis).map(op => ({ ...op.data.monthlyAnalysis, id: op.entity, at: op.at, batch: op.data.batch, file: op.data.file, blob: op.data.blob, rows: parseMonthlyAnalysis(unb64(bundle.blobs[op.data.blob])) }));
 }
+function monthlyAnalysisIdentityChanged(store, match, channel) {
+  return !store || store.deleted || store.conflict || store.csvIdentityPending || store.mergedInto || store.name !== match.name || (store.address || '') !== match.address || analysisStoreChannel(store) !== channel;
+}
+export function monthlyAlertStoreIds(bundle, month = monthlyVisitMonth()) {
+  const sources = monthlyAnalysisSources(bundle), replaced = new Set(sources.flatMap(source => source.supersedes));
+  const tips = sources.filter(source => source.visitMonth === month && !replaced.has(source.id));
+  const stores = new Map(project(bundle).filter(store => store.type === 'store').map(store => [store.id, store]));
+  return new Set(tips.filter(source => tips.filter(other => other.channel === source.channel).length === 1)
+    .flatMap(source => source.assignments.filter(match => match.storeId && !monthlyAnalysisIdentityChanged(stores.get(match.storeId), match, source.channel)).map(match => match.storeId)));
+}
 export function monthlyAnalysisForStore(bundle, storeId, month = monthlyVisitMonth()) {
   const all = monthlyAnalysisSources(bundle), currentStore = project(bundle).find(s => s.type === 'store' && s.id === storeId);
   const replaced = new Set(all.flatMap(source => source.supersedes));
@@ -2392,7 +2404,7 @@ export function monthlyAnalysisForStore(bundle, storeId, month = monthlyVisitMon
     if (match.storeId !== storeId) return [];
     const tips = all.filter(s => s.visitMonth === source.visitMonth && s.channel === source.channel && !replaced.has(s.id));
     const tied = tips.length !== 1;
-    const changed = !currentStore || currentStore.deleted || currentStore.conflict || currentStore.csvIdentityPending || currentStore.mergedInto || currentStore.name !== match.name || (currentStore.address || '') !== match.address || analysisStoreChannel(currentStore) !== source.channel;
+    const changed = monthlyAnalysisIdentityChanged(currentStore, match, source.channel);
     return [{ ...source, row: source.rows[index], current: source.visitMonth === month && tips[0]?.id === source.id && !tied && !changed, needsReview: !!changed || tied }];
   })).sort((a, b) => b.visitMonth.localeCompare(a.visitMonth) || b.at.localeCompare(a.at));
 }
@@ -2433,4 +2445,108 @@ export async function applyMonthlyAnalysis(bundle, plan, selections, device, rep
     next.ops.push(source);
   }
   validateBundle(next); return next;
+}
+
+// Monthly field feedback is a separate immutable source. Never edits visits,
+// tasks, attendance, identities, or the external analysis original.
+function validMonthlyFeedback(value) {
+  return plain(value) && Object.keys(value).sort().join() === 'analysisId,answers,createdAt,format,notes,replaces,rowIndex,storeHead,storeId,visitDate'
+    && value.format === 'pharmacy-monthly-feedback-1'
+    && ['analysisId','storeId','storeHead'].every(k => str(value[k],100) && !!value[k])
+    && Number.isSafeInteger(value.rowIndex) && value.rowIndex >= 0 && value.rowIndex < 500
+    && supervisionDate(value.visitDate) && attendanceInstant(value.createdAt)
+    && ids(value.replaces) && new Set(value.replaces).size === value.replaces.length
+    && str(value.notes) && Array.isArray(value.answers) && value.answers.length <= 100
+    && value.answers.every((answer,index) => plain(answer) && Object.keys(answer).sort().join() === 'index,question,text'
+      && answer.index === index && str(answer.question,20000) && str(answer.text))
+    && (!!value.notes.trim() || value.answers.some(answer => answer.text.trim()));
+}
+function feedbackTarget(sources, value) {
+  const op = sources.get(value.analysisId), analysis = op?.data.monthlyAnalysis;
+  if (!analysis) throw new Error('現場回報缺少原分析來源。');
+  const match = analysis.assignments[value.rowIndex];
+  if (!match?.storeId || match.storeId !== value.storeId) throw new Error('現場回報門市與分析列不符。');
+  return {op,analysis,match};
+}
+function validateMonthlyFeedbackSources(bundle, sources, revisions) {
+  const events = new Map([...sources].filter(([,op]) => op.data.monthlyFeedback));
+  const degrees = new Map(), children = new Map(), queue = [];
+  for (const [id,op] of events) {
+    const value=op.data.monthlyFeedback, {op:analysis,match}=feedbackTarget(sources,value);
+    const rows=parseMonthlyAnalysis(unb64(bundle.blobs[analysis.data.blob]));
+    const row=rows[value.rowIndex], head=revisions.get(value.storeHead);
+    if (!row || value.answers.length!==row.checkpoints.length || value.answers.some((answer,i)=>answer.question!==row.checkpoints[i])) throw new Error('現場回報題目與原分析版本不符。');
+    if (!head || head.type!=='store' || head.entity!==value.storeId || head.deleted || head.data.csvIdentityPending || head.data.mergedInto || head.data.name!==match.name || (head.data.address || '')!==match.address || analysisStoreChannel(head.data)!==analysis.data.monthlyAnalysis.channel) throw new Error('現場回報缺少核對時門市版本。');
+    if (op.at!==value.createdAt || JSON.stringify(JSON.parse(dec.decode(unb64(bundle.blobs[op.data.blob]))))!==JSON.stringify(value)) throw new Error('現場回報原件與保存內容不符。');
+    degrees.set(id,value.replaces.length); if(!value.replaces.length)queue.push(id);
+    for(const priorId of value.replaces) {
+      const prior=events.get(priorId)?.data.monthlyFeedback;
+      if(!prior || priorId===id || prior.analysisId!==value.analysisId || prior.rowIndex!==value.rowIndex || prior.storeId!==value.storeId) throw new Error('回報修訂不可接替其他期別、門市或題目版本。');
+      if(!children.has(priorId))children.set(priorId,[]);children.get(priorId).push(id);
+    }
+  }
+  for(let i=0;i<queue.length;i++)for(const id of children.get(queue[i]) || []){degrees.set(id,degrees.get(id)-1);if(!degrees.get(id))queue.push(id);}
+  if(queue.length!==events.size)throw new Error('現場回報修訂歷史不可循環。');
+}
+export function monthlyFeedbackState(bundle, analysisId, rowIndex) {
+  const history=bundle.ops.filter(op=>op.type==='source' && op.data.monthlyFeedback?.analysisId===analysisId && op.data.monthlyFeedback.rowIndex===rowIndex);
+  const superseded=new Set(history.flatMap(op=>op.data.monthlyFeedback.replaces)),heads=history.filter(op=>!superseded.has(op.entity));
+  return {history,heads,current:heads.length===1?heads[0]:null,conflict:heads.length>1};
+}
+export function prepareMonthlyFeedback(bundle, analysisId, rowIndex, month=monthlyVisitMonth()) {
+  validateBundle(bundle);
+  const sources=new Map(bundle.ops.filter(op=>op.type==='source').map(op=>[op.entity,op]));
+  const {analysis,match}=feedbackTarget(sources,{analysisId,rowIndex,storeId:sources.get(analysisId)?.data.monthlyAnalysis?.assignments[rowIndex]?.storeId});
+  const item=monthlyAnalysisForStore(bundle,match.storeId,month).find(item=>item.id===analysisId);
+  if(!item?.current || item.needsReview)throw new Error('分析已過期、修訂或門市身分有變；先重新核對，既有回報保留。');
+  const store=project(bundle).find(op=>op.type==='store' && op.id===match.storeId),state=monthlyFeedbackState(bundle,analysisId,rowIndex);
+  return {basis:JSON.stringify(bundle),analysisId,rowIndex,storeId:store.id,storeHead:store.heads[0].id,storeName:store.name,salesMonth:analysis.salesMonth,visitMonth:analysis.visitMonth,questions:[...item.row.checkpoints],state};
+}
+export async function applyMonthlyFeedback(bundle, plan, input, device, month=monthlyVisitMonth()) {
+  if(!plan || plan.basis!==JSON.stringify(bundle))throw new Error('回報期間資料已變更，請重新核對；輸入保留。');
+  const fresh=prepareMonthlyFeedback(bundle,plan.analysisId,plan.rowIndex,month);
+  if(JSON.stringify(fresh)!==JSON.stringify(plan))throw new Error('回報來源已變更。');
+  if(!plain(input) || Object.keys(input).sort().join()!=='answers,notes,visitDate' || !Array.isArray(input.answers) || input.answers.length!==fresh.questions.length)throw new Error('請逐題保留回答位置。');
+  const value={format:'pharmacy-monthly-feedback-1',analysisId:fresh.analysisId,rowIndex:fresh.rowIndex,storeId:fresh.storeId,storeHead:fresh.storeHead,visitDate:input.visitDate,answers:fresh.questions.map((question,index)=>({index,question,text:input.answers[index]})),notes:input.notes,replaces:fresh.state.heads.map(op=>op.entity).sort(),createdAt:new Date().toISOString()};
+  if(!validMonthlyFeedback(value))throw new Error('請至少填寫一題結果或備註；日期可留空，不能用未回答當作零。');
+  const previous=fresh.state.current?.data.monthlyFeedback;
+  if(previous && JSON.stringify([previous.visitDate,previous.answers,previous.notes])===JSON.stringify([value.visitDate,value.answers,value.notes]))return bundle;
+  const raw=enc.encode(JSON.stringify(value)),blob=await hashBytes(raw),next=structuredClone(bundle);
+  next.blobs[blob]=b64(raw);
+  const op=revision('source',uuid(),{file:'每月現場回報.json',list:'每月分析現場回報',blob,batch:uuid(),rows:1,headers:[],encoding:'UTF-8',delimiter:'',monthlyFeedback:value},[],device);
+  op.at=value.createdAt;next.ops.push(op);return validateBundle(next);
+}
+export function rememberedMonthlyAnalysisChoice(bundle,row) {
+  const stores=project(bundle),candidates=monthlyAnalysisCandidates(row,stores);
+  const prior=monthlyAnalysisSources(bundle).filter(source=>source.channel===analysisChannel(row.channel));
+  const choices=[];
+  for(const source of prior)source.rows.forEach((old,index)=>{
+    if(old.name!==row.name || analysisChannel(old.channel)!==analysisChannel(row.channel))return;
+    const match=source.assignments[index],candidate=candidates.find(item=>item.store.id===match.storeId)?.store;
+    if(candidate && candidate.name===match.name && (candidate.address || '')===match.address)choices.push(candidate.id);
+  });
+  const unique=[...new Set(choices)];return unique.length===1?unique[0]:'';
+}
+export function exportMonthlyFeedback(bundle,channel,visitMonth,{includeHistory=false,at=new Date().toISOString()}={}) {
+  validateBundle(bundle);
+  channel=analysisChannel(channel);if(!channel || !analysisMonth(visitMonth) || !attendanceInstant(at))throw new Error('請選擇通路與建議拜訪月份。');
+  const sources=monthlyAnalysisSources(bundle).filter(source=>source.channel===channel && source.visitMonth===visitMonth),replaced=new Set(sources.flatMap(source=>source.supersedes));
+  const currentSources=sources.filter(source=>!replaced.has(source.id)),sourceConflict=currentSources.length>1;
+  const selected=includeHistory?sources:currentSources;
+  return {format:'pharmacy-monthly-feedback-export-1',generatedAt:at,channel,visitMonth,includeHistory,sourceConflict,stores:selected.flatMap(source=>source.assignments.flatMap((match,rowIndex)=>{
+    if(!match.storeId)return [];
+    const state=monthlyFeedbackState(bundle,source.id,rowIndex),display=monthlyAnalysisForStore(bundle,match.storeId,visitMonth).find(item=>item.id===source.id);
+    const replies=includeHistory?state.history:state.heads;
+    return [{storeId:match.storeId,storeName:match.name,address:match.address,analysis:{id:source.id,file:source.file,sha256:source.blob,salesMonth:source.salesMonth,visitMonth:source.visitMonth,rowIndex,name:source.rows[rowIndex].name,reason:source.rows[rowIndex].reason,checkpoints:[...source.rows[rowIndex].checkpoints],supersedes:[...source.supersedes]},historical:replaced.has(source.id),needsReview:sourceConflict || state.conflict || !!display?.needsReview,status:state.conflict?'conflicting-feedback':state.current?'reported':'not-reported',feedback:replies.map(op=>({id:op.entity,revisionId:op.id,superseded:!state.heads.some(head=>head.entity===op.entity),...structuredClone(op.data.monthlyFeedback)}))}];
+  }))};
+}
+export function monthlyAnalysisChangeSummary(bundle, plan, selections) {
+  return plan.files.map((file,index)=>{
+    const ids=new Set((selections[index] || []).filter(id=>id && id!=='skip'));
+    const sources=monthlyAnalysisSources(bundle).filter(source=>source.channel===file.channel && source.visitMonth<=plan.visitMonth);
+    const latestMonth=sources.map(source=>source.visitMonth).sort().at(-1);
+    const period=sources.filter(source=>source.visitMonth===latestMonth),replaced=new Set(period.flatMap(source=>source.supersedes));
+    const tips=period.filter(source=>!replaced.has(source.id)),previous=new Set(tips.flatMap(source=>source.assignments.map(match=>match.storeId).filter(Boolean)));
+    return {channel:file.channel,previousMonth:latestMonth || null,needsReview:tips.length>1,added:[...ids].filter(id=>!previous.has(id)).length,updated:[...ids].filter(id=>previous.has(id)).length,archived:[...previous].filter(id=>!ids.has(id)).length};
+  });
 }

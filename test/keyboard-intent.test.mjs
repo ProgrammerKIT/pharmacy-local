@@ -38,7 +38,7 @@ function fixture() {
     dialogs.push(node); nodes.set(id, node); return node;
   }
   nodes.set('workspace', { hidden: false }); neutral('gate-title'); neutral('page-title');
-  const context = vm.createContext({ syncInProgress: false, autoFetching: false, syncEpoch: 0, localSaveState: 'saved', renderDataSafetyEntry() {},
+  const context = vm.createContext({ monthlyFeedbackContext:null,  syncInProgress: false, autoFetching: false, syncEpoch: 0, localSaveState: 'saved', renderDataSafetyEntry() {},
     syncScheduler: { request() {}, wake() {}, pause() {}, reset() {}, confirmed() {}, failed() {} },
      document, $: id => nodes.get(id), queueMicrotask: fn => tasks.push(fn),
     window: { scrollY: 144, scrollTo() {} }, requestAnimationFrame: fn => tasks.push(fn) });
@@ -136,7 +136,7 @@ test('Mac administration invalid and lifecycle handlers only manage focus/error,
   const field = { form, required: true, value: '', validationMessage: '測試必填', matches: () => true,
     blur() { blurred++; }, scrollIntoView() { scrolled++; }, focus() { assert.fail('validation must not focus the field'); } };
   const document = { activeElement: field, addEventListener: (type, fn, capture) => docListeners.set(type, { fn, capture }) };
-  const context = vm.createContext({ syncInProgress: false, autoFetching: false, syncEpoch: 0, localSaveState: 'saved', renderDataSafetyEntry() {},
+  const context = vm.createContext({ monthlyFeedbackContext:null,  syncInProgress: false, autoFetching: false, syncEpoch: 0, localSaveState: 'saved', renderDataSafetyEntry() {},
     syncScheduler: { request() {}, wake() {}, pause() {}, reset() {}, confirmed() {}, failed() {} },
      document, window: { addEventListener: (type, fn) => winListeners.set(type, fn) },
     $: id => { assert.equal(id, 'admin-error'); return error; }, queueMicrotask: fn => tasks.push(fn) });
@@ -161,7 +161,7 @@ test('background and bfcache lifecycle dismiss focus synchronously without remov
     flushVisitDraft() { f.events.push(['flush-visit']); }, flushInlineTextDraft() { f.events.push(['flush-inline']); },
     async flushReminderDraft() { f.events.push(['flush-reminder']); }
   });
-  Object.assign(f.context, { insightBackgroundActive: null, canRetainInsightBackground: () => false, queueInsightScan() {}, refreshInsightChangeBadges() {} });
+  Object.assign(f.context, { insightBackgroundActive: null, canRetainInsightBackground: () => false, queueInsightScan() {}, refreshMonthlyAlertBadges() {}, refreshInsightChangeBadges() {} });
   vm.runInContext(app.slice(app.indexOf('function activeReminderDraftContext('), app.indexOf('function reminderDraftState(')) + app.slice(app.indexOf('function handleAppVisibilityChange()'), app.indexOf("$('visit-attendance-form').addEventListener('submit'")), f.context);
   const field = f.editable('composed-text', true);
   for (const [type, hidden] of [['visibilitychange', true], ['visibilitychange', false], ['pagehide', true], ['pageshow', false]]) {

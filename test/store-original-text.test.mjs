@@ -5,6 +5,7 @@ import vm from 'node:vm';
 import * as core from '../public/core.js';
 import { storeIdentityPending, originalStoreNames, visitBriefForStore } from '../public/relations.js';
 import { makeFixture, inventory, auditBundle } from './qa/store-text-fixture.mjs';
+import { makeFixture as makeMonthlyFixture } from './qa/monthly-feedback-fixture.mjs';
 
 // Synthetic data only. Execute production rendering functions, with persistence
 // APIs set to fail, to test display/search behavior without touching any vault.
@@ -281,4 +282,14 @@ test('the shared browser QA corpus renders every eligible profile and preserves 
   for (const key of ['bundleUnchanged', 'originalOpsPreserved', 'storeDataAndHistoryUnchanged', 'visitTextAndHistoryUnchanged', 'sourceSnapshotsUnchanged', 'blobsUnchanged', 'attendanceUnchanged']) assert.equal(audit[key], true, key);
   assert.equal(audit.newOps, 0); assert.deepEqual(audit.changedStoreIds, []); assert.deepEqual(h.attempts, []);
   assert.equal(audit.counts.allStoreIds, 216); assert.equal(audit.counts.readableStoreIdsWithText, 171);
+});
+
+test('monthly warning marker appears beside homepage store titles and search groups while original text stays identical',async()=>{
+ const bundle=await makeMonthlyFixture(core),h=harness([],{bundle}),before=h.snapshot();
+ for(const html of [h.render(),h.render('青禾')]) {
+  assert.match(html,/class="monthly-alert-badge"/);assert.match(html,/本月警示店/);
+  assert.match(html,/大樹藥局-虛構青禾店|search-match/);
+ }
+ const noAlert=h.render('晨光');assert.doesNotMatch(noAlert,/class="monthly-alert-badge"/);
+ assert.equal(h.snapshot(),before);assert.deepEqual(h.attempts,[]);
 });

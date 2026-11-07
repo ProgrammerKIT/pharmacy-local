@@ -1,6 +1,6 @@
 import { peopleBriefSourcePlan, validatePeopleBriefResult, currentPeopleReading, peopleReadingRequest, preparePeopleReading, applyPeopleReading, planPeopleRelationshipReview, applyPeopleRelationshipReview } from './relations.js';
 import { peopleRelationshipReviewState } from './core.js';
-import { monthlyAnalysisSources, monthlyAnalysisForStore, prepareMonthlyAnalysis, applyMonthlyAnalysis } from './core.js';
+import { monthlyAlertStoreIds, monthlyAnalysisSources, monthlyAnalysisForStore, prepareMonthlyAnalysis, applyMonthlyAnalysis, monthlyFeedbackState, prepareMonthlyFeedback, applyMonthlyFeedback, rememberedMonthlyAnalysisChoice, exportMonthlyFeedback, monthlyAnalysisChangeSummary } from './core.js';
 import { supervisorRelationships, supervisorReviewHistory, reviewSupervisorRelationship, planStoreSupervision, applyStoreSupervision, supervisedStores } from './core.js';
 import { setupWeeklyRecovery, prepareWeeklyRecovery, createRecoveryBackup, newMeta, checkEnvelope, derive, seal, unseal, planBackupImport, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates, buildStoreEnrichmentRequest, planStoreEnrichment, applyStoreEnrichment, readonlyHealthAudit, dataSafetySummary, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, editReminderTasks, addReminderTasks, convertReminderTasks, completeReminderTask, reminderTaskHistory, searchStoreVisitText, scanInsightChanges, storeInsightDisplayForStore, storeInsightEvidenceForEntry, insightReviewForEntry, insightSharedReviewForEntry, storeInsightReviewHistory, planInsightReview, applyInsightReview, planStoreInsights, applyStoreInsights, planStoreInsightRelations, applyStoreInsightRelations, buildStoreInsightsSource, planStoreMerge, applyStoreMerge } from './core.js';
 import { readWeeklyRecovery, writeWeeklyRecovery, readLocal, writeLocal, archiveAndReplaceLocal, listLocalArchives, readLocalArchive } from './db.js';
@@ -477,6 +477,7 @@ let coordinatePreview = null, enrichmentPreview = null, backupPreview = null, in
 let storeMergePreview = null, storeMergeSetup = null;
 let dayPlanSelectedDate = '', dayPlanContext = null, dayPlanSorting = false, dayPlanViewBasis = '', dayPlanNotice = '', dayPlanUndo = null;
 let analysisImport = null;
+let monthlyFeedbackContext = null;
 let monthlyVisitSelectedMonth = '', monthlyVisitContext = null, monthlyVisitViewBasis = '', monthlyVisitNotice = '';
 let reminderDraftTimer = null, reminderDraftSaveChain = Promise.resolve();
 let attendancePrompt = null, attendanceCache = null;
@@ -618,7 +619,7 @@ function openDialog(dialog, { reviewMode = '' } = {}) {
   requestAnimationFrame(() => { if (dialog.open) resetDialogScroll(dialog); });
 }
 function buttons(disabled) {
-  document.querySelectorAll('button, [data-reminder-complete], #csv-view input, #csv-view select, #regional-view select, #supervisor-note-form textarea, #editor input, #editor select, #editor textarea, #review input, #review select, #review textarea, #store-reminder-dialog input, #store-reminder-dialog textarea, #backup-ack, #day-plan-dialog input, #day-plan-dialog select, #day-plan-dialog textarea, #itinerary-view input, #monthly-view input, #monthly-visit-dialog input, #monthly-analysis-dialog input, #monthly-analysis-dialog select').forEach(el => {
+  document.querySelectorAll('button, [data-reminder-complete], #csv-view input, #csv-view select, #regional-view select, #supervisor-note-form textarea, #editor input, #editor select, #editor textarea, #review input, #review select, #review textarea, #store-reminder-dialog input, #store-reminder-dialog textarea, #backup-ack, #day-plan-dialog input, #day-plan-dialog select, #day-plan-dialog textarea, #itinerary-view input, #monthly-view input, #monthly-visit-dialog input, #monthly-analysis-dialog input, #monthly-analysis-dialog select, #monthly-analysis-dialog textarea').forEach(el => {
     if (el.dataset.close || el.closest('#visit-attendance-dialog')) return;
     if (disabled) { el.dataset.busyDisabled = el.disabled ? '1' : '0'; el.disabled = true; }
     else if (el.dataset.busyDisabled !== undefined) { el.disabled = el.dataset.busyDisabled === '1'; delete el.dataset.busyDisabled; }
@@ -743,7 +744,7 @@ function renderQuickVisit() {
   const fallback = mobile && !located.length ? '<p class="nearby-fallback-label">先顯示最近使用的門市（不是距離排序）</p>' : '';
   $('recent-store-list').innerHTML = fallback + entries.map(({ store, distance }) => {
     const range = Number.isFinite(distance) ? (distance < 1000 ? `約 ${Math.round(distance / 10) * 10} 公尺` : `約 ${(distance / 1000).toFixed(1)} 公里`) + ' · 直線距離' : store.district || '地區未提供';
-    return `<button type="button" class="recent-store" ${storeIdentityPending(store) ? `data-quick-visit="${esc(store.id)}"` : `data-visit-brief="${esc(store.id)}"`}><strong>${esc(store.name)}</strong><small>${esc(range)}</small>${storeIdentityPending(store) ? '<small>身分待確認 · 直接記錄拜訪</small>' : ''}</button>`;
+    return `<button type="button" class="recent-store" ${storeIdentityPending(store) ? `data-quick-visit="${esc(store.id)}"` : `data-visit-brief="${esc(store.id)}"`}><strong>${esc(store.name)}${monthlyAlertBadgeHTML(store.id)}</strong><small>${esc(range)}</small>${storeIdentityPending(store) ? '<small>身分待確認 · 直接記錄拜訪</small>' : ''}</button>`;
   }).join('') || '<p class="muted">目前沒有可用門市，可按「新增拜訪」開始記錄。</p>';
 }
 function requestNearbyPosition(force = false) {
@@ -1060,7 +1061,7 @@ async function openWorkspace() {
   document.body.classList.toggle('privacy-veil', pendingLock);
   try { storagePersistent = await navigator.storage?.persist?.() || false; } catch {}
   restoreTransientResumeState(); renderBackupResult(); await runPeriodicHealthAudit(); clearInterval(autoTimer);
-  autoTimer = setInterval(() => { void insightReviewTick(); void peopleReadingTick(); void peopleBatchTick(); supervisorRelationshipTick(); if (!document.hidden) { syncScheduler.request('poll'); setTimeout(() => void weeklyTick(), 1500); } }, 15000);
+  autoTimer = setInterval(() => { void insightReviewTick(); void peopleReadingTick(); void peopleBatchTick(); supervisorRelationshipTick(); if (!document.hidden) { refreshMonthlyAlertBadges(); syncScheduler.request('poll'); setTimeout(() => void weeklyTick(), 1500); } }, 15000);
   setTimeout(() => void weeklyTick(), 3000);
   syncScheduler.request('foreground');
   queueInsightScan(); requestNearbyPosition();
@@ -1133,8 +1134,8 @@ function createSyncScheduler({ ready, attempt, now = Date.now, setTimer = setTim
 }
 function canAutoSync(ignoreFetching = false) {
   return !!(key && payload?.token) && navigator.onLine !== false && !document.hidden && !pendingLock && !updateHolding && !busy && !gateOpening &&
-    (ignoreFetching || !autoFetching) && !syncInProgress && !peopleBatchRunning && !recoveryExportContext && !weeklyContext && !weeklyRunning && !backupPreview && !editorContext && !singleStoreContext && !inlineTextContext && !reminderContext && !dayPlanContext && !monthlyVisitContext && !attendancePrompt && !payload.inlineTextDraft && !payload.supervisorDraft &&
-    !['review', 'editor', 'quick-text-dialog', 'store-reminder-dialog', 'rebuild-dialog', 'backup-review', 'visit-attendance-dialog', 'day-plan-dialog', 'monthly-visit-dialog', 'insight-changes-dialog'].some(id => $(id)?.open) && !csvImport.hasPending();
+    (ignoreFetching || !autoFetching) && !syncInProgress && !peopleBatchRunning && !monthlyFeedbackContext && !recoveryExportContext && !weeklyContext && !weeklyRunning && !backupPreview && !editorContext && !singleStoreContext && !inlineTextContext && !reminderContext && !dayPlanContext && !monthlyVisitContext && !attendancePrompt && !payload.monthlyFeedbackDraft && !payload.inlineTextDraft && !payload.supervisorDraft &&
+    !['review', 'editor', 'quick-text-dialog', 'store-reminder-dialog', 'rebuild-dialog', 'backup-review', 'visit-attendance-dialog', 'day-plan-dialog', 'monthly-visit-dialog', 'monthly-analysis-dialog', 'insight-changes-dialog'].some(id => $(id)?.open) && !csvImport.hasPending();
 }
 function syncSession() { return { key, meta, token: payload?.token, device: payload?.device, epoch: syncEpoch, inline: inlineTextContext, editor: editorContext, reminder: reminderContext, dayPlan: dayPlanContext, monthly: monthlyVisitContext, single: singleStoreContext, attendance: attendancePrompt }; }
 function assertSyncSession(session, bundle) {
@@ -1178,7 +1179,7 @@ function lockNow(reopen = !document.hidden) {
   if (!busy && backupPreview) { clearBackupPreview(); $('backup-review').close(); }
   if (!busy && insightsPreview) { insightsPreview = null; $('review').close(); $('review-body').replaceChildren(); }
   if (storeMergePreview || storeMergeSetup) { clearStoreMergePreview(); $('review').close(); }
-  if (busy || editorContext || inlineTextContext || reminderContext || dayPlanContext || monthlyVisitContext || payload?.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('store-reminder-dialog')?.open || csvImport.hasPending()) { pendingLock = true; document.body.classList.add('privacy-veil'); return; }
+  if (busy || monthlyFeedbackContext || editorContext || inlineTextContext || reminderContext || dayPlanContext || monthlyVisitContext || payload?.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('store-reminder-dialog')?.open || csvImport.hasPending()) { pendingLock = true; document.body.classList.add('privacy-veil'); return; }
   captureTransientResumeState();
   syncEpoch++; syncScheduler.reset(); localSaveState = 'unknown';
   attendanceCache = null;
@@ -1280,7 +1281,7 @@ function renderDataSafetyEntry() {
   const entry = $('data-safety-open');
   if (!entry || !payload) return;
   const reminders = storedReminderDrafts().length;
-  const drafts = (payload.draft?.format === 'visit-draft-1' ? 1 : 0) + (payload.inlineTextDraft?.format === 'inline-text-draft-1' ? 1 : 0) + reminders;
+  const drafts = (payload.monthlyFeedbackDraft ? 1 : 0) + (payload.draft?.format === 'visit-draft-1' ? 1 : 0) + (payload.inlineTextDraft?.format === 'inline-text-draft-1' ? 1 : 0) + reminders;
   const summary = dataSafetySummary({ localState: localSaveState, paired: !!payload.token, syncing: autoFetching || syncInProgress,
     dirty: payload.dirty, pending: pendingSyncSummary(), lastSync: payload.lastSync, conflicts: records.filter(r => r.conflict).length,
     syncError: lastError, backupWarning: syncWarning || currentHealthAudit().checks.some(check => ['backup-age','weekly-backup'].includes(check.code) && ['warning','action'].includes(check.level)), drafts, reminderDrafts: reminders });
@@ -1629,8 +1630,8 @@ function isMacInsightBackgroundDevice() {
 function insightScanBasis() { return payload ? payload.bundle.vaultId + ':' + payload.bundle.ops.map(op => op.id).sort().join('|') : ''; }
 function insightScanIdle(allowBusy = false) {
   return !!(payload && key) && !pendingLock && !updateHolding && (allowBusy || !busy) && !autoFetching && !syncInProgress && !gateOpening &&
-    !editorContext && !payload?.supervisorDraft && !singleStoreContext && !inlineTextContext && !reminderContext && !dayPlanContext && !monthlyVisitContext && !attendancePrompt && !backupPreview && !insightsPreview && !storeMergePreview && !storeMergeSetup && !recoveryExportContext && !weeklyContext && !weeklyRunning && !csvImport.hasPending() &&
-    !['editor', 'quick-text-dialog', 'store-reminder-dialog', 'rebuild-dialog', 'backup-review', 'visit-attendance-dialog', 'day-plan-dialog', 'monthly-visit-dialog'].some(id => $(id)?.open) &&
+    !editorContext && !payload?.monthlyFeedbackDraft && !payload?.supervisorDraft && !singleStoreContext && !inlineTextContext && !reminderContext && !dayPlanContext && !monthlyVisitContext && !attendancePrompt && !backupPreview && !insightsPreview && !storeMergePreview && !storeMergeSetup && !monthlyFeedbackContext && !recoveryExportContext && !weeklyContext && !weeklyRunning && !csvImport.hasPending() &&
+    !['editor', 'quick-text-dialog', 'store-reminder-dialog', 'rebuild-dialog', 'backup-review', 'visit-attendance-dialog', 'day-plan-dialog', 'monthly-visit-dialog', 'monthly-analysis-dialog'].some(id => $(id)?.open) &&
     (!$('review')?.open || $('review').classList.contains('visit-brief-dialog'));
 }
 function canRetainInsightBackground() {
@@ -2019,7 +2020,7 @@ function openVisitBrief(storeId, { capture = false, restoreDraft = null, preserv
   const explicit = explicitItems ? `<section class="visit-brief-section"><h3>已明確連結的人物與主題</h3><p class="muted">每項連結都保留建立它的拜訪原文。</p><div class="brief-linked-list">${explicitItems}</div></section>` : '';
   singleStoreContext = null; review.dataset.singleStoreId = storeId;
   $('review-title').textContent = '單店拜訪｜' + brief.store.name;
-  reviewBody.innerHTML = `<div class="visit-brief-head"><p>${esc(location)} · ${brief.visitCount} 筆正式拜訪紀錄</p>${storeAttendanceHTML(storeId, true)}</div>${storeSupervisionHTML(brief.store)}${monthlyAnalysisStoreHTML(brief.store)}${reminders}${storeOriginalTextHTML(brief.store)}${storeMergeOriginsHTML(brief.store)}${singleStoreCaptureHTML()}<section id="people-reading-panel" class="visit-brief-section">${peopleReadingHTML(storeId)}</section><details id="people-reading-formal-home"><summary>其他既有關係線索與審核歷史</summary>${storeInsightsHTML(storeId)}</details>${brief.followups.length ? `<section class="visit-brief-section brief-followups"><h3>明確填寫的下次跟進</h3>${followups}</section>` : ''}<details class="brief-history" ${preserved ? preserved.historyOpen ? 'open' : '' : 'open'}><summary>既有拜訪原文 · 全部 ${history.length} 筆（可直接修改）</summary><p class="muted">點一下既有拜訪原文即可直接輸入；修改會先加密保存成本機草稿，核對修改前後差異並最後確認後，才建立同一筆拜訪的新版本。這裡不去重，每筆原文、下次跟進與歷史都保留。</p>${historyHTML}</details><details class="brief-secondary" ${preserved?.secondaryOpen ? 'open' : ''}><summary>查看人物、主題、原文候選與最近拜訪原文</summary><div class="candidate-disclaimer"><strong>內容來源與限制</strong><p>只排列你已填寫的欄位、正式拜訪原文與可追溯候選；不生成或改寫正式拜訪內容。只把全半形、英文字母大小寫與空白差異視為相同內容，標點或用詞不同仍分開；完整歷史永遠保留每一筆。</p></div>${explicit}<section class="visit-brief-section"><h3>原文候選提示</h3><p class="muted">點選每個候選可核對命中的原句、來源與原文狀態。</p><div class="candidate-chip-list">${candidates}</div></section><section class="visit-brief-section"><h3>最近 ${recentCount} 筆拜訪原文${brief.recent.length < recentCount ? ` · 合併顯示 ${brief.recent.length} 組` : ''}</h3>${recent}</section></details>`;
+  reviewBody.innerHTML = `<div class="visit-brief-head"><p>${esc(location)} · ${brief.visitCount} 筆正式拜訪紀錄</p>${storeAttendanceHTML(storeId, true)}</div>${reminders}${storeSupervisionHTML(brief.store)}${monthlyAnalysisStoreHTML(brief.store)}${storeOriginalTextHTML(brief.store)}${storeMergeOriginsHTML(brief.store)}${singleStoreCaptureHTML()}<section id="people-reading-panel" class="visit-brief-section">${peopleReadingHTML(storeId)}</section><details id="people-reading-formal-home"><summary>其他既有關係線索與審核歷史</summary>${storeInsightsHTML(storeId)}</details>${brief.followups.length ? `<section class="visit-brief-section brief-followups"><h3>明確填寫的下次跟進</h3>${followups}</section>` : ''}<details class="brief-history" ${preserved ? preserved.historyOpen ? 'open' : '' : 'open'}><summary>既有拜訪原文 · 全部 ${history.length} 筆（可直接修改）</summary><p class="muted">點一下既有拜訪原文即可直接輸入；修改會先加密保存成本機草稿，核對修改前後差異並最後確認後，才建立同一筆拜訪的新版本。這裡不去重，每筆原文、下次跟進與歷史都保留。</p>${historyHTML}</details><details class="brief-secondary" ${preserved?.secondaryOpen ? 'open' : ''}><summary>查看人物、主題、原文候選與最近拜訪原文</summary><div class="candidate-disclaimer"><strong>內容來源與限制</strong><p>只排列你已填寫的欄位、正式拜訪原文與可追溯候選；不生成或改寫正式拜訪內容。只把全半形、英文字母大小寫與空白差異視為相同內容，標點或用詞不同仍分開；完整歷史永遠保留每一筆。</p></div>${explicit}<section class="visit-brief-section"><h3>原文候選提示</h3><p class="muted">點選每個候選可核對命中的原句、來源與原文狀態。</p><div class="candidate-chip-list">${candidates}</div></section><section class="visit-brief-section"><h3>最近 ${recentCount} 筆拜訪原文${brief.recent.length < recentCount ? ` · 合併顯示 ${brief.recent.length} 組` : ''}</h3>${recent}</section></details>`;
   $('review-persistent-actions').classList.remove('capture-active');
   $('review-persistent-actions').innerHTML = singleStoreIdleActions(storeId);
   $('review-persistent-actions').hidden = false;
@@ -2070,7 +2071,7 @@ function noteHTML(v, query = '', { showStoreText = true } = {}) {
   const textBlock = inlineVisitTextHTML(v, query);
   const storeButton = store && !store.conflict && !storeIdentityPending(store) ? `data-visit-brief="${esc(v.store)}"` : `data-node-type="store" data-node-id="${esc(v.store)}"`;
   const advanced = `${sourceButton(v)}<button class="text-button" data-edit="visit:${esc(v.id)}">完整編輯</button><button class="text-button" data-history="visit:${esc(v.id)}">歷史 ${v.versions.length}</button><button class="text-button danger" data-delete="visit:${esc(v.id)}">移到回收桶</button>`;
-  return `<article class="note">${v.source ? `<div class="note-head"><span class="pill">${esc(v.source)}</span></div>` : ''}<button class="text-button store-link" ${storeButton}>${visitStoreNameHTML(name('store', v.store), query)}</button>${visitStoreAliasMatchHTML(store, query)}${storeAttendanceHTML(v.store)}${storeNotes}${showStoreText ? storeOriginalTextHTML(store, query) : ''}${v.conflict ? `<div class="conflict-card">這筆有 ${v.heads.length} 個版本。以下僅顯示其中一個，請先核對。 <button class="text-button" data-review="visit:${esc(v.id)}">處理衝突</button></div>` : ''}${sourceState}${hint}${textBlock}<div class="chips">${v.topics.map(id => chip('topic', id, query)).join('')}${v.people.map(id => chip('person', id, query)).join('')}</div>${v.next ? `<p class="next"><strong>下次跟進</strong>${highlightLiteral(v.next, query)}</p>` : ''}<div class="attachments">${(v.attachments || []).map((a, i) => `<button data-attachment="${esc(v.id)}" data-index="${i}">↧ ${esc(a.name)}</button>`).join('')}</div><div class="note-actions">${!v.conflict && store && !store.deleted && !store.conflict ? `<button class="primary" data-new-visit-store="${esc(v.store)}">＋ 記錄這次拜訪</button>` : ''}<details class="more-actions"><summary>更多操作</summary><div>${advanced}</div></details></div></article>`;
+  return `<article class="note">${v.source ? `<div class="note-head"><span class="pill">${esc(v.source)}</span></div>` : ''}<button class="text-button store-link" ${storeButton}>${visitStoreNameHTML(name('store', v.store), query)}${monthlyAlertBadgeHTML(v.store)}</button>${visitStoreAliasMatchHTML(store, query)}${storeAttendanceHTML(v.store)}${storeNotes}${showStoreText ? storeOriginalTextHTML(store, query) : ''}${v.conflict ? `<div class="conflict-card">這筆有 ${v.heads.length} 個版本。以下僅顯示其中一個，請先核對。 <button class="text-button" data-review="visit:${esc(v.id)}">處理衝突</button></div>` : ''}${sourceState}${hint}${textBlock}<div class="chips">${v.topics.map(id => chip('topic', id, query)).join('')}${v.people.map(id => chip('person', id, query)).join('')}</div>${v.next ? `<p class="next"><strong>下次跟進</strong>${highlightLiteral(v.next, query)}</p>` : ''}<div class="attachments">${(v.attachments || []).map((a, i) => `<button data-attachment="${esc(v.id)}" data-index="${i}">↧ ${esc(a.name)}</button>`).join('')}</div><div class="note-actions">${!v.conflict && store && !store.deleted && !store.conflict ? `<button class="primary" data-new-visit-store="${esc(v.store)}">＋ 記錄這次拜訪</button>` : ''}<details class="more-actions"><summary>更多操作</summary><div>${advanced}</div></details></div></article>`;
 }
 function render() {
   if(typeof peopleBatchStatus!=='undefined')renderPeopleBatchStatus();
@@ -2466,6 +2467,24 @@ function storeOriginalTextHTML(store, query = '') {
 function visitStoreNameText(value) {
   return String(value ?? '').replace(/[\r\n]/g, '');
 }
+var monthlyAlertBadgeCache;
+function monthlyAlertBadgeContent(storeId) {
+  const bundle = payload?.bundle, month = monthlyVisitMonth();
+  if (!bundle) return '';
+  if (monthlyAlertBadgeCache?.bundle !== bundle || monthlyAlertBadgeCache.month !== month) monthlyAlertBadgeCache = { bundle, month, ids: monthlyAlertStoreIds(bundle, month) };
+  return monthlyAlertBadgeCache.ids.has(storeId) ? '<span class="monthly-alert-badge"><span aria-hidden="true">⚠</span> 本月警示店</span>' : '';
+}
+function monthlyAlertBadgeHTML(storeId) {
+  return `<span class="monthly-alert-slot" data-monthly-alert-store="${esc(storeId)}">${monthlyAlertBadgeContent(storeId)}</span>`;
+}
+function refreshMonthlyAlertBadges() {
+  if (!payload || document.hidden) return;
+  document.querySelectorAll('#recent-store-list [data-monthly-alert-store], #visit-list [data-monthly-alert-store]').forEach(slot => {
+    // Keep title buttons and editable notes in place when the calendar changes.
+    const badge = monthlyAlertBadgeContent(slot.dataset.monthlyAlertStore);
+    if (slot.innerHTML !== badge) slot.innerHTML = badge;
+  });
+}
 function visitStoreNameHTML(value, query = '') {
   const text = String(value ?? ''), needle = visitStoreNameText(query).trim();
   if (!needle || !/[\r\n]/.test(text)) return highlightLiteral(text, needle);
@@ -2505,7 +2524,7 @@ function visitStoreCardHTML(store, query = '', unresolvedVisits = []) {
   const actions = store.conflict ? `<button type="button" class="secondary" data-review="store:${esc(store.id)}">比較並處理衝突</button>` : associationPending ? '' : `${!pending ? `<button type="button" class="secondary" data-visit-brief="${esc(store.id)}">單店拜訪</button>` : ''}<button type="button" class="primary" data-new-visit-store="${esc(store.id)}">＋ 記錄這次拜訪</button>`;
   const associationActions = unresolvedVisits.map((visit, index) => `<button type="button" class="secondary" data-review="visit:${esc(visit.id)}">核對拜訪衝突${unresolvedVisits.length > 1 ? ' ' + (index + 1) : ''}</button>`).join('');
   const noteStatus = associationPending ? '<p class="conflict-card">有拜訪紀錄的門市歸屬待核對</p><p class="muted">未決版本提到此門市，不代表拜訪已歸屬此店；請先核對衝突版本。</p>' : `<p class="muted">${storeOriginalTextFields(store).length ? '尚未另建拜訪紀錄；既有內容請見上方「門市原有文字」。' : '尚無拜訪紀錄。'}</p>`;
-  return `<article class="note" data-visit-empty-store="${esc(store.id)}"${associationPending ? ' data-visit-association-pending="true"' : ''}><button type="button" class="text-button store-link" ${target}>${visitStoreNameHTML(store.name, query)}</button>${visitStoreAliasMatchHTML(store, query)}${storeAttendanceHTML(store.id)}${reminders}${storeOriginalTextHTML(store, query)}${noteStatus}${notice}<div class="note-actions">${actions}${associationActions}</div></article>`;
+  return `<article class="note" data-visit-empty-store="${esc(store.id)}"${associationPending ? ' data-visit-association-pending="true"' : ''}><button type="button" class="text-button store-link" ${target}>${visitStoreNameHTML(store.name, query)}${monthlyAlertBadgeHTML(store.id)}</button>${visitStoreAliasMatchHTML(store, query)}${storeAttendanceHTML(store.id)}${reminders}${storeOriginalTextHTML(store, query)}${noteStatus}${notice}<div class="note-actions">${actions}${associationActions}</div></article>`;
 }
 function visitSearchRank(v, needle) {
   if (!needle) return 0;
@@ -2546,7 +2565,7 @@ function renderVisitSearchGroup(group, query) {
   const lead = matches[0]?.v, total = group.allVisits.length, store = by('store', group.storeId);
   const target = store && !store.conflict && !storeIdentityPending(store) ? `data-visit-brief="${esc(group.storeId)}"` : `data-node-type="store" data-node-id="${esc(group.storeId)}"`;
   const matchLabel = group.storeTextMatch ? `門市原有文字命中 · 拜訪命中 ${group.matches.length} 筆 · 共 ${total} 筆` : `${group.matches.length} 筆命中 · 共 ${total} 筆`;
-  return `<section class="visit-search-group"><div class="visit-search-group-head"><button class="text-button store-link" ${target}>${visitStoreNameHTML(name('store', group.storeId), query)}</button><span class="pill${group.storeTextMatch ? ' visit-search-profile-match' : ''}">${matchLabel}</span></div>${storeAttendanceHTML(group.storeId)}${storeOriginalTextHTML(store, query)}<div class="visit-search-preview">${lead ? visitSearchPreview(lead, query) : ''}</div><details class="visit-search-details"><summary>展開這間藥局全部 ${total} 筆拜訪紀錄</summary><div class="visit-search-expanded">${group.allVisits.map(v => noteHTML(v, query, { showStoreText: false })).join('')}</div></details></section>`;
+  return `<section class="visit-search-group"><div class="visit-search-group-head"><button class="text-button store-link" ${target}>${visitStoreNameHTML(name('store', group.storeId), query)}${monthlyAlertBadgeHTML(group.storeId)}</button><span class="pill${group.storeTextMatch ? ' visit-search-profile-match' : ''}">${matchLabel}</span></div>${storeAttendanceHTML(group.storeId)}${storeOriginalTextHTML(store, query)}<div class="visit-search-preview">${lead ? visitSearchPreview(lead, query) : ''}</div><details class="visit-search-details"><summary>展開這間藥局全部 ${total} 筆拜訪紀錄</summary><div class="visit-search-expanded">${group.allVisits.map(v => noteHTML(v, query, { showStoreText: false })).join('')}</div></details></section>`;
 }
 // Day itinerary actions only change datePlans / datePlanOrder. They never call
 // task completion, attendance confirmation, or note editing.
@@ -2589,7 +2608,7 @@ function renderMonthlyVisits() {
   $('monthly-visit-results').innerHTML = `${analysisOverviewHTML(month)}<div class="monthly-heading"><h2>${esc(monthlyVisitLabel(month))}${month === current ? ' · 本月' : ''}</h2>${month !== current ? '<button type="button" class="text-button" data-monthly-current>回本月</button>' : ''}</div><section class="panel monthly-progress" aria-label="當月必訪進度"><div><strong>待訪 ${overview.pending.length} 間</strong><span role="status">已訪 ${overview.completedCount} / ${overview.total} 間</span></div><div class="monthly-legend">${counts.map(group => `<span><i class="monthly-dot ${group.id}" aria-hidden="true"></i>${{ tree: '大樹', you: '佑全／健康人生', other: '其他／未分群' }[group.id]} ${group.rows.filter(row => row.completed).length}/${group.rows.length}</span>`).join('')}</div></section><p id="monthly-visit-notice" class="muted" role="status" aria-live="polite" ${monthlyVisitNotice ? '' : 'hidden'}>${esc(monthlyVisitNotice)}</p><section class="panel monthly-list" aria-label="當月必訪名單">${overview.pending.length ? monthlyVisitRowsHTML(overview.pending, past) : overview.total ? '<p class="monthly-complete">✓ 本月必訪門市皆已完成</p>' : `<p class="empty">這個月尚未安排必訪門市。${past ? '' : '請按「新增門市」從既有門市選入。'}</p>`}${overview.completed.length ? `<details id="monthly-completed" ${doneOpen ? 'open' : ''}><summary>已拜訪 · ${overview.completed.length} 間</summary>${monthlyVisitRowsHTML(overview.completed, past)}</details>` : ''}</section>${overview.removedStores.length ? `<details class="monthly-removed"><summary>本月已移除 · ${overview.removedStores.length} 間</summary>${monthlyVisitRowsHTML(overview.removedStores, past, true)}</details>` : ''}<details class="monthly-help"><summary>名單調整與完成依據</summary><p class="muted">各月份名單分別保存。新增或移除不會改動其他月份、門市原文或拜訪歷史；過去月份保留唯讀。只有你勾選實際拜訪日期並完成儲存，才依該日期自動計入對應月份。修改文字、安排行程及完成待辦都不算拜訪。同店同月計一次。</p></details>`;
 }
 function assertMonthlyVisitIdle() {
-  if (!payload || document.hidden || pendingLock || updateHolding || autoFetching || syncInProgress || monthlyVisitContext || dayPlanContext || editorContext || reminderContext || singleStoreContext || inlineTextContext || payload.inlineTextDraft || document.querySelector('dialog[open]') || csvImport.hasPending()) throw new Error('請先完成或關閉目前的編輯，並等待同步結束，再調整每月名單。');
+  if (!payload || payload.monthlyFeedbackDraft || monthlyFeedbackContext || document.hidden || pendingLock || updateHolding || autoFetching || syncInProgress || monthlyVisitContext || dayPlanContext || editorContext || reminderContext || singleStoreContext || inlineTextContext || payload.inlineTextDraft || document.querySelector('dialog[open]') || csvImport.hasPending()) throw new Error('請先完成或關閉目前的編輯，並等待同步結束，再調整每月名單。');
 }
 function newMonthlyVisitContext(kind) {
   assertMonthlyVisitIdle();
@@ -3518,7 +3537,7 @@ function clearWeeklySetup() {
   if ($('weekly-proof')) $('weekly-proof').value = '';
 }
 function assertWeeklyIdle() {
-  if (document.hidden || pendingLock || updateHolding || syncInProgress || editorContext || singleStoreContext || inlineTextContext || reminderContext || dayPlanContext || monthlyVisitContext || attendancePrompt || backupPreview || recoveryExportContext || csvImport.hasPending() || ['review','editor','quick-text-dialog','store-reminder-dialog','rebuild-dialog','backup-review'].some(id => $(id)?.open)) throw new Error('等待目前編輯或核對完成後，自動補做正式資料備份。');
+  if (document.hidden || pendingLock || updateHolding || syncInProgress || monthlyFeedbackContext || payload?.monthlyFeedbackDraft || editorContext || singleStoreContext || inlineTextContext || reminderContext || dayPlanContext || monthlyVisitContext || attendancePrompt || backupPreview || recoveryExportContext || csvImport.hasPending() || ['review','editor','quick-text-dialog','store-reminder-dialog','rebuild-dialog','backup-review'].some(id => $(id)?.open)) throw new Error('等待目前編輯或核對完成後，自動補做正式資料備份。');
 }
 function weeklyReady() {
   if (!payload?.token || !key || navigator.onLine === false || busy || gateOpening || autoFetching || weeklyContext || weeklyRunning) return false;
@@ -3672,7 +3691,7 @@ async function exportRecoveryBackup() {
   } finally { password = confirmation = ''; $('recovery-password').value = ''; $('recovery-password-again').value = ''; }
 }
 function assertBackupIdle() {
-  if (editorContext || singleStoreContext || inlineTextContext || reminderContext || dayPlanContext || monthlyVisitContext || payload?.draft || payload?.inlineTextDraft || storedReminderDrafts().length || csvImport.hasPending() || $('review').open || $('quick-text-dialog').open || $('store-reminder-dialog').open || $('rebuild-dialog').open) throw new Error('請先完成或取消目前的編輯、草稿或核對，再檢查備份；原輸入保持不變。');
+  if (monthlyFeedbackContext || payload?.monthlyFeedbackDraft || editorContext || singleStoreContext || inlineTextContext || reminderContext || dayPlanContext || monthlyVisitContext || payload?.draft || payload?.inlineTextDraft || storedReminderDrafts().length || csvImport.hasPending() || $('review').open || $('quick-text-dialog').open || $('store-reminder-dialog').open || $('rebuild-dialog').open) throw new Error('請先完成或取消目前的編輯、草稿或核對，再檢查備份；原輸入保持不變。');
   if (pendingLock || document.hidden) throw new Error('App 已離開前景，請返回後重新選取備份。');
 }
 function clearBackupPreview() {
@@ -3863,6 +3882,10 @@ document.addEventListener('click', event => {
     $(b.dataset.close).close(); if (b.dataset.close === 'rebuild-dialog') $('rebuild-connect-form').reset(); if (b.dataset.close === 'editor') editorContext = null; if (b.dataset.close === 'store-reminder-dialog') reminderContext = null; return;
   }
   if (updateHolding || busy || !payload) return;
+  if (b.hasAttribute('data-feedback-resume')) return run(()=>openMonthlyFeedback(payload.monthlyFeedbackDraft.analysisId,payload.monthlyFeedbackDraft.rowIndex));
+  if (b.hasAttribute('data-feedback-open')) return run(()=>openMonthlyFeedback(b.dataset.feedbackOpen,Number(b.dataset.feedbackRow)));
+  if (b.hasAttribute('data-feedback-export-open')) return run(openMonthlyFeedbackExport);
+  if (b.hasAttribute('data-feedback-export-download')) return run(downloadMonthlyFeedbackExport,'feedback-export-error');
   if (b.hasAttribute('data-analysis-open')) return run(openAnalysisImport, 'monthly-visit-notice');
   if (b.hasAttribute('data-analysis-preview')) return run(previewAnalysisImport, 'analysis-error');
   if (b.hasAttribute('data-analysis-final')) return run(finalAnalysisImport, 'analysis-error');
@@ -4012,7 +4035,7 @@ function handleAppVisibilityChange() {
   if (document.hidden) {
     const retain = canRetainInsightBackground();
     syncEpoch++; syncScheduler.pause(); finishAttendancePrompt(); clearNearbyPosition();
-    if (editorContext?.type === 'visit' || singleStoreContext) void flushVisitDraft();
+    if(monthlyFeedbackContext)void flushMonthlyFeedbackDraft().catch(()=>{}); if (editorContext?.type === 'visit' || singleStoreContext) void flushVisitDraft();
     if (inlineTextContext) void flushInlineTextDraft();
     if (activeReminderDraftContext()) void flushReminderDraft().catch(() => {});
     document.body.classList.add('privacy-veil');
@@ -4026,12 +4049,12 @@ function handleAppVisibilityChange() {
     if (pendingLock || !payload) { pendingLock = false; document.body.classList.remove('privacy-veil'); showGate(); }
     else { document.body.classList.remove('privacy-veil'); requestNearbyPosition(); }
     resumeDayPlanContext(); resumeMonthlyVisitContext(); syncScheduler.request('foreground');
-    refreshInsightChangeBadges(); queueInsightScan();
+    refreshMonthlyAlertBadges(); refreshInsightChangeBadges(); queueInsightScan();
   }
 }
 document.addEventListener('visibilitychange', handleAppVisibilityChange);
-window.addEventListener('pagehide', () => { syncEpoch++; syncScheduler.pause(); finishAttendancePrompt(); dismissKeyboard(); clearNearbyPosition(); if (editorContext?.type === 'visit' || singleStoreContext) void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); if (activeReminderDraftContext()) void flushReminderDraft().catch(() => {}); if (payload || busy || backupPreview) lockNow(false); });
-window.addEventListener('pageshow', () => { dismissKeyboard(); if (!payload && !document.hidden) { document.body.classList.remove('privacy-veil'); showGate(); } if (!document.hidden) { resumeDayPlanContext(); resumeMonthlyVisitContext(); syncScheduler.request('foreground'); queueInsightScan(); } });
+window.addEventListener('pagehide', () => { syncEpoch++; syncScheduler.pause(); finishAttendancePrompt(); dismissKeyboard(); clearNearbyPosition(); if(monthlyFeedbackContext)void flushMonthlyFeedbackDraft().catch(()=>{}); if (editorContext?.type === 'visit' || singleStoreContext) void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); if (activeReminderDraftContext()) void flushReminderDraft().catch(() => {}); if (payload || busy || backupPreview) lockNow(false); });
+window.addEventListener('pageshow', () => { dismissKeyboard(); if (!payload && !document.hidden) { document.body.classList.remove('privacy-veil'); showGate(); } if (!document.hidden) { refreshMonthlyAlertBadges(); resumeDayPlanContext(); resumeMonthlyVisitContext(); syncScheduler.request('foreground'); queueInsightScan(); } });
 window.addEventListener('online', () => syncScheduler.request('online'));
 window.addEventListener('offline', () => syncScheduler.pause());
 $('visit-attendance-form').addEventListener('submit', event => {
@@ -4151,7 +4174,7 @@ new ResizeObserver(drawGraph).observe($('graph-wrap'));
 if (!isSecureContext || !crypto.subtle) { $('gate-error').textContent = '需要受信任的 HTTPS 連線。請完成 Mac 與 iPhone 憑證設定，不要略過憑證警告。'; $('gate-submit').disabled = true; }
 else {
   showGate();
-  const draftBusy = () => !!payload?.supervisorDraft || busy || gateOpening || peopleBatchRunning || !!recoveryExportContext || !!weeklyContext || weeklyRunning || !!backupPreview || !!editorContext || !!inlineTextContext || !!reminderContext || !!dayPlanContext || !!monthlyVisitContext || !!payload?.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('store-reminder-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending() || (!$('gate').hidden && [...$('gate-form').querySelectorAll('input')].some(el => el.value && !['device-name'].includes(el.id)));
+  const draftBusy = () => !!monthlyFeedbackContext || !!payload?.monthlyFeedbackDraft || !!payload?.supervisorDraft || busy || gateOpening || peopleBatchRunning || !!recoveryExportContext || !!weeklyContext || weeklyRunning || !!backupPreview || !!editorContext || !!inlineTextContext || !!reminderContext || !!dayPlanContext || !!monthlyVisitContext || !!payload?.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('store-reminder-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending() || (!$('gate').hidden && [...$('gate-form').querySelectorAll('input')].some(el => el.value && !['device-name'].includes(el.id)));
   for (const name of ['click', 'submit', 'keydown', 'beforeinput']) document.addEventListener(name, event => { if (updateHolding && event.target.closest('button,input,select,textarea,form,a')) { event.preventDefault(); event.stopImmediatePropagation(); } }, true);
   startUpdates({ api, hasToken: () => !!payload?.token, isBusy: draftBusy, setHold: held => { updateHolding = held; if (held) { syncEpoch++; syncScheduler.pause(); } else syncScheduler.wake(); document.body.classList.toggle('update-holding', held); }, notify: toast, onOfflineReady: () => { offlineReady = true; $('secure-state').textContent = '離線介面已備妥。iPhone 請先加入主畫面，再從主畫面進行配對。'; status(); } });
   if (location.hostname === 'localhost') $('secure-state').textContent = '請使用 Mac 顯示的 .local 網址開啟 App，管理頁才使用 localhost。';
@@ -4217,7 +4240,7 @@ $('review').addEventListener('close',()=>{if(!$('review').open) supervisionPrevi
 
 
 function analysisCardHTML(item) {
-  return `<article class="analysis-card"><p class="muted">拜訪 ${esc(item.visitMonth)} · 銷量 ${esc(item.salesMonth)} · ${esc(item.channel)}${item.needsReview ? ' · 門市資料有變化，需重新核對' : ''}</p><h4>${esc(item.row.name)}</h4><p class="analysis-verbatim">${esc(item.row.reason)}</p><h4>現場詢問與執行</h4><ol>${item.row.checkpoints.map(text => `<li class="analysis-verbatim">${esc(text)}</li>`).join('')}</ol><details><summary>來源與配對依據</summary><p>${esc(item.file)} · ${esc(item.at)}</p><p>SHA256：${esc(item.blob)}</p><p>確認時名稱：${esc(item.assignments.find(m=>m.storeId === item.storeId)?.name || '')}</p><p>外部分析建議，並非已完成拜訪或已證實事實。</p></details></article>`;
+  return `<article class="analysis-card"><p class="muted">拜訪 ${esc(item.visitMonth)} · 銷量 ${esc(item.salesMonth)} · ${esc(item.channel)}${item.needsReview ? ' · 門市資料有變化，需重新核對' : ''}</p><h4>${esc(item.row.name)}</h4><p class="analysis-verbatim">${esc(item.row.reason)}</p><h4>現場詢問與執行</h4><ol>${item.row.checkpoints.map(text => `<li class="analysis-verbatim">${esc(text)}</li>`).join('')}</ol>${monthlyFeedbackHTML(item)}<details><summary>來源與配對依據</summary><p>${esc(item.file)} · ${esc(item.at)}</p><p>SHA256：${esc(item.blob)}</p><p>確認時名稱：${esc(item.assignments.find(m=>m.storeId === item.storeId)?.name || '')}</p><p>外部分析建議，並非已完成拜訪或已證實事實。</p></details></article>`;
 }
 function monthlyAnalysisStoreHTML(store) {
   const items = monthlyAnalysisForStore(payload.bundle, store.id).map(item=>({...item,storeId:store.id})), current = items.filter(item=>item.current), history = items.filter(item=>!item.current);
@@ -4226,13 +4249,16 @@ function monthlyAnalysisStoreHTML(store) {
 }
 function analysisOverviewHTML(month) {
   const sources = monthlyAnalysisSources(payload.bundle), matches = sources.filter(source=>source.visitMonth === month);
-  return `<section class="panel monthly-analysis"><h3>每月分析建議</h3><p>選擇外部 JSON → 分開指定銷量與拜訪月份 → 逐店確認通路、店名與地址 → 最後核對才保存。</p><button type="button" data-analysis-open>匯入每月分析 JSON</button><p>${matches.length ? `${esc(month)} 有 ${matches.length} 份來源（含修訂），點門市可讀完整原因與詢問清單。` : `${esc(month)} 尚無分析來源，不會沿用上個月建議。`}</p>${matches.map(s=>`<details><summary>${esc(s.channel)} · ${esc(s.file)} · ${s.assignments.filter(m=>m.storeId).length} 間已對應（含修訂歷史）</summary>${s.assignments.filter(m=>m.storeId).map(m=>`<p><button type="button" class="text-button" data-visit-brief="${esc(m.storeId)}">${esc(m.name)}</button> · ${esc(m.address || '無地址')}</p>`).join('')}</details>`).join('')}<details><summary>全部來源歷史 · ${sources.length} 份</summary>${sources.map(s=>`<p>拜訪 ${esc(s.visitMonth)}／銷量 ${esc(s.salesMonth)} · ${esc(s.channel)} · ${esc(s.file)}</p>`).join('') || '<p>尚無來源</p>'}</details></section>`;
+  const draft=payload.monthlyFeedbackDraft, draftSource=draft? sources.find(source=>source.id===draft.analysisId):null, draftStore=draftSource?.assignments[draft.rowIndex];
+  const replaced=new Set(matches.flatMap(source=>source.supersedes)),active=matches.filter(source=>!replaced.has(source.id));
+  const alerts=active.flatMap(source=>source.assignments.flatMap((match,rowIndex)=>{if(!match.storeId)return [];const state=monthlyFeedbackState(payload.bundle,source.id,rowIndex),item=monthlyAnalysisForStore(payload.bundle,match.storeId,month).find(item=>item.id===source.id);return [{...match,source,rowIndex,state,needsReview:!item?.current || item.needsReview}];}));
+  return `<section class="panel monthly-analysis">${draftStore?.storeId?`<p class="muted">未完成回報草稿：<button type="button" class="text-button" data-visit-brief="${esc(draftStore.storeId)}">${esc(draftStore.name)}</button> <button type="button" data-feedback-resume>繼續／查看回報草稿</button>（只在這台裝置，先完成再匯入新期）</p>`:''}<h3>每月分析建議</h3><p>每月選一次 JSON；沿用已確認且仍一致的門市對應，有疑義的逐店核對。新一期取代分析顯示，舊期與現場回報完整保留。</p><button type="button" data-analysis-open>匯入每月分析 JSON</button><button type="button" data-feedback-export-open>匯出給分析</button>${alerts.length?`<h4>${esc(month)} 分析警示門市 · ${new Set(alerts.map(row=>row.storeId)).size} 間</h4><p class="muted">獨立分析名單，不更動下方必訪名單或已訪狀態。</p><ul class="monthly-alert-list">${alerts.map(row=>`<li><button type="button" class="text-button" data-visit-brief="${esc(row.storeId)}">${esc(row.name)}</button><span>${esc(row.source.channel)} · ${row.needsReview?'分析來源需核對':row.state.conflict?'回報分歧需核對':row.state.current?`已回報 ${row.state.current.data.monthlyFeedback.answers.filter(answer=>answer.text.trim()).length}／${row.source.rows[row.rowIndex].checkpoints.length} 題`:'尚未回報'}</span></li>`).join('')}</ul>`:''}<p>${matches.length ? `${esc(month)} 有 ${matches.length} 份來源（含修訂），點門市可讀完整原因與詢問清單。` : `${esc(month)} 尚無分析來源，不會沿用上個月建議。`}</p>${matches.map(s=>`<details><summary>${esc(s.channel)} · ${esc(s.file)} · ${s.assignments.filter(m=>m.storeId).length} 間已對應（含修訂歷史）</summary>${s.assignments.filter(m=>m.storeId).map(m=>`<p><button type="button" class="text-button" data-visit-brief="${esc(m.storeId)}">${esc(m.name)}</button> · ${esc(m.address || '無地址')}</p>`).join('')}</details>`).join('')}<details><summary>全部來源歷史 · ${sources.length} 份</summary>${sources.map(s=>`<p>拜訪 ${esc(s.visitMonth)}／銷量 ${esc(s.salesMonth)} · ${esc(s.channel)} · ${esc(s.file)}</p>`).join('') || '<p>尚無來源</p>'}</details></section>`;
 }
 function openAnalysisImport() {
   assertMonthlyVisitIdle();
   analysisImport = null;
-  const dialog=$('monthly-analysis-dialog');
-  dialog.innerHTML=`<form method="dialog"><button class="dialog-close" aria-label="關閉">×</button></form><h2 id="analysis-title" data-dialog-focus tabindex="-1" autofocus>匯入每月分析 · 尚未寫入</h2><p>原檔與全部分析完整留存；不新增門市，不覆蓋筆記、待辦或拜訪歷史。</p><div class="field-grid"><label>銷量期別<input id="analysis-sales" type="month" required></label><label>建議拜訪月份<input id="analysis-visit" type="month" required></label></div><label>大樹／佑全 JSON（最多兩份）<input id="analysis-files" type="file" accept=".json,application/json" multiple></label><button type="button" data-analysis-preview>讀取並比對</button><p id="analysis-error" class="error" role="alert"></p><div id="analysis-matches"></div>`;
+  const dialog=$('monthly-analysis-dialog'),visitMonth=monthlyVisitMonth(),salesMonth=shiftMonthlyVisitMonth(visitMonth,-1);
+  dialog.innerHTML=`<form method="dialog"><button class="dialog-close" aria-label="關閉">×</button></form><h2 id="analysis-title" data-dialog-focus tabindex="-1" autofocus>匯入每月分析 · 尚未寫入</h2><p>預設上月銷量、本月拜訪；請核對月份，可修改。原檔與全部分析完整留存；不新增門市，不覆蓋筆記、待辦或拜訪歷史。</p><div class="field-grid"><label>銷量期別<input id="analysis-sales" type="month" value="${salesMonth}" required></label><label>建議拜訪月份<input id="analysis-visit" type="month" value="${visitMonth}" required></label></div><label>大樹／佑全 JSON（最多兩份）<input id="analysis-files" type="file" accept=".json,application/json" multiple></label><button type="button" data-analysis-preview>讀取並比對</button><p id="analysis-error" class="error" role="alert"></p><div id="analysis-matches"></div>`;
   openDialog(dialog);
 }
 async function previewAnalysisImport() {
@@ -4243,8 +4269,9 @@ async function previewAnalysisImport() {
   if(!files.length || files.length>2 || files.some(f=>f.size>2097152)) throw new Error('請選 1–2 份 JSON，每份上限 2 MB。');
   const inputs=await Promise.all(files.map(async file=>({name:file.name,raw:new Uint8Array(await file.arrayBuffer())})));
   guard(); if($('analysis-sales').value!==sales || $('analysis-visit').value!==visit || [...$('analysis-files').files].some((file,i)=>file!==files[i]) || $('analysis-files').files.length!==files.length) throw new Error('選檔或月份已改變，請重新讀取。'); const plan=await prepareMonthlyAnalysis(payload.bundle,inputs,sales,visit);guard();
+  plan.files.forEach(file=>{file.remembered=file.rows.map(row=>rememberedMonthlyAnalysisChoice(payload.bundle,row));});
   analysisImport={plan,session,guard};
-  $('analysis-matches').innerHTML=`<h3>逐間核對 · 不自動勾選</h3><p>同名或不同寫法只列候選，請核對完整名稱與地址；不確定請先關閉，詢問 Kit 後再匯入。選「不套用」仍保存該列原文。</p>${plan.files.map((file,f)=>`<section><h3>${esc(file.channel)} · ${esc(file.name)}</h3>${file.rows.map((row,r)=>`<article class="analysis-card"><h4>${esc(row.name)} · ${esc(row.channel)}</h4><details><summary>完整分析與現場清單</summary><p class="analysis-verbatim">${esc(row.reason)}</p><ol>${row.checkpoints.map(t=>`<li>${esc(t)}</li>`).join('')}</ol></details><label>對應既有門市<select data-analysis-choice="${f}:${r}"><option value="">待核對，請選擇</option><option value="skip">本期不套用至門市（原文留存）</option>${file.candidates[r].map(({store,exact})=>`<option value="${esc(store.id)}">${exact?'名稱相符候選':'其他同通路'} · ${esc(store.name)} · ${esc(store.address || '無地址，須另行核對')} · ${esc(store.id)}</option>`).join('')}</select></label></article>`).join('')}</section>`).join('')}<button type="button" data-analysis-final>下一步：最後完整名單</button><div id="analysis-final"></div>`;
+  $('analysis-matches').innerHTML=`<h3>逐間核對 · 只沿用已確認且身分一致的對應</h3><p>同名或不同寫法只列候選，請核對完整名稱與地址；不確定請先關閉，詢問 Kit 後再匯入。選「不套用」仍保存該列原文。</p>${plan.files.map((file,f)=>`<section><h3>${esc(file.channel)} · ${esc(file.name)}</h3>${file.rows.map((row,r)=>`<article class="analysis-card"><h4>${esc(row.name)} · ${esc(row.channel)}</h4><details><summary>完整分析與現場清單</summary><p class="analysis-verbatim">${esc(row.reason)}</p><ol>${row.checkpoints.map(t=>`<li>${esc(t)}</li>`).join('')}</ol></details><label>對應既有門市<select data-analysis-choice="${f}:${r}"><option value="">待核對，請選擇</option><option value="skip">本期不套用至門市（原文留存）</option>${file.candidates[r].map(({store,exact})=>`<option value="${esc(store.id)}" ${file.remembered[r]===store.id?'selected':''}>${file.remembered[r]===store.id?'沿用已確認':exact?'名稱相符候選':'其他同通路'} · ${esc(store.name)} · ${esc(store.address || '無地址，須另行核對')} · ${esc(store.id)}</option>`).join('')}</select></label></article>`).join('')}</section>`).join('')}<button type="button" data-analysis-final>下一步：最後完整名單</button><div id="analysis-final"></div>`;
 }
 function analysisSelections() { return analysisImport.plan.files.map((file,f)=>file.rows.map((_,r)=>document.querySelector(`[data-analysis-choice="${f}:${r}"]`).value)); }
 function finalAnalysisImport() {
@@ -4252,7 +4279,8 @@ function finalAnalysisImport() {
   const choices=analysisSelections(); if(choices.flat().some(v=>!v)) throw new Error('仍有待核對門市，請完成所有列或明確選擇不套用。');
   const ids=choices.flat().filter(v=>v!=='skip');if(new Set(ids).size!==ids.length) throw new Error('同店重複，請先核對。');
   analysisImport.finalChoices=JSON.stringify(choices);
-  $('analysis-final').innerHTML=`<h3>最後核對 · 尚未寫入</h3><p>銷量 ${esc(analysisImport.plan.salesMonth)} → 拜訪 ${esc(analysisImport.plan.visitMonth)}，套用 ${ids.length} 間。只影響此批通路與月份，其他通路不變。</p>${analysisImport.plan.files.map((file,f)=>file.rows.map((row,r)=>{const store=file.candidates[r].find(c=>c.store.id===choices[f][r])?.store;return `<p>${esc(row.channel)}／${esc(row.name)} → <strong>${store?esc(store.name):'不套用（原文保留）'}</strong>${store?`<br>${esc(store.address || '無地址')} · ID ${esc(store.id)}`:''}</p>`;}).join('')).join('')}${analysisImport.plan.files.some(f=>f.replacing)?'<p>本期已有分析；確認後同通路改顯示本批，舊批收合保存。</p>':''}<label class="check"><input id="analysis-ack" type="checkbox">我已核對月份、通路與逐店對應，確認保存此批（舊期及舊批完整保留）</label><button type="button" data-analysis-save>確認名單並保存分析</button>`;
+  const changes=monthlyAnalysisChangeSummary(payload.bundle,analysisImport.plan,choices);
+  $('analysis-final').innerHTML=`<h3>最後核對 · 尚未寫入</h3><p>銷量 ${esc(analysisImport.plan.salesMonth)} → 拜訪 ${esc(analysisImport.plan.visitMonth)}，套用 ${ids.length} 間。只更新獨立分析區，門市與原筆記不變。</p>${changes.map(change=>`<p>${esc(change.channel)}：分析新增 ${change.added}／更新 ${change.updated}／本期不再列入 ${change.archived}${change.needsReview?'（歷史來源分歧，請核對）':''}。歷史保留，不新增或刪除門市。</p>`).join('')}${analysisImport.plan.files.map((file,f)=>file.rows.map((row,r)=>{const store=file.candidates[r].find(c=>c.store.id===choices[f][r])?.store;return `<p>${esc(row.channel)}／${esc(row.name)} → <strong>${store?esc(store.name):'不套用（原文保留）'}</strong>${store?`<br>${esc(store.address || '無地址')} · ID ${esc(store.id)}`:''}</p>`;}).join('')).join('')}${analysisImport.plan.files.some(f=>f.replacing)?'<p>本期已有分析；確認後同通路改顯示本批，舊批收合保存。</p>':''}<label class="check"><input id="analysis-ack" type="checkbox">我已核對月份、通路與逐店對應，確認保存此批（舊期及舊批完整保留）</label><button type="button" data-analysis-save>確認名單並保存分析</button>`;
 }
 async function saveAnalysisImport() {
   const ctx=analysisImport;if(!ctx) throw new Error('請重新讀取原檔。');ctx.guard();
@@ -4277,3 +4305,88 @@ $('review').addEventListener('change',event=>{
  if(event.target.id==='people-reading-ack'){$('people-reading-save').disabled=!event.target.checked;return;}
  if(event.target.matches?.('[data-reading-file]')){const file=event.target.files[0],storeId=event.target.dataset.readingFile;event.target.value='';if(file)void run(()=>previewPeopleReadingFile(file,storeId));}
 });
+
+function monthlyFeedbackHTML(item) {
+  const rowIndex=item.assignments.findIndex(match=>match.storeId===item.storeId),state=monthlyFeedbackState(payload.bundle,item.id,rowIndex);
+  const replyHTML=op=>{const value=op.data.monthlyFeedback;return `<article class="monthly-feedback-result"><p>回報日期：${esc(value.visitDate || '未提供')} · 保存 ${esc(dateText(value.createdAt))}</p>${value.answers.map(answer=>`<p><strong>${esc(answer.question)}</strong><br>${esc(answer.text || '尚未填答')}</p>`).join('')}${value.notes?`<p>補充：${esc(value.notes)}</p>`:''}</article>`;};
+  const draft=payload.monthlyFeedbackDraft?.analysisId===item.id && payload.monthlyFeedbackDraft.rowIndex===rowIndex;
+  return `<section class="monthly-feedback"><h4>現場回報</h4><p>${state.conflict?'有不同回報版本，請核對後另存修訂':state.current?`已填 ${state.current.data.monthlyFeedback.answers.filter(answer=>answer.text.trim()).length}／${item.row.checkpoints.length} 題`:'尚未回報；未回答不代表零或未執行'}${draft?' · 有本機未完成草稿':''}</p>${state.heads.map(replyHTML).join('')}${item.current || draft?`<button type="button" data-feedback-open="${esc(item.id)}" data-feedback-row="${rowIndex}">${draft?'繼續現場回報':state.history.length?'修改／補充現場回報':'填寫現場結果'}</button>`:'<p class="muted">歷史分析與回報留存，不自動帶入新一期。</p>'}${state.history.length>state.heads.length?`<details><summary>過去回報 · ${state.history.length-state.heads.length} 份</summary>${state.history.filter(op=>!state.heads.some(head=>head.entity===op.entity)).map(replyHTML).join('')}</details>`:''}<p class="muted">獨立保存，不改原筆記、人物關係或待辦，也不自動標記已拜訪。</p></section>`;
+}
+function assertMonthlyFeedbackCurrent(ctx) {
+  if(!ctx || monthlyFeedbackContext!==ctx || !payload || key!==ctx.key || meta!==ctx.meta || payload.bundle!==ctx.bundle || syncEpoch!==ctx.epoch || document.hidden || pendingLock || updateHolding || syncInProgress || !$('monthly-analysis-dialog').open || (!ctx.readOnly && monthlyVisitMonth()!==ctx.plan.visitMonth))throw new Error('來源、工作階段或月份有變，請重新核對；輸入保留。');
+}
+function monthlyFeedbackInput() {
+  return {visitDate:$('monthly-feedback-date').value,answers:[...document.querySelectorAll('[data-feedback-answer]')].map(node=>node.value),notes:$('monthly-feedback-notes').value};
+}
+async function flushMonthlyFeedbackDraft() {
+  const ctx=monthlyFeedbackContext;if(!ctx)return;
+  clearTimeout(ctx.timer);
+  const draft={format:'monthly-feedback-draft-1',analysisId:ctx.plan.analysisId,rowIndex:ctx.plan.rowIndex,questions:[...ctx.plan.questions],...monthlyFeedbackInput()};
+  const generation=++ctx.generation;
+  ctx.chain=ctx.chain.catch(()=>{}).then(async()=>{
+    if(generation!==ctx.generation)return;
+    const guard=()=>{if(monthlyFeedbackContext!==ctx || key!==ctx.key || meta!==ctx.meta || !payload || payload.bundle!==ctx.bundle)throw new Error('草稿來源已變更，輸入仍保留於畫面。');};
+    guard(); await persist({...payload,monthlyFeedbackDraft:draft},{guard});
+    if($('monthly-feedback-draft-state'))$('monthly-feedback-draft-state').textContent='本機加密草稿已保存；尚未正式回報，也未同步到Mac。';
+  });
+  return ctx.chain;
+}
+async function openMonthlyFeedback(analysisId,rowIndex) {
+  if(!payload || !key || pendingLock || updateHolding || autoFetching || syncInProgress || monthlyFeedbackContext || editorContext || singleStoreContext || inlineTextContext || reminderContext || payload.draft || payload.inlineTextDraft || storedReminderDrafts().length || csvImport.hasPending())throw new Error('請先完成目前修改並等同步結束，再填回報。');
+  const draft=payload.monthlyFeedbackDraft;let plan,readOnly=false;
+  try{plan=prepareMonthlyFeedback(payload.bundle,analysisId,rowIndex);}catch(error){
+    if(!draft || draft.analysisId!==analysisId || draft.rowIndex!==rowIndex)throw error;
+    const source=monthlyAnalysisSources(payload.bundle).find(source=>source.id===analysisId),match=source?.assignments[rowIndex];
+    if(!match?.storeId)throw error;
+    plan={analysisId,rowIndex,storeId:match.storeId,storeName:match.name,salesMonth:source.salesMonth,visitMonth:source.visitMonth,questions:[...draft.questions],state:monthlyFeedbackState(payload.bundle,analysisId,rowIndex)};readOnly=true;
+  }
+  if(draft && (draft.analysisId!==analysisId || draft.rowIndex!==rowIndex))throw new Error('另一間門市有未完成回報草稿，請先回該店處理；不覆蓋草稿。');
+  if(draft && JSON.stringify(draft.questions)!==JSON.stringify(plan.questions))throw new Error('原題目已變更，草稿保留；請核對來源，不直接套到新題。');
+  const current=plan.state.current?.data.monthlyFeedback;
+  const value=draft || current || {visitDate:attendanceTaipeiDate(Date.now()),answers:plan.questions.map(()=>''),notes:''};
+  const ctx={plan,bundle:payload.bundle,key,meta,epoch:syncEpoch,chain:Promise.resolve(),generation:0,timer:null,readOnly};monthlyFeedbackContext=ctx;syncScheduler.pause();
+  const answers=draft?draft.answers:current?current.answers.map(answer=>answer.text):value.answers;
+  $('monthly-analysis-dialog').innerHTML=`<h2 id="analysis-title" data-dialog-focus tabindex="-1" autofocus>現場回報 · ${esc(plan.storeName)}</h2><p>銷量 ${esc(plan.salesMonth)} → 拜訪 ${esc(plan.visitMonth)}。每一題可單獨填寫，未填保留未知。</p>${readOnly?'<p class="error">這份草稿來源已變更或已過期，只供閱讀、複製或明確捨棄；不套用到新期。</p>':''}${plan.state.conflict?'<p class="error">有並行回報，請先查看原店卡各版本；保存這次修訂將明確接替目前全部分支，歷史仍保留。</p>':''}<form id="monthly-feedback-form"><label>實際回報的拜訪日期（未知可留空）<input type="date" id="monthly-feedback-date" value="${esc(value.visitDate)}"></label>${plan.questions.map((question,index)=>`<label class="monthly-feedback-question"><strong>${index+1}. ${esc(question)}</strong><textarea data-feedback-answer="${index}" maxlength="20000" placeholder="記錄實際結果；不確定可寫不確定，不必為了保存而猜填">${esc(answers[index] || '')}</textarea></label>`).join('')}<label>其他現場補充（選填）<textarea id="monthly-feedback-notes" maxlength="20000">${esc(value.notes || '')}</textarea></label><p id="monthly-feedback-draft-state" class="muted" role="status">輸入先保存成本機加密草稿；正式保存才進入同步與完整備份。</p><p id="monthly-feedback-error" class="error" role="alert"></p><p>只新增獨立回報，不修改原筆記、人物、待辦，不自動建立拜訪確認。</p><div class="dialog-footer"><button type="button" data-feedback-close>關閉，保留草稿</button><button type="button" data-feedback-discard>捨棄草稿</button>${readOnly?'':'<button type="submit" class="primary">核對並保存現場回報</button>'}</div></form>`;
+  if(readOnly)$('monthly-analysis-dialog').querySelectorAll('input,textarea').forEach(node=>node.readOnly=true);
+  openDialog($('monthly-analysis-dialog'));
+}
+async function closeMonthlyFeedback(discard=false) {
+  const ctx=monthlyFeedbackContext;if(!ctx)return;
+  if(discard){if(!confirm('只捨棄這份未完成回報草稿？已保存回報及所有原筆記保留。'))return;clearTimeout(ctx.timer);ctx.generation++;await ctx.chain.catch(()=>{});await persist({...payload,monthlyFeedbackDraft:null},{guard:()=>assertMonthlyFeedbackCurrent(ctx)});}
+  else await flushMonthlyFeedbackDraft();
+  clearTimeout(ctx.timer);monthlyFeedbackContext=null;$('monthly-analysis-dialog').close();render();
+  if($('review').open)openVisitBrief(ctx.plan.storeId,{preservePosition:true});
+  syncScheduler.wake();
+}
+async function saveMonthlyFeedback(event) {
+  event.preventDefault();await run(async()=>{
+    const ctx=monthlyFeedbackContext;if(ctx?.readOnly)throw new Error('過期草稿僅供查看，不可套用。');assertMonthlyFeedbackCurrent(ctx);await flushMonthlyFeedbackDraft();assertMonthlyFeedbackCurrent(ctx);
+    const input=monthlyFeedbackInput(),bundle=await applyMonthlyFeedback(payload.bundle,ctx.plan,input,payload.device);assertMonthlyFeedbackCurrent(ctx);
+    if(!confirm(`保存「${ctx.plan.storeName}」的 ${ctx.plan.visitMonth} 現場回報？\n已填 ${input.answers.filter(text=>text.trim()).length}／${ctx.plan.questions.length} 題。未回答保留未知。\n只新增獨立回報版本，不修改原筆記、人物關係或待辦，也不自動標記已拜訪。`))return;
+    assertMonthlyFeedbackCurrent(ctx);await persist({...payload,bundle,dirty:payload.dirty || bundle!==payload.bundle,monthlyFeedbackDraft:null},{guard:()=>assertMonthlyFeedbackCurrent(ctx)});
+    clearTimeout(ctx.timer);monthlyFeedbackContext=null;$('monthly-analysis-dialog').close();render();openVisitBrief(ctx.plan.storeId,{preservePosition:true});toast('現場回報已加密保存；Mac可連線時同步。原筆記與待辦未更改。');
+  },'monthly-feedback-error');
+}
+function openMonthlyFeedbackExport() {
+  assertMonthlyVisitIdle();
+  $('monthly-analysis-dialog').innerHTML=`<h2 id="analysis-title" data-dialog-focus tabindex="-1" autofocus>匯出給分析</h2><p>只匯出所選通路與建議拜訪月份的外部建議、門市對應及獨立現場回報；不讀取一般筆記、人物或待辦。未回報明列未知；有分歧保留各版本。</p><label>通路<select id="feedback-export-channel"><option>大樹</option><option>佑全</option></select></label><label>建議拜訪月份<input type="month" id="feedback-export-month" value="${esc(monthlyVisitSelectedMonth || monthlyVisitMonth())}"></label><label class="check"><input type="checkbox" id="feedback-export-history">包含此期被接替的分析與回報歷史</label><p id="feedback-export-error" class="error" role="alert"></p><div class="dialog-footer"><button type="button" data-close="monthly-analysis-dialog">取消</button><button type="button" data-feedback-export-download>核對範圍並下載 JSON</button></div>`;
+  openDialog($('monthly-analysis-dialog'));
+}
+function downloadMonthlyFeedbackExport() {
+  const bundle=payload.bundle,sessionKey=key;
+  const result=exportMonthlyFeedback(bundle,$('feedback-export-channel').value,$('feedback-export-month').value,{includeHistory:$('feedback-export-history').checked});
+  if(!result.stores.length)throw new Error('此範圍尚無已對應門市的分析；不產生假回報。');
+  if(!confirm(`匯出 ${result.channel}／${result.visitMonth}，${result.stores.length} 筆門市分析、${result.stores.reduce((sum,row)=>sum+row.feedback.length,0)} 份回報？\n${result.includeHistory?'包含本期修訂歷史。':'只包含未被接替來源及回報。'}\n這是明文私人JSON，只另存到你選擇的位置；不會自動傳給其他AI。未回報不算零或已執行。`))return;
+  if(!payload || payload.bundle!==bundle || key!==sessionKey || document.hidden || pendingLock || updateHolding)throw new Error('匯出期間資料已變更，請重新核對。');
+  download(JSON.stringify(result,null,2),`pharmacy-monthly-feedback-${result.channel}-${result.visitMonth}.json`,'application/json');toast('已產生分析回報下載，請核對實際存好；未自動傳送。');
+}
+$('monthly-analysis-dialog').addEventListener('submit',event=>{if(event.target.id==='monthly-feedback-form')void saveMonthlyFeedback(event);});
+$('monthly-analysis-dialog').addEventListener('input',event=>{
+  if(!monthlyFeedbackContext || !event.target.matches('#monthly-feedback-date,#monthly-feedback-notes,[data-feedback-answer]'))return;
+  const ctx=monthlyFeedbackContext;clearTimeout(ctx.timer);ctx.timer=setTimeout(()=>{void flushMonthlyFeedbackDraft().catch(error=>{if($('monthly-feedback-error'))$('monthly-feedback-error').textContent='草稿保存失敗：'+error.message+'；請保留畫面並重試。';});},350);
+});
+$('monthly-analysis-dialog').addEventListener('click',event=>{
+  if(event.target.closest('[data-feedback-close]'))void run(()=>closeMonthlyFeedback(false),'monthly-feedback-error');
+  if(event.target.closest('[data-feedback-discard]'))void run(()=>closeMonthlyFeedback(true),'monthly-feedback-error');
+});
+$('monthly-analysis-dialog').addEventListener('cancel',event=>{if(monthlyFeedbackContext){event.preventDefault();void run(()=>closeMonthlyFeedback(false),'monthly-feedback-error');}});
