@@ -695,7 +695,7 @@ function validPeopleReadingDocument(v) {
   const r=v.result;
   return v.format==='pharmacy-reviewed-reading-1'&&str(v.storeId,100)&&!!v.storeId&&str(v.basis,500000)&&ids(v.replaces)&&new Set(v.replaces).size===v.replaces.length&&(v.mode==='automatic'?v.approvedAt===undefined&&attendanceInstant(v.generatedAt):v.mode===undefined&&attendanceInstant(v.approvedAt))
     &&plain(r)&&r.format==='people-reading-1'&&r.storeId===v.storeId&&r.basis===v.basis&&ids(r.coveredRevisions)&&Array.isArray(r.people)&&r.people.length<=100&&JSON.stringify(r).length<=500000
-    &&r.people.every(p=>plain(p)&&str(p.name,100)&&!!p.name&&['local','historical','mentioned','uncertain'].includes(p.kind)&&Array.isArray(p.items)&&p.items.length>0&&p.items.length<=100&&p.items.every(i=>plain(i)&&['background','interaction','relationship','topic'].includes(i.category)&&str(i.text,20000)&&Array.isArray(i.evidence)&&i.evidence.length>0&&i.evidence.length<=100&&i.evidence.every(e=>plain(e)&&str(e.visitId,100)&&str(e.revisionId,100)&&str(e.quote,100000))));
+    &&r.people.every(p=>plain(p)&&str(p.name,100)&&!!p.name&&(p.candidateReason===undefined||!!p.candidateGroup&&supervisionText(p.candidateReason,3000))&&['local','historical','mentioned','uncertain'].includes(p.kind)&&Array.isArray(p.items)&&p.items.length>0&&p.items.length<=100&&p.items.every(i=>plain(i)&&['background','interaction','relationship','topic'].includes(i.category)&&str(i.text,20000)&&Array.isArray(i.evidence)&&i.evidence.length>0&&i.evidence.length<=100&&i.evidence.every(e=>plain(e)&&str(e.visitId,100)&&str(e.revisionId,100)&&str(e.quote,100000))));
 }
 function validPeopleRelationshipReview(v) {
   return supervisionKeys(v, ['format','readingId','personIndex','itemIndex','status','replaces','reviewedAt','reviewedBy'])
@@ -744,8 +744,60 @@ export function peopleRelationshipReviewState(bundle, readingId, personIndex, it
   const statuses=new Set(heads.map(o=>o.data.peopleRelationshipReview.status));
   return {...target,history,heads,status:statuses.size===1?[...statuses][0]:null,conflict:statuses.size>1};
 }
+// Alias decisions are independent, append-only reading links. They never rewrite
+// person entities, statements, evidence or relationship decisions.
+export function peopleAliasGroups(result) {
+  const groups=new Map();
+  for(const [index,person] of result.people.entries())if(person.candidateGroup){
+    if(!groups.has(person.candidateGroup))groups.set(person.candidateGroup,[]);
+    groups.get(person.candidateGroup).push(index);
+  }
+  return [...groups.values()].filter(indices=>indices.length>1);
+}
+function validPeopleAliasReview(v) {
+  return supervisionKeys(v,['format','readingId','personIndices','status','primaryName','replaces','reviewedAt','reviewedBy'])
+    &&v.format==='pharmacy-people-alias-review-1'&&supervisionText(v.readingId,100)
+    &&Array.isArray(v.personIndices)&&v.personIndices.length>=2&&v.personIndices.length<=100
+    &&v.personIndices.every((n,i)=>Number.isSafeInteger(n)&&n>=0&&n<100&&(!i||n>v.personIndices[i-1]))
+    &&['confirmed','rejected','pending'].includes(v.status)&&str(v.primaryName,100)
+    &&(v.status==='confirmed'?!!v.primaryName.trim():v.primaryName==='')
+    &&ids(v.replaces)&&new Set(v.replaces).size===v.replaces.length&&attendanceInstant(v.reviewedAt)&&v.reviewedBy==='Kit';
+}
+function aliasTarget(sources,review) {
+  const reading=sources.get(review.readingId)?.data.peopleReading,indices=review.personIndices;
+  if(!reading||!peopleAliasGroups(reading.result).some(g=>JSON.stringify(g)===JSON.stringify(indices)))throw new Error('同人審核缺少完整的疑似人物組。');
+  const people=indices.map(i=>reading.result.people[i]);
+  if(new Set(people.map(p=>p.name)).size!==people.length)throw new Error('疑似人物組必須保留不同原稱呼。');
+  if(review.status==='confirmed'&&!people.some(p=>p.name===review.primaryName))throw new Error('主要稱呼必須是這組原有姓名。');
+  // Group labels and list order are provider metadata, not identity. Carry a
+  // decision only when every member, interpretation and exact evidence match.
+  const members=people.map(p=>[p.name,p.kind,p.items.map(i=>[i.category,i.text,i.evidence.map(e=>[e.visitId,e.revisionId,e.quote]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)))]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)))]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  return {reading,people,indices,key:JSON.stringify([reading.storeId,members])};
+}
+function validatePeopleAliasReviews(sources,bundle) {
+  const events=new Map([...sources].filter(([,o])=>o.data.peopleAliasReview)),keys=new Map();
+  for(const [id,op] of events){
+    keys.set(id,aliasTarget(sources,op.data.peopleAliasReview).key);
+    if(JSON.stringify(JSON.parse(dec.decode(unb64(bundle.blobs[op.data.blob]||''))))!==JSON.stringify(op.data.peopleAliasReview))throw new Error('同人審核原件不符。');
+  }
+  const degrees=new Map(),children=new Map(),queue=[];
+  for(const [id,op] of events){const e=op.data.peopleAliasReview;degrees.set(id,e.replaces.length);if(!e.replaces.length)queue.push(id);
+    for(const parent of e.replaces){if(!events.has(parent)||keys.get(parent)!==keys.get(id))throw new Error('同人審核不可接替其他人物組或來源版本。');if(!children.has(parent))children.set(parent,[]);children.get(parent).push(id);}}
+  for(let i=0;i<queue.length;i++)for(const id of children.get(queue[i])||[]){degrees.set(id,degrees.get(id)-1);if(!degrees.get(id))queue.push(id);}
+  if(queue.length!==events.size)throw new Error('同人審核歷史不可循環。');
+}
+export function peopleAliasReviewState(bundle,readingId,personIndices) {
+  const sources=new Map(bundle.ops.filter(o=>o.type==='source').map(o=>[o.entity,o]));
+  const target=aliasTarget(sources,{readingId,personIndices});
+  const history=[...sources.values()].filter(o=>o.data.peopleAliasReview&&aliasTarget(sources,o.data.peopleAliasReview).key===target.key);
+  const superseded=new Set(history.flatMap(o=>o.data.peopleAliasReview.replaces)),heads=history.filter(o=>!superseded.has(o.entity));
+  const decisions=new Set(heads.map(o=>JSON.stringify([o.data.peopleAliasReview.status,o.data.peopleAliasReview.primaryName])));
+  const chosen=decisions.size===1?heads[0].data.peopleAliasReview:null;
+  return {...target,history,heads,status:chosen?.status||null,primaryName:chosen?.primaryName||'',conflict:decisions.size>1};
+}
 export function validData(type, d) {
   if (!plain(d)) return false;
+  if(d.peopleAliasReview!==undefined&&(type!=='source'||!validPeopleAliasReview(d.peopleAliasReview)||['peopleReading','peopleRelationshipReview','monthlyAnalysis','monthlyFeedback','csvExclusionEvents','csvExclusionAuditOf'].some(k=>d[k]!==undefined)))return false;
   if (d.monthlyFeedback !== undefined && (type !== 'source' || !validMonthlyFeedback(d.monthlyFeedback) || d.monthlyAnalysis !== undefined || d.peopleReading !== undefined || d.peopleRelationshipReview !== undefined)) return false;
   if (d.peopleRelationshipReview !== undefined && (type !== 'source' || !validPeopleRelationshipReview(d.peopleRelationshipReview))) return false;
   if (d.peopleReading !== undefined && (type !== 'source' || !validPeopleReadingDocument(d.peopleReading))) return false;
@@ -819,6 +871,7 @@ export function validateBundle(b) {
   for(let i=0;i<readingQueue.length;i++){readingCount++;for(const id of readingChildren.get(readingQueue[i])||[]){readingDegree.set(id,readingDegree.get(id)-1);if(!readingDegree.get(id))readingQueue.push(id);}}
   if(readingCount!==readingDocs.length)throw new Error('人物速覽歷史不可循環。');
   validatePeopleRelationshipReviews(sourceEntities, b);
+  validatePeopleAliasReviews(sourceEntities,b);
   validateSupervisorReviews(b, seen);
   validateStoreMergeProvenance(b, seen);
   validateCSVExclusionEvents(sourceEntities);

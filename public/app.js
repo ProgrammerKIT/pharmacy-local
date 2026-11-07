@@ -1,5 +1,5 @@
-import { peopleBriefSourcePlan, validatePeopleBriefResult, currentPeopleReading, peopleReadingRequest, preparePeopleReading, applyPeopleReading, planPeopleRelationshipReview, applyPeopleRelationshipReview } from './relations.js';
-import { peopleRelationshipReviewState } from './core.js';
+import { peopleBriefSourcePlan, validatePeopleBriefResult, currentPeopleReading, peopleReadingRequest, preparePeopleReading, applyPeopleReading, planPeopleRelationshipReview, applyPeopleRelationshipReview, peopleAliasLayout, planPeopleAliasReview, applyPeopleAliasReview } from './relations.js';
+import { peopleRelationshipReviewState, peopleAliasGroups, peopleAliasReviewState } from './core.js';
 import { monthlyAlertStoreIds, monthlyAnalysisSources, monthlyAnalysisForStore, prepareMonthlyAnalysis, applyMonthlyAnalysis, monthlyFeedbackState, prepareMonthlyFeedback, applyMonthlyFeedback, rememberedMonthlyAnalysisChoice, exportMonthlyFeedback, monthlyAnalysisChangeSummary } from './core.js';
 import { supervisorRelationships, supervisorReviewHistory, reviewSupervisorRelationship, planStoreSupervision, applyStoreSupervision, supervisedStores } from './core.js';
 import { setupWeeklyRecovery, prepareWeeklyRecovery, createRecoveryBackup, newMeta, checkEnvelope, derive, seal, unseal, planBackupImport, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates, buildStoreEnrichmentRequest, planStoreEnrichment, applyStoreEnrichment, readonlyHealthAudit, dataSafetySummary, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, editReminderTasks, addReminderTasks, convertReminderTasks, completeReminderTask, reminderTaskHistory, searchStoreVisitText, scanInsightChanges, storeInsightDisplayForStore, storeInsightEvidenceForEntry, insightReviewForEntry, insightSharedReviewForEntry, storeInsightReviewHistory, planInsightReview, applyInsightReview, planStoreInsights, applyStoreInsights, planStoreInsightRelations, applyStoreInsightRelations, buildStoreInsightsSource, planStoreMerge, applyStoreMerge } from './core.js';
@@ -1896,6 +1896,34 @@ async function changePeopleRelationshipReview(button) {
   if(!payload||key!==sessionKey||pendingLock||document.hidden)return;
   render();openVisitBrief(storeId,{preservePosition:true});toast(`這條關係已保存為「${PEOPLE_RELATION_LABELS[plan.status]}」；原文與其他關係保持。`);
 }
+const PEOPLE_ALIAS_LABELS={confirmed:'同一人',rejected:'不同人',pending:'待確認',unreviewed:'尚未審核',conflict:'判斷不一致'};
+function peopleAliasReviewHTML(storeId,view,indices,state) {
+  const people=indices.map(i=>view.result.people[i]),status=state?.conflict?'conflict':state?.status||'unreviewed';
+  const current=['success','automatic'].includes(view.state)&&view.result.basis===view.basis&&!!view.readingId;
+  const reasons=[...new Set(people.map(p=>p.candidateReason).filter(Boolean))];
+  return `<details class="people-alias-review" data-alias-review><summary>${status==='confirmed'?'同人連結 · 查看或撤回':'核對是否同一人'} · ${PEOPLE_ALIAS_LABELS[status]}</summary><p>${people.map(p=>esc(p.name)).join('／')}</p>${reasons.length?reasons.map(t=>'<p>'+esc(t)+'</p>').join(''):'<p class="muted">舊速覽未另列同人理由，請核對以下兩個稱呼的原句；同音或字形相似本身不是同人證據。</p>'}${people.map(p=>`<details><summary>${esc(p.name)} · 原句與來源</summary>${peopleEvidenceHTML(p.items.flatMap(i=>i.evidence))}</details>`).join('')}<p>只整合本店這組人物的速覽，不修改原文或正式人物；不連帶確認任何人物關係。可改為「不同人」或「待確認」恢復分開顯示，歷史保留。</p>${state?.conflict?'<p class="error">不同裝置的同人判斷不一致，保留分開顯示；請重新核對。</p>':''}${current?`<label>合併後的主要稱呼<select data-alias-primary><option value="">請選擇，另一稱呼仍保留</option>${people.map(p=>`<option value="${esc(p.name)}" ${state?.primaryName===p.name?'selected':''}>${esc(p.name)}</option>`).join('')}</select></label><div class="people-relation-options" role="group" aria-label="同人判斷">${['confirmed','rejected','pending'].map(s=>`<button type="button" data-reading-alias-status="${s}" data-reading-alias-reading="${esc(view.readingId)}" data-reading-alias-indices="${esc(JSON.stringify(indices))}">${PEOPLE_ALIAS_LABELS[s]}</button>`).join('')}</div>`:'<p class="muted">速覽或來源待更新，暫不保存新判斷；舊判斷完整保留。</p>'}</details>`;
+}
+function peopleAliasHistoryHTML(storeId,view) {
+  const readings=new Map(payload.bundle.ops.filter(o=>o.type==='source'&&o.data.peopleReading?.storeId===storeId).map(o=>[o.entity,o.data.peopleReading]));
+  const events=payload.bundle.ops.filter(o=>o.type==='source'&&readings.has(o.data.peopleAliasReview?.readingId));
+  if(!events.length)return '';
+  const rejected=peopleAliasGroups(view.result).filter(indices=>peopleAliasReviewState(payload.bundle,view.readingId,indices).status==='rejected');
+  return `<details class="people-alias-history"><summary>同人審核歷史 · ${events.length} 筆</summary>${rejected.map(indices=>peopleAliasReviewHTML(storeId,view,indices,peopleAliasReviewState(payload.bundle,view.readingId,indices))).join('')}${events.map(o=>{const e=o.data.peopleAliasReview,r=readings.get(e.readingId);return `<details><summary>${esc(e.personIndices.map(i=>r.result.people[i].name).join('／'))} · ${PEOPLE_ALIAS_LABELS[e.status]} · ${esc(dateText(e.reviewedAt))}</summary><p>主要稱呼：${esc(e.primaryName||'未合併')}。當時的判斷，非所有版本的同人結論。</p><small>審核 ${esc(o.entity)} · 速覽 ${esc(e.readingId)}</small>${e.personIndices.map(i=>peopleEvidenceHTML(r.result.people[i].items.flatMap(item=>item.evidence))).join('')}</details>`;}).join('')}</details>`;
+}
+async function changePeopleAliasReview(button) {
+  const storeId=$('review').dataset.singleStoreId;assertInsightReviewReady(storeId);
+  const sessionKey=key,sessionMeta=meta,before=payload,epoch=peopleReadingEpoch;
+  const status=button.dataset.readingAliasStatus,primary=status==='confirmed'?button.closest('[data-alias-review]').querySelector('[data-alias-primary]').value:'';
+  const plan=planPeopleAliasReview(payload.bundle,button.dataset.readingAliasReading,JSON.parse(button.dataset.readingAliasIndices),status,primary);
+  if(plan.storeId!==storeId)throw new Error('請回到對應門市核對。');if(!plan.changed)return;
+  const label=status==='confirmed'?primary+'（'+plan.people.filter(p=>p.name!==primary).map(p=>p.name).join('、')+'）':plan.people.map(p=>p.name).join('／');
+  if(!confirm(`${plan.storeName}\n${label}\n\n${PEOPLE_ALIAS_LABELS[plan.beforeStatus]} → ${PEOPLE_ALIAS_LABELS[status]}\n\n${status==='confirmed'?'整合速覽顯示，保留兩個原稱呼。':'恢復分開顯示。'}\n只保存可撤回的同人連結與歷史；不改正式人物、原文、任何關係判斷、待辦或其他門市。\n確認保存？`))return;
+  const guard=()=>{assertInsightReviewReady(storeId);if(payload!==before||key!==sessionKey||meta!==sessionMeta||peopleReadingEpoch!==epoch)throw new Error('資料或工作階段已變更，請重新核對；尚未保存。');};
+  guard();const bundle=await applyPeopleAliasReview(payload.bundle,plan,payload.device);guard();
+  await persist({...payload,bundle,dirty:true},{guard});
+  if(!payload||key!==sessionKey||pendingLock||document.hidden)return;
+  render();openVisitBrief(storeId,{preservePosition:true});toast(`同人判斷已保存為「${PEOPLE_ALIAS_LABELS[status]}」；原文與人物關係判斷保留。`);
+}
 function peopleReadingHTML(storeId) {
   const view=peopleReadingViews.get(storeId),data=view?.result;
   const state=view?.state==='automatic'&&data?.basis===view.basis?'AI 已整理至目前筆記版本（尚未人工核對）':view?.state==='success'&&data?.basis===view.basis?'已核對至目前筆記版本':view?.state==='conflict'?'有不同整理版本，請重新核對':view?.state==='stale'?'有新來源，待重新整理':'尚未整理';
@@ -1903,22 +1931,31 @@ function peopleReadingHTML(storeId) {
 
   const history=view?.history?.length?`<details><summary>人物速覽歷史 · ${view.history.length} 份</summary>${view.history.map(h=>`<details><summary>${h.peopleReading.mode==='automatic'?'AI 整理':'人工核對'} · ${esc(dateText(h.peopleReading.approvedAt||h.peopleReading.generatedAt))} · ${esc(h.id)}</summary><pre>${esc(JSON.stringify(h.peopleReading.result,null,2))}</pre></details>`).join('')}</details>`:'';
   if(!data)return `<h2>到店前先掃這一區</h2><p class="people-reading-status" role="status">${esc(state)}</p>${actions}${payload?.bundle?peopleRelationshipHistoryHTML(storeId):''}${history}`;
-  const names=data.people.map(p=>p.name),sameGroup=name=>{const person=data.people.find(p=>p.name===name);return !!person?.candidateGroup&&data.people.some(p=>p.name!==name&&p.candidateGroup===person.candidateGroup);};
-  const card=(person,index)=>{
+  const aliasState=indices=>view.readingId&&payload?.bundle?peopleAliasReviewState(payload.bundle,view.readingId,indices):null;
+  const units=peopleAliasLayout(data,aliasState);
+  const card=(person,index,indices=[index],merged=false,same=false)=>{
+    const members=indices.map(i=>({person:data.people[i],index:i}));
+    const label=merged?person.name+'（'+members.filter(m=>m.person.name!==person.name).map(m=>m.person.name).join('、')+'）':person.name;
     const memory=(person.items.find(i=>i.category==='interaction')||person.items.find(i=>i.category==='background')||person.items[0])?.text||'';
     const groups=[['background','背景與角色'],['interaction','互動記憶'],['relationship','關係紀錄'],['topic','可接續話題']].map(([category,title])=>{
-      const items=person.items.filter(item=>item.category===category);if(!items.length)return '';
-      return `<h4>${title}</h4>${items.map(item=>category==='relationship'&&view.readingId?peopleRelationshipHTML(storeId,view,person,index,item,person.items.indexOf(item)):`<p>${esc(item.text)}</p>${peopleEvidenceHTML(item.evidence)}`).join('')}`;
+      const items=members.flatMap(m=>m.person.items.map((item,itemIndex)=>({...m,item,itemIndex}))).filter(m=>m.item.category===category);if(!items.length)return '';
+      return `<h4>${title}</h4>${items.map(m=>`${merged?'<small class="people-alias-origin">原稱呼：'+esc(m.person.name)+'</small>':''}${category==='relationship'&&view.readingId?peopleRelationshipHTML(storeId,view,m.person,m.index,m.item,m.itemIndex):'<p>'+esc(m.item.text)+'</p>'+peopleEvidenceHTML(m.item.evidence)}`).join('')}`;
     }).join('');
-    return `<details class="people-reading-person${sameGroup(person.name)?' people-reading-same':''}" data-reading-person="${esc(person.name)}" data-reading-key="${index}"><summary><strong>${esc(person.name)}</strong><span>${esc(memory)}</span></summary><div>${sameGroup(person.name)?'<p class="muted">同色為疑似同人，資訊仍分開；未經明確確認不合併姓名或人工判斷。</p>':''}${groups}<div class="people-formal-relations"></div></div></details>`;
+    return `<details class="people-reading-person${same?' people-reading-same':''}" data-reading-person="${esc(person.name)}" data-reading-aliases="${esc(JSON.stringify(members.map(m=>m.person.name)))}" data-reading-key="${index}"><summary><strong>${esc(label)}</strong><span>${esc(memory)}</span></summary><div>${groups}${merged?peopleAliasReviewHTML(storeId,view,indices,aliasState(indices)):''}<div class="people-formal-relations"></div></div></details>`;
   };
-  const group=(kind,title)=>{const people=data.people.map((p,i)=>({p,i})).filter(({p})=>(p.kind||'uncertain')===kind);return people.length?`<details class="people-reading-tier"><summary>${title} · ${people.length}</summary>${people.map(({p,i})=>card(p,i)).join('')}</details>`:'';};
-  return `<h2>到店前先掃這一區</h2><span data-insight-change-slot="${esc(storeId)}">${insightChangeBadgeHTML(storeId)}</span><p class="people-reading-status" role="status">${esc(state)}${view.generatedAt?' · '+esc(dateText(view.generatedAt)):''}</p>${(!['success','automatic'].includes(view.state)||data.basis!==view.basis)?'<p class="muted">目前保留前次速覽，以完整原文為準。</p>':''}${data.people.filter(p=>p.kind==='local').length?data.people.map((p,i)=>p.kind==='local'?card(p,i):'').join(''):'<p class="muted">未能安全辨識本店人物；完整原文保留在下方。</p>'}${group('historical','歷史人物')}${group('mentioned','其他門市提及')}${group('uncertain','稱呼待釐清')}<p id="people-relation-error" class="error" role="alert"></p>${actions}${view.readingId?peopleRelationshipHistoryHTML(storeId):''}${history}<details><summary>閱讀來源與限制</summary><p>${view.state==='automatic'?'Codex 自動整理，尚未人工核對；':'經人工核對的閱讀整理；'}可回查原句。相同稱呼只供閱讀分組，不代表人物已合併；整理不更改原文、日期、關係審核或待辦。沒有新來源不反覆分析。關係原文不等於已人工確認。逐筆「確定／否定／待確認」只作用於當前人物下的這條具體說法；不連帶確認同名人物或跨店關係。既有關係卡的判斷獨立保留，不以相似姓名或引句自動互相覆蓋；整份速覽核對不代替關係核實。</p></details>`;
+  const unitHTML=unit=>{
+    if(!unit.group)return card(data.people[unit.indices[0]],unit.indices[0]);
+    if(unit.state?.status==='confirmed'&&!unit.state.conflict){const primary=unit.indices.find(i=>data.people[i].name===unit.state.primaryName);return card(data.people[primary],primary,unit.indices,true,false);}
+    return `<section class="people-alias-candidate" aria-label="疑似同人，尚未合併">${unit.indices.map(i=>card(data.people[i],i,[i],false,true)).join('')}${peopleAliasReviewHTML(storeId,view,unit.indices,unit.state)}</section>`;
+  };
+  const group=(kind,title)=>{const selected=units.filter(u=>u.kind===kind);return selected.length?`<details class="people-reading-tier"><summary>${title} · ${selected.reduce((n,u)=>n+u.indices.length,0)}</summary>${selected.map(unitHTML).join('')}</details>`:'';};
+
+  return `<h2>到店前先掃這一區</h2><span data-insight-change-slot="${esc(storeId)}">${insightChangeBadgeHTML(storeId)}</span><p class="people-reading-status" role="status">${esc(state)}${view.generatedAt?' · '+esc(dateText(view.generatedAt)):''}</p>${(!['success','automatic'].includes(view.state)||data.basis!==view.basis)?'<p class="muted">目前保留前次速覽，以完整原文為準。</p>':''}${units.some(u=>u.kind==='local')?units.filter(u=>u.kind==='local').map(unitHTML).join(''):'<p class="muted">未能安全辨識本店人物；完整原文保留在下方。</p>'}${group('historical','歷史人物')}${group('mentioned','其他門市提及')}${group('uncertain','稱呼待釐清')}<p id="people-relation-error" class="error" role="alert"></p>${actions}${view.readingId?peopleAliasHistoryHTML(storeId,view):''}${view.readingId?peopleRelationshipHistoryHTML(storeId):''}${history}<details><summary>閱讀來源與限制</summary><p>${view.state==='automatic'?'Codex 自動整理，尚未人工核對；':'經人工核對的閱讀整理；'}可回查原句。紫色相鄰卡是疑似同人；只有你逐組確認後才合併速覽顯示，保留原稱呼、原句與可撤回的審核歷史。正式人物與關係圖身分不會被自動改寫；整理不更改原文、日期、關係審核或待辦。新版同人檢視規則首次啟用會補整理；之後沒有新來源不反覆分析。關係原文不等於已人工確認。逐筆「確定／否定／待確認」只作用於當前人物下的這條具體說法；不連帶確認同名人物或跨店關係。既有關係卡的判斷獨立保留，不以相似姓名或引句自動互相覆蓋；整份速覽核對不代替關係核實。</p></details>`;
 }
 function refreshPeopleReadingPanel(storeId) {
   if(document.hidden||pendingLock||inlineTextContext||editorContext||singleStoreContext||!$('review')?.open||$('review').dataset.singleStoreId!==storeId)return;
   const slot=$('people-reading-panel');if(!slot)return;
-  const snapshot=peopleReadingViews.get(storeId);const signature=JSON.stringify([snapshot?.state,snapshot?.readingId,snapshot?.basis,snapshot?.generatedAt,snapshot?.result,snapshot?.progress,payload?.bundle.ops.filter(o=>o.data.peopleRelationshipReview)]);if(slot.dataset.readingSignature===signature)return;
+  const snapshot=peopleReadingViews.get(storeId);const signature=JSON.stringify([snapshot?.state,snapshot?.readingId,snapshot?.basis,snapshot?.generatedAt,snapshot?.result,snapshot?.progress,payload?.bundle.ops.filter(o=>o.data.peopleRelationshipReview||o.data.peopleAliasReview)]);if(slot.dataset.readingSignature===signature)return;
   // Preserve open people/evidence and source focus; never rerender the editor.
   const open=[...slot.querySelectorAll('[data-reading-key][open]')].map(n=>n.dataset.readingPerson);
   const tiers=[...slot.querySelectorAll('.people-reading-tier[open]')].map(n=>n.querySelector('summary')?.textContent);
@@ -1935,7 +1972,7 @@ function refreshPeopleReadingPanel(storeId) {
     for(const card of formal.querySelectorAll('article.store-insight-card')) {
       if(card.closest('.insight-review-archive'))continue;
       const text=card.querySelector('summary,h3')?.textContent||'';
-      const target=[...slot.querySelectorAll('[data-reading-person]')].find(n=>n.dataset.readingPerson&&text.includes(n.dataset.readingPerson));
+      const target=[...slot.querySelectorAll('[data-reading-person]')].find(n=>(JSON.parse(n.dataset.readingAliases||'[]')).some(name=>text.includes(name)));
       if(target){card.dataset.readingFormalCard='people-reading-formal-home';target.querySelector('.people-formal-relations').append(card);}
     }
   }
@@ -4294,6 +4331,7 @@ $('monthly-analysis-dialog').addEventListener('close',()=>{analysisImport=null;}
 $('monthly-analysis-dialog').addEventListener('change', event=>{ if(event.target.matches('[data-analysis-choice]') && analysisImport){delete analysisImport.finalChoices;$('analysis-final').innerHTML='';} if(event.target.matches('#analysis-files,#analysis-sales,#analysis-visit')){analysisImport=null;$('analysis-matches').innerHTML='';} });
 
 $('review').addEventListener('click',event=>{
+ const aliasButton=event.target.closest?.('[data-reading-alias-status]');if(aliasButton){void run(()=>changePeopleAliasReview(aliasButton),'people-relation-error');return;}
  const relationButton=event.target.closest?.('[data-reading-relation-status]');if(relationButton){void run(()=>changePeopleRelationshipReview(relationButton),'people-relation-error');return;}
  const approveButton=event.target.closest?.('[data-reading-approve]');if(approveButton){const storeId=approveButton.dataset.readingApprove,doc=currentPeopleReading(payload.bundle,storeId).current?.peopleReading;if(doc){const text=JSON.stringify({format:'pharmacy-people-review-1',vaultId:payload.bundle.vaultId,result:doc.result});void run(()=>previewPeopleReadingFile({size:new TextEncoder().encode(text).length,text:async()=>text},storeId));}return;}
  const exportButton=event.target.closest?.('[data-reading-export]');if(exportButton){void run(()=>exportPeopleReading(exportButton.dataset.readingExport));return;}

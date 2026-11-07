@@ -1,4 +1,4 @@
-import { project, validateBundle, revision, uuid, hashBytes, b64, MAX_BYTES, peopleRelationshipReviewState } from './core.js';
+import { project, validateBundle, revision, uuid, hashBytes, b64, MAX_BYTES, peopleRelationshipReviewState, peopleAliasReviewState, peopleAliasGroups } from './core.js';
 // All matching runs on the device. Labels describe text evidence, never clinical advice.
 export function storeIdentityPending(store) {
   return !!store && (store.csvIdentityPending === true || !!store.conflict && (store.heads || []).some(h => h.data.csvIdentityPending === true));
@@ -426,6 +426,7 @@ export function groupCSVNotes(visits) {
 // Update state is separate from the analysis provider. A timer completing is
 // never evidence that all current source versions were actually analyzed.
 export const PEOPLE_BRIEF_FORMAT = 'people-reading-1';
+export const PEOPLE_ALIAS_POLICY = 'context-alias-1';
 export function peopleBriefSourcePlan(storeId, visits, stores) {
   const store=stores.find(s=>s.id===storeId);
   if (!safeRegionalStore(store)) throw new Error('門市身分或版本尚待核對，未更新人物速覽。');
@@ -434,7 +435,7 @@ export function peopleBriefSourcePlan(storeId, visits, stores) {
   const sources=selected.map(v=>({visitId:v.id,revisionId:v.heads[0].id,text:String(v.text||''),source:v.source||'',date:v.date||''}));
   // Include the store head: review/relationship changes must invalidate a view
 // even if visit text did not change. No source date is inferred from op.at.
-  const basis=JSON.stringify([PEOPLE_BRIEF_FORMAT,store.id,(store.heads||[]).map(h=>h.id).sort(),sources]);
+  const basis=JSON.stringify([PEOPLE_BRIEF_FORMAT,store.id,(store.heads||[]).map(h=>h.id).sort(),sources,PEOPLE_ALIAS_POLICY]);
   return {format:PEOPLE_BRIEF_FORMAT,storeId,basis,sources};
 }
 export function validatePeopleBriefResult(plan, result) {
@@ -445,6 +446,7 @@ export function validatePeopleBriefResult(plan, result) {
   for (const person of result.people) {
     if (!person || typeof person.name!=='string'||!person.name.trim()||!Array.isArray(person.items)||!person.items.length||(person.kind!==undefined&&!['local','historical','mentioned','uncertain'].includes(person.kind))) throw new Error('人物速覽格式不完整。');
     if(person.name.length>100||!plan.sources.some(s=>s.text.includes(person.name))||person.items.length>100||person.candidateGroup!==undefined&&(typeof person.candidateGroup!=='string'||person.candidateGroup.length>100))throw new Error('人物稱呼或疑似同人分組不完整。');
+    if(person.candidateReason!==undefined&&(!person.candidateGroup||typeof person.candidateReason!=='string'||!person.candidateReason.trim()||person.candidateReason.length>3000))throw new Error('疑似同人理由不完整。');
     for (const item of person.items) {
       if(!item||typeof item!=='object'||Object.keys(item).some(k=>!['category','text','evidence'].includes(k))||item.category!==undefined&&!['background','interaction','relationship','topic'].includes(item.category))throw new Error('整理不可新增人工判斷或其他欄位。');
       if (typeof item.text!=='string'||!item.text.trim()||!Array.isArray(item.evidence)||!item.evidence.length) throw new Error('人物整理缺少原文依據。');
@@ -459,7 +461,7 @@ export function validatePeopleBriefResult(plan, result) {
     }
   }
   // Identity merges and review decisions are never accepted from an analyzer.
-  if (Object.keys(result).some(k=>!['format','storeId','basis','coveredRevisions','people'].includes(k)) || result.people.some(p=>Object.keys(p).some(k=>!['name','items','kind','candidateGroup'].includes(k)))) throw new Error('分析結果不可變更人物身分或人工判斷。');
+  if (Object.keys(result).some(k=>!['format','storeId','basis','coveredRevisions','people'].includes(k)) || result.people.some(p=>Object.keys(p).some(k=>!['name','items','kind','candidateGroup','candidateReason'].includes(k)))) throw new Error('分析結果不可變更人物身分或人工判斷。');
   return structuredClone(result);
 }
 
@@ -471,13 +473,27 @@ export function currentPeopleReading(bundle,storeId) {
   const heads=history.filter(s=>!superseded.has(s.id));
   return {history,heads,current:heads.length===1?heads[0]:null,conflict:heads.length>1};
 }
+export function peopleAliasLayout(result,reviewFor=()=>null) {
+  const ranks=['local','historical','mentioned','uncertain'],used=new Set(),units=[];
+  const groups=peopleAliasGroups(result);
+  for(let index=0;index<result.people.length;index++){
+    if(used.has(index))continue;
+    const group=groups.find(g=>g.includes(index)),state=group?reviewFor(group):null;
+    const indices=group&&state?.status!=='rejected'?group:[index];
+    indices.forEach(i=>used.add(i));
+    // Presentation only: grouping never changes a person's original kind.
+    const kind=ranks.find(k=>indices.some(i=>(result.people[i].kind||'uncertain')===k));
+    units.push({indices,kind,state,group:indices.length>1});
+  }
+  return units;
+}
 export function peopleReadingRequest(bundle,storeId) {
   const records=project(bundle),store=records.find(r=>r.type==='store'&&r.id===storeId);
   const plan=peopleBriefSourcePlan(storeId,records.filter(r=>r.type==='visit'),records.filter(r=>r.type==='store'));
   if(!plan.sources.length)throw new Error('本店尚無可整理的拜訪原文。');
   if(plan.sources.length>100||plan.sources.reduce((n,s)=>n+s.text.length,0)>100000)throw new Error('單店來源過多，請先分批核對；未截斷內容。');
   return {format:'pharmacy-people-request-1',vaultId:bundle.vaultId,store:{id:storeId,name:store.name},plan,
-    instructions:'僅整理本店人物閱讀速覽；不同稱呼不合併、疑似同人僅填同一candidateGroup。區分本店local、歷史historical、跨店mentioned、稱呼不明uncertain。每項category為background/interaction/relationship/topic，text保留疑問與不確定，evidence逐字引用visitId、revisionId、quote；不推定角色、年份或固定性格，不改人工判斷或待辦。完整核對來源但不必每項都形成摘要。回傳 {format:pharmacy-people-review-1,vaultId,result:{format:people-reading-1,storeId,basis,coveredRevisions,people:[{name,kind,candidateGroup可省略,items:[{category,text,evidence}]}]}}，basis與版本照原資料，不增加其他欄位。'};
+    instructions:'僅整理本店人物閱讀速覽；逐份完整閱讀原文。主動檢視字形相近、同音或異寫稱呼，但姓名相似本身不足以判定同人；必須有角色、互動或明確敘事延續等原句支持且無明確矛盾，才把各原稱呼分開保留並填同一candidateGroup及candidateReason（說明具體脈絡與仍未確定之處）。只有姓名相似或多人歧義就不分組、不猜填；沒有候選也正常。不得跨店憑同名或同區合併，不輸出人工確認或正式合併。區分本店local、歷史historical、跨店mentioned、稱呼不明uncertain，不為了排版改分類。每項category為background/interaction/relationship/topic，text保留疑問與不確定，evidence逐字引用visitId、revisionId、quote；不推定角色、年份或固定性格，不改人工判斷或待辦。完整核對來源但不必每項都形成摘要。回傳 {format:pharmacy-people-review-1,vaultId,result:{format:people-reading-1,storeId,basis,coveredRevisions,people:[{name,kind,candidateGroup可省略,candidateReason可省略,items:[{category,text,evidence}]}]}}，basis與版本照原資料，不增加其他欄位。'};
 }
 export function preparePeopleReading(bundle,input) {
   validateBundle(bundle);
@@ -521,5 +537,32 @@ export async function applyPeopleRelationshipReview(bundle, expected, device, re
   const op=revision('source',uuid(),{file:'人物關係審核.json',list:'逐筆人物關係審核',blob,batch:uuid(),rows:1,headers:[],encoding:'UTF-8',delimiter:'',peopleRelationshipReview:event},[],device);
   op.at=reviewedAt;next.ops.push(op);
   if(new TextEncoder().encode(JSON.stringify(next)).length>MAX_BYTES)throw new Error('資料已達24 MB上限；舊歷史完整保留，本次尚未保存。');
+  return validateBundle(next);
+}
+
+export function planPeopleAliasReview(bundle,readingId,personIndices,status,primaryName='') {
+  validateBundle(bundle);
+  if(!['confirmed','rejected','pending'].includes(status))throw new Error('請選擇同一人、不同人或待確認。');
+  const state=peopleAliasReviewState(bundle,readingId,personIndices),storeId=state.reading.storeId;
+  const saved=currentPeopleReading(bundle,storeId),request=peopleReadingRequest(bundle,storeId);
+  if(saved.conflict||saved.current?.id!==readingId||state.reading.basis!==request.plan.basis)throw new Error('速覽或來源已變更，請重新整理核對；原判斷保留。');
+  if(status==='confirmed'&&!state.people.some(p=>p.name===primaryName)||status!=='confirmed'&&primaryName!=='')throw new Error('請選擇這組人物的主要稱呼。');
+  return {vaultId:bundle.vaultId,storeId,storeName:request.store.name,readingId,personIndices:personIndices.slice(),status,primaryName,
+    beforeStatus:state.conflict?'conflict':state.status||'unreviewed',beforePrimaryName:state.primaryName,
+    people:structuredClone(state.people),basis:request.plan.basis,replaces:state.heads.map(o=>o.entity).sort(),
+    changed:state.conflict||state.status!==status||state.primaryName!==primaryName};
+}
+export async function applyPeopleAliasReview(bundle,expected,device,reviewedAt=new Date().toISOString()) {
+  if(!expected)throw new Error('缺少同人審核預覽。');
+  const plan=planPeopleAliasReview(bundle,expected.readingId,expected.personIndices,expected.status,expected.primaryName);
+  if(JSON.stringify(plan)!==JSON.stringify(expected))throw new Error('核對期間人物、來源或判斷已變更，請重新核對。');
+  if(!plan.changed)return bundle;
+  if(typeof device!=='string'||!device.trim()||device.length>100||!Number.isFinite(Date.parse(reviewedAt)))throw new Error('裝置或確認時間不完整。');
+  const event={format:'pharmacy-people-alias-review-1',readingId:plan.readingId,personIndices:plan.personIndices,status:plan.status,primaryName:plan.primaryName,replaces:plan.replaces,reviewedAt,reviewedBy:'Kit'};
+  const next=structuredClone(bundle),bytes=new TextEncoder().encode(JSON.stringify(event)),blob=await hashBytes(bytes);
+  next.schema=Math.max(2,next.schema);next.blobs[blob]=b64(bytes);
+  const op=revision('source',uuid(),{file:'人物同人審核.json',list:'人物別名審核',blob,batch:uuid(),rows:1,headers:[],encoding:'UTF-8',delimiter:'',peopleAliasReview:event},[],device);
+  op.at=reviewedAt;next.ops.push(op);
+  if(new TextEncoder().encode(JSON.stringify(next)).length>MAX_BYTES)throw new Error('資料已達24 MB上限；原歷史完整保留，本次尚未保存。');
   return validateBundle(next);
 }
