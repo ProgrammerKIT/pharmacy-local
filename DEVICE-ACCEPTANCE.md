@@ -641,3 +641,12 @@ node test/qa/backup-restore-browser.mjs
 已完成虛構Chrome桌面／393×852隔離操作：候選紫卡跨分類相鄰、取消、主要稱呼與確認合併、各原稱呼及來源保留、關係判斷獨立、待確認撤回、全新分頁重開保留兩筆歷史。控制工具曾在原生確認窗中斷，改用該隔離視窗的原生確認完成並新分頁讀回；未操作正式視窗。
 
 發布後待使用者裝置驗收：Mac和iPhone實際版本、相鄰紫卡、展開依據及主要稱呼選擇、保存／同步／重開、撤回與歷史。不可替使用者確認真實同人；正式資料及實體iPhone均未在本輪套用。
+
+
+## v1.5.96 現場回報結束確認拜訪日（本機候選，2026-11-07）
+
+- Codex內建瀏覽器、獨立127.0.0.1空白origin與虛構庫；所有Mac／同步API封鎖，沒有正式資料或配對。桌面1280×720、手機尺寸393×852，未冒稱實體iPhone／Safari測試。
+- 實際用App「虛構青禾店 → 填寫現場結果 → 核對並保存現場回報」：首次最後確認不勾；返回修改保留0與未知，唯讀audit為0正式新增。再不勾保存，回報1份、人工拜訪0、本月完成0、最近拜訪空。再次保存相同回報並親自勾選今天，新增人工確認1份，回報不重複，最近拜訪更新為今天、本月已訪1/1。手機尺寸再次未勾保存，來源數保持2、完成仍1。
+- 取消、勾選後的唯讀稽核：originalOpsPreserved、notesAndStoreHeadsUnchanged、peopleBasisUnchanged、savedPeopleReadingStillCurrent、sourceHashesMatch均true。沒有新增／改寫原筆記、門市head、人物、關係或待辦。重新載入後狀態保留。
+- 使用App同origin虛構加密庫在記憶體seal→unseal→planBackupImport(null,opened)：encryptionRoundTrip=true，預覽addedMarks=1／addedDays=1；未執行還原或建立正式空庫。完整980項回歸測試亦覆蓋加密／merge及相關版本鏈保護。
+- 仍待正式授權與發布後裝置驗收：Mac／iPhone實際版本均v1.5.96、用真實回報最後確認今天與否、保存／同步／重開顯示一致。真實勾選只能由Kit依實際拜訪做決定；不可為驗收虛構正式拜訪。

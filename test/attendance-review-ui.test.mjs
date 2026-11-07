@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import { emptyBundle, revision, project, validateBundle, planBackupImport, makeVisitAttendance, attendanceTaipeiDate, diffTextSegments } from '../public/core.js';
+import { emptyBundle, revision, project, validateBundle, planBackupImport, makeVisitAttendance, visitAttendanceEvidence, attendanceTaipeiDate, diffTextSegments } from '../public/core.js';
 
 // Real handlers with synthetic records and an in-memory persistence boundary.
 // No customer vault, server, filesystem backup, or browser storage is opened.
@@ -29,7 +29,7 @@ function harness() {
   };
   const c = vm.createContext({ syncInProgress: false, autoFetching: false, syncEpoch: 0, localSaveState: 'saved', renderDataSafetyEntry() {},
     syncScheduler: { request() {}, wake() {}, pause() {}, reset() {}, confirmed() {}, failed() {} },
-     $, esc, Date: Clock, structuredClone, project, revision, validateBundle, planBackupImport, makeVisitAttendance, attendanceTaipeiDate, diffTextSegments,
+     $, esc, Date: Clock, structuredClone, project, revision, validateBundle, planBackupImport, makeVisitAttendance, visitAttendanceEvidence, attendanceTaipeiDate, diffTextSegments,
     payload: { bundle: f.bundle, device: 'synthetic-device', dirty: false, inlineTextDraft: { id: f.visit.entity, text: f.visit.data.text } }, key: {},
     document: { hidden: false }, pendingLock: false, attendancePrompt: null, draftSaveChain: Promise.resolve(), inlineDraftSaveChain: Promise.resolve(), reminderDraftSaveChain: Promise.resolve(),
     quickTextContext: { id: f.visit.entity, parents: [f.visit.id], before: f.visit.data.text, after: f.visit.data.text, step: 'confirm' }, inlineTextContext: { id: f.visit.entity },
