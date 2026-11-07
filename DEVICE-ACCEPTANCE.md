@@ -650,3 +650,11 @@ node test/qa/backup-restore-browser.mjs
 - 取消、勾選後的唯讀稽核：originalOpsPreserved、notesAndStoreHeadsUnchanged、peopleBasisUnchanged、savedPeopleReadingStillCurrent、sourceHashesMatch均true。沒有新增／改寫原筆記、門市head、人物、關係或待辦。重新載入後狀態保留。
 - 使用App同origin虛構加密庫在記憶體seal→unseal→planBackupImport(null,opened)：encryptionRoundTrip=true，預覽addedMarks=1／addedDays=1；未執行還原或建立正式空庫。完整980項回歸測試亦覆蓋加密／merge及相關版本鏈保護。
 - 仍待正式授權與發布後裝置驗收：Mac／iPhone實際版本均v1.5.96、用真實回報最後確認今天與否、保存／同步／重開顯示一致。真實勾選只能由Kit依實際拜訪做決定；不可為驗收虛構正式拜訪。
+
+
+## v1.5.97 同店提醒只顯示一次（本機候選，2026-11-07）
+
+- 使用獨立127.0.0.1虛構庫，所有正式Mac API封鎖。一般列表、搜尋指定虛構門市後展開3筆，僅第一張顯示共用待辦2項，保留完成勾選與逐項修改；後兩張不顯示共用提醒。
+- Codex內建瀏覽器桌面及393×852手機尺寸實際檢查：三筆原文均有直接修改輸入區，各自下次跟進完整；未調整原有固定手機畫布。只屬尺寸驗收，非實體iPhone／Safari鍵盤驗收。
+- 開啟第一項待辦修改，正確定位該門市及原待辦；未變更文字並關閉。唯讀核對originalOpsPreserved、notesAndStoreHeadsUnchanged、peopleBasisUnchanged、savedPeopleReadingStillCurrent、sourceHashesMatch均true，newSourceCount=0。
+- 未操作正式App或資料；正式發布與Mac／iPhone版本仍待另外授權及核對，不替使用者勾選任何正式任務或拜訪。
