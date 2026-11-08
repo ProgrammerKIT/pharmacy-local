@@ -2428,14 +2428,18 @@ export function analysisChannel(value) {
   return '';
 }
 export function analysisStoreChannel(store) {
-  const field = analysisChannel(store.channel), name = String(store.name || '').normalize('NFKC').replace(/^(?:[A-Za-z]?\d+)[\s.-]*/, '');
-  const prefix = /^(大樹|佑全)/.exec(name)?.[1] || '';
+  // Existing stores include Health Life under the You Chuan group. Recognize
+  // that store identity without rewriting its channel, name or source data.
+  // The external file channel remains the existing strict 大樹／佑全 contract.
+  const field = analysisChannel(store.channel) || (/^健康人生(?:藥局)?$/.test(String(store.channel || '').normalize('NFKC').replace(/\s/g, '')) ? '佑全' : '');
+  const name = String(store.name || '').normalize('NFKC').trim().replace(/^(?:[A-Za-z]?\d+)[\s.-]*/, '');
+  const prefix = /^(大樹|佑全)/.exec(name)?.[1] || (/^健康人生藥局(?=[\s\-－]|$)/.test(name) ? '佑全' : '');
   return field && prefix && field !== prefix ? '' : field || prefix;
 }
 export function analysisName(value) {
   return String(value || '').normalize('NFKC').trim().replace(/^[A-Za-z]?\d+[\s.\-－]*/, '')
-    .replace(/^(?:大樹連鎖藥局|大樹藥局|大樹|佑全保健藥妝|佑全藥局|佑全)[\s\-－]*/, '')
-    .replace(/\s/g, '').replace(/店$/, '');
+    .replace(/^(?:大樹連鎖藥局|大樹藥局|大樹|佑全保健藥妝|佑全藥局|佑全|健康人生藥局)[\s\-－]*/, '')
+    .replace(/\s/g, '').replace(/藥局$/, '').replace(/店$/, '');
 }
 export function parseMonthlyAnalysis(raw) {
   if (!(raw instanceof Uint8Array) || raw.length > 2097152) throw new Error('JSON 原檔上限 2 MB。');
