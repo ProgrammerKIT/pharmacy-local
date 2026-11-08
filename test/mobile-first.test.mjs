@@ -412,7 +412,7 @@ test('single-store quick capture creates exactly one formal visit only on submit
   ]);
   const stores = project(bundle).filter(record=>record.type==='store');
   let persisted = null, reopened = '', message = '';
-  const context = vm.createContext({ syncInProgress: false, autoFetching: false, syncEpoch: 0, localSaveState: 'saved', renderDataSafetyEntry() {},
+  const context = vm.createContext({ key:{}, meta:{}, pendingLock:false, updateHolding:false, syncInProgress: false, autoFetching: false, syncEpoch: 0, localSaveState: 'saved', renderDataSafetyEntry() {},
     syncScheduler: { request() {}, wake() {}, pause() {}, reset() {}, confirmed() {}, failed() {} },
 
     singleStoreContext:{storeId:'store-one',id:'visit-one',parents:[],draftTouched:true}, payload:{bundle,device:'phone',draft:{format:'visit-draft-1'}}, draftTimer:null,
@@ -420,7 +420,7 @@ test('single-store quick capture creates exactly one formal visit only on submit
     by:(type,id)=>type==='store'?stores.find(store=>store.id===id):null, storeIdentityPending, flushVisitDraft:async()=>{},
     hashBytes:async()=>'', b64:()=>'', revision, validateBundle, project, structuredClone, Uint8Array, clearTimeout,
     confirmStoreSave:async()=>({}),quickTextParents:record=>record.heads.map(head=>head.id).sort(),
-    persist:async next=>{persisted=structuredClone(next);context.payload=next;}, render:()=>{}, openVisitBrief:id=>{reopened=id;}, toast:value=>{message=value;},
+    persist:async (next,{guard}={})=>{guard?.();persisted=structuredClone(next);context.payload=next;}, render:()=>{}, openVisitBrief:id=>{reopened=id;}, toast:value=>{message=value;},
     run:async fn=>fn()
   });
   const captureSource=app.slice(app.indexOf('function captureVisitDraft('),app.indexOf('function applyVisitDraft('));

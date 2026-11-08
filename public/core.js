@@ -817,6 +817,7 @@ export function validData(type, d) {
   if (!plain(d)) return false;
   if (d.manualVisitAttendance !== undefined && !validManualVisitAttendance({ type, data: d, deleted: false, parents: [], at: d.manualVisitAttendance?.at })) return false;
   if(d.peopleAliasReview!==undefined&&(type!=='source'||!validPeopleAliasReview(d.peopleAliasReview)||['peopleReading','peopleRelationshipReview','monthlyAnalysis','monthlyFeedback','csvExclusionEvents','csvExclusionAuditOf'].some(k=>d[k]!==undefined)))return false;
+  if (d.monthlyTypedFeedback !== undefined && (type!=='source' || !validMonthlyTypedFeedback(d.monthlyTypedFeedback) || ['analysisStoreCode','monthlyAnalysis','monthlyFeedback','peopleReading','peopleRelationshipReview','peopleAliasReview','manualVisitAttendance'].some(key=>d[key]!==undefined))) return false;
   if (d.analysisStoreCode !== undefined && (type !== 'source' || !validAnalysisStoreCode(d.analysisStoreCode) || ['monthlyAnalysis','monthlyFeedback','peopleReading','peopleRelationshipReview','peopleAliasReview','manualVisitAttendance','csvExclusionEvents'].some(key=>d[key]!==undefined))) return false;
   if (d.monthlyFeedback !== undefined && (type !== 'source' || !validMonthlyFeedback(d.monthlyFeedback) || d.monthlyAnalysis !== undefined || d.peopleReading !== undefined || d.peopleRelationshipReview !== undefined)) return false;
   if (d.peopleRelationshipReview !== undefined && (type !== 'source' || !validPeopleRelationshipReview(d.peopleRelationshipReview))) return false;
@@ -945,6 +946,7 @@ export function validateBundle(b) {
   if (analysisQueue.length !== analysisAncestors.size) throw new Error('每月分析修訂鏈形成循環。');
   validateAnalysisStoreCodes(b, sourceEntities, seen);
   validateMonthlyFeedbackSources(b, sourceEntities, seen);
+  validateMonthlyTypedFeedbackSources(b, sourceEntities, seen);
   return b;
 }
 export function merge(a, b) {
@@ -2744,6 +2746,101 @@ export async function applyMonthlyFeedbackWithAttendance(bundle, plan, input, de
   op.at = attendance.at; next.ops.push(op);
   return validateBundle(next);
 }
+// Typed v2 reports: one stable reportId per visit; immutable source events per edit.
+export function typedFeedbackState(bundle,analysisId,rowIndex,reportId=null) {
+  const history=bundle.ops.filter(op=>op.type==='source' && op.data.monthlyTypedFeedback?.analysisId===analysisId && op.data.monthlyTypedFeedback.rowIndex===rowIndex && (!reportId || op.data.monthlyTypedFeedback.reportId===reportId));
+  const replaced=new Set(history.flatMap(op=>op.data.monthlyTypedFeedback.replaces)),heads=history.filter(op=>!replaced.has(op.entity));
+  const groups=new Map();for(const op of heads){const id=op.data.monthlyTypedFeedback.reportId;if(!groups.has(id))groups.set(id,[]);groups.get(id).push(op);}
+  return {history,heads,reports:[...groups].map(([id,versions])=>({reportId:id,heads:versions,current:versions.length===1?versions[0]:null,conflict:versions.length>1})),conflict:[...groups.values()].some(items=>items.length>1)};
+}
+function validTypedAnswers(questions,answers) {
+  return Array.isArray(answers) && answers.length===questions.length && answers.every((answer,i)=>{
+    const q=questions[i];
+    if(!plain(answer) || Object.keys(answer).sort().join()!=='definition,otherText,value' || JSON.stringify(answer.definition)!==JSON.stringify(q))return false;
+    if(answer.otherText!==null && !(q.id==='core.push_sku' && answer.value==='其他' && str(answer.otherText,100)))return false;
+    const v=answer.value;if(v===null)return answer.otherText===null;
+    if(q.type==='number')return typeof v==='number' && Number.isFinite(v) && (q.id!=='core.shelf_haud' || Number.isInteger(v)) && (q.min===undefined || v>=q.min) && (q.max===undefined || v<=q.max);
+    if(q.type==='yesno')return ['是','否','未確認'].includes(v);
+    if(q.type==='single')return q.options.includes(v);
+    return q.type==='text' && str(v,q.maxLength||2000) && !!v.trim();
+  });
+}
+function validMonthlyTypedFeedback(value) {
+  return plain(value) && Object.keys(value).sort().join()==='analysisId,answers,attendance,createdAt,format,note,replaces,reportId,rowIndex,salesMonth,storeCode,storeHead,storeId,visitMonth'
+    && value.format==='pharmacy-yq-feedback-1' && ['analysisId','reportId','storeId','storeHead'].every(key=>str(value[key],100) && !!value[key])
+    && Number.isSafeInteger(value.rowIndex) && value.rowIndex>=0 && value.rowIndex<500 && analysisCode(value.storeCode)
+    && analysisMonth(value.salesMonth) && analysisMonth(value.visitMonth) && attendanceInstant(value.createdAt)
+    && ids(value.replaces) && new Set(value.replaces).size===value.replaces.length
+    && Array.isArray(value.answers) && value.answers.length>=4 && value.answers.length<=24
+    && (value.note===null || plain(value.note) && Object.keys(value.note).sort().join()==='id,revisionId' && ['id','revisionId'].every(key=>str(value.note[key],100) && !!value.note[key]))
+    && (value.attendance===null || plain(value.attendance) && Object.keys(value.attendance).sort().join()==='at,date,store' && value.attendance.store===value.storeId && attendanceInstant(value.attendance.at) && value.attendance.date===attendanceTaipeiDate(value.attendance.at));
+}
+function validateMonthlyTypedFeedbackSources(bundle,sources,revisions) {
+  const events=new Map([...sources].filter(([,op])=>op.data.monthlyTypedFeedback)),degrees=new Map(),children=new Map(),queue=[],identities=new Map();
+  for(const [id,op] of events){
+    const value=op.data.monthlyTypedFeedback,{op:analysis,match}=feedbackTarget(sources,value),doc=parseMonthlyAnalysisDocument(unb64(bundle.blobs[analysis.data.blob]));
+    const row=doc.stores[value.rowIndex],head=revisions.get(value.storeHead),identity=JSON.stringify([value.analysisId,value.rowIndex,value.storeId,value.storeCode]);
+    if(doc.format!=='yq-alert-2' || value.salesMonth!==doc.salesMonth || value.visitMonth!==doc.visitMonth || value.storeCode!==row.storeCode || !validTypedAnswers([...doc.coreChecks,...row.checks],value.answers))throw new Error('v2 回報題目、答案或期別與精確來源不符。');
+    if(identities.has(value.reportId) && identities.get(value.reportId)!==identity)throw new Error('回報識別不可跨來源或門市重用。');identities.set(value.reportId,identity);
+    if(!head || head.type!=='store' || head.entity!==value.storeId || head.deleted || head.data.csvIdentityPending || head.data.mergedInto || head.data.name!==match.name || (head.data.address||'')!==match.address || analysisStoreChannel(head.data)!=='佑全')throw new Error('v2 回報缺少確認時門市身分。');
+    if(value.note){const note=revisions.get(value.note.revisionId);if(!note || note.entity!==value.note.id || note.type!=='visit' || note.deleted || note.data.store!==value.storeId)throw new Error('回報連結的人工筆記版本不符。');}
+    if(value.attendance && !bundle.ops.some(event=>{const a=visitAttendanceEvidence(event);return a && a.store===value.storeId && a.date===value.attendance.date && a.at===value.attendance.at;}))throw new Error('回報缺少明確人工拜訪確認。');
+    if(op.at!==value.createdAt || JSON.stringify(JSON.parse(dec.decode(unb64(bundle.blobs[op.data.blob]))))!==JSON.stringify(value))throw new Error('v2 回報原件與保存內容不符。');
+    degrees.set(id,value.replaces.length);if(!value.replaces.length)queue.push(id);
+    for(const parent of value.replaces){const prior=events.get(parent)?.data.monthlyTypedFeedback;if(!prior || parent===id || prior.reportId!==value.reportId || prior.analysisId!==value.analysisId || prior.rowIndex!==value.rowIndex || prior.storeId!==value.storeId)throw new Error('回報修訂不可接替另一個訪次、門市或來源。');if(!children.has(parent))children.set(parent,[]);children.get(parent).push(id);}
+  }
+  for(let i=0;i<queue.length;i++)for(const id of children.get(queue[i])||[]){degrees.set(id,degrees.get(id)-1);if(!degrees.get(id))queue.push(id);}
+  if(queue.length!==events.size)throw new Error('v2 回報修訂歷史不可循環。');
+}
+export function prepareTypedFeedback(bundle,analysisId,rowIndex,reportId,month=monthlyVisitMonth(),resolutionHead=null) {
+  validateBundle(bundle);if(!str(reportId,100) || !reportId)throw new Error('缺少本次回報識別。');
+  const sources=new Map(bundle.ops.filter(op=>op.type==='source').map(op=>[op.entity,op]));
+  const {analysis,match}=feedbackTarget(sources,{analysisId,rowIndex,storeId:sources.get(analysisId)?.data.monthlyAnalysis?.assignments[rowIndex]?.storeId});
+  const item=monthlyAnalysisForStore(bundle,match.storeId,month).find(item=>item.id===analysisId);
+  if(item?.format!=='yq-alert-2' || !item.current || item.needsReview)throw new Error('分析已變更、過期或身分待核對；保留原回報，先重新核對。');
+  const state=typedFeedbackState(bundle,analysisId,rowIndex,reportId);
+  if(state.conflict && !resolutionHead || resolutionHead && !state.heads.some(op=>op.entity===resolutionHead))throw new Error('這次回報有並行分歧或分歧版本已變，請先核對，不選擇時間較新的版本。');
+  const store=project(bundle).find(op=>op.type==='store' && op.id===match.storeId);
+  if(bundle.ops.some(op=>op.data.monthlyTypedFeedback?.reportId===reportId && (op.data.monthlyTypedFeedback.analysisId!==analysisId || op.data.monthlyTypedFeedback.rowIndex!==rowIndex)))throw new Error('回報識別已屬於其他來源。');
+  return {basis:JSON.stringify(bundle),analysisId,rowIndex,reportId,storeId:store.id,storeHead:store.heads[0].id,storeName:store.name,salesMonth:item.salesMonth,visitMonth:item.visitMonth,storeCode:item.row.storeCode,questions:[...item.coreChecks,...item.row.checks],previousResult:item.row.previousResult,resolutionHead,selected:resolutionHead?state.heads.find(op=>op.entity===resolutionHead):state.reports[0]?.current||null,state};
+}
+export function typedFeedbackAnswers(plan,values) {
+  if(!Array.isArray(values) || values.length!==plan.questions.length || !values.every(answer=>plain(answer) && Object.hasOwn(answer,'value') && Object.keys(answer).every(key=>['value','otherText'].includes(key))))throw new Error('請保留每題位置；未答為 null。');
+  const answers=plan.questions.map((definition,i)=>({definition:structuredClone(definition),value:values[i]?.value,otherText:values[i]?.otherText??null}));
+  if(!validTypedAnswers(plan.questions,answers))throw new Error('答案型別、範圍或選項不符；請核對，不會猜填數字。');return answers;
+}
+export async function applyTypedVisit(bundle,plan,input,device,attendance,now=new Date().toISOString(),attachmentBlobs={}) {
+  if(!plan || plan.basis!==JSON.stringify(bundle))throw new Error('資料已變更，草稿保留，請重新核對。');
+  const fresh=prepareTypedFeedback(bundle,plan.analysisId,plan.rowIndex,plan.reportId,monthlyVisitMonth(now),plan.resolutionHead);
+  if(JSON.stringify(fresh)!==JSON.stringify(plan) || !plain(input) || Object.keys(input).sort().join()!=='answers,note,noteId,noteParents')throw new Error('來源、訪次或輸入有變，請重新核對。');
+  const answers=typedFeedbackAnswers(fresh,input.answers),previous=fresh.selected?.data.monthlyTypedFeedback;
+  if(attendance!==undefined && (!plain(attendance) || Object.keys(attendance).sort().join()!=='at,date,store' || attendance.store!==fresh.storeId || !attendanceInstant(now) || !attendanceInstant(attendance.at) || attendance.at>now || attendance.date!==attendanceTaipeiDate(attendance.at) || attendance.date!==attendanceTaipeiDate(now)))throw new Error('今天拜訪確認已變或跨日，請重新勾選。');
+  const hasAnswer=answers.some(answer=>answer.value!==null),hasNote=input.note!==null;
+  if(!hasAnswer && !hasNote && !previous)throw new Error('請至少回答一題或自行填寫拜訪筆記。');
+  let next=structuredClone(bundle),note=previous?.note||null,noteSaved=false;
+  if(!plain(attachmentBlobs) || Object.keys(attachmentBlobs).length>20)throw new Error('附件資料不完整。');
+  for(const [blob,encoded]of Object.entries(attachmentBlobs)){if(!input.note?.attachments.some(item=>item.blob===blob) || typeof encoded!=='string')throw new Error('附件必須連結本次人工筆記。');const bytes=unb64(encoded);if(bytes.length>3*1024*1024 || await hashBytes(bytes)!==blob || next.blobs[blob] && next.blobs[blob]!==encoded)throw new Error('附件雜湊或大小不符。');next.blobs[blob]=encoded;}
+  if(hasNote){
+    if(!validData('visit',input.note) || input.note.store!==fresh.storeId || !input.note.text.trim() || !str(input.noteId,100) || !input.noteId || !ids(input.noteParents))throw new Error('人工筆記不完整；不會建立空白原文。');
+    const current=project(bundle).find(op=>op.type==='visit' && op.id===input.noteId);
+    if(current && (current.deleted || current.conflict || current.store!==fresh.storeId) || JSON.stringify((current?.heads||[]).map(op=>op.id).sort())!==JSON.stringify([...input.noteParents].sort()))throw new Error('人工筆記版本已變，請先核對，不覆蓋。');
+    if(!current || JSON.stringify(current.heads[0].data)!==JSON.stringify(input.note)){
+      const op=revision('visit',input.noteId,structuredClone(input.note),input.noteParents,device,false,attendance);next.ops.push(op);note={id:op.entity,revisionId:op.id};noteSaved=true;
+    }else note={id:current.id,revisionId:current.heads[0].id};
+  }
+  if(attendance && !noteSaved){
+    const value={format:manualAttendanceFormat,...attendance},raw=enc.encode(JSON.stringify(value)),blob=await hashBytes(raw);next.blobs[blob]=b64(raw);const op=revision('source',uuid(),{file:'人工拜訪確認.json',list:'人工拜訪確認',blob,batch:uuid(),rows:1,headers:[],encoding:'UTF-8',delimiter:'',manualVisitAttendance:value},[],device);op.at=attendance.at;next.ops.push(op);
+  }
+  // Note-only saves do not invent an all-null report; edits may explicitly clear answers.
+  if(hasAnswer || previous){
+    const value={format:'pharmacy-yq-feedback-1',reportId:fresh.reportId,analysisId:fresh.analysisId,rowIndex:fresh.rowIndex,storeId:fresh.storeId,storeHead:fresh.storeHead,storeCode:fresh.storeCode,salesMonth:fresh.salesMonth,visitMonth:fresh.visitMonth,answers,note,attendance:attendance||previous?.attendance||null,replaces:fresh.state.heads.map(op=>op.entity).sort(),createdAt:now};
+    if(!validMonthlyTypedFeedback(value))throw new Error('v2 回報資料不完整。');
+    if(!previous || JSON.stringify([previous.answers,previous.note,previous.attendance])!==JSON.stringify([value.answers,value.note,value.attendance])){
+      const raw=enc.encode(JSON.stringify(value)),blob=await hashBytes(raw);next.blobs[blob]=b64(raw);const op=revision('source',uuid(),{file:'佑全結構化現場回報.json',list:'佑全結構化現場回報',blob,batch:uuid(),rows:1,headers:[],encoding:'UTF-8',delimiter:'',monthlyTypedFeedback:value},[],device);op.at=now;next.ops.push(op);
+    }
+  }
+  validateBundle(next);return next.ops.length===bundle.ops.length && Object.keys(next.blobs).length===Object.keys(bundle.blobs).length?bundle:next;
+}
 export function rememberedMonthlyAnalysisChoice(bundle,row) {
   if(Object.hasOwn(row,'storeCode')) return analysisStoreCodeState(bundle,analysisChannel(row.channel),row.storeCode).storeId;
   const stores=project(bundle),candidates=monthlyAnalysisCandidates(row,stores);
@@ -2760,9 +2857,9 @@ export function exportMonthlyFeedback(bundle,channel,visitMonth,{includeHistory=
   validateBundle(bundle);
   channel=analysisChannel(channel);if(!channel || !analysisMonth(visitMonth) || !attendanceInstant(at))throw new Error('請選擇通路與建議拜訪月份。');
   const sources=monthlyAnalysisSources(bundle).filter(source=>source.channel===channel && source.visitMonth===visitMonth),replaced=new Set(sources.flatMap(source=>source.supersedes));
-  if(sources.some(source=>source.format==='yq-alert-2'))throw new Error('本期含 v2 分析，請待新版結構化匯出完成；不以舊格式輸出或遺漏資料。');
   const currentSources=sources.filter(source=>!replaced.has(source.id)),sourceConflict=currentSources.length>1;
   const selected=includeHistory?sources:currentSources;
+  if(selected.some(source=>source.format==='yq-alert-2'))throw new Error('匯出範圍含 v2 分析，請待新版結構化匯出完成；不以舊格式輸出或遺漏資料。');
   return {format:'pharmacy-monthly-feedback-export-1',generatedAt:at,channel,visitMonth,includeHistory,sourceConflict,stores:selected.flatMap(source=>source.assignments.flatMap((match,rowIndex)=>{
     if(!match.storeId)return [];
     const state=monthlyFeedbackState(bundle,source.id,rowIndex),display=monthlyAnalysisForStore(bundle,match.storeId,visitMonth).find(item=>item.id===source.id);

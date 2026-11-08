@@ -1,6 +1,6 @@
 import { peopleBriefSourcePlan, validatePeopleBriefResult, currentPeopleReading, peopleReadingRequest, preparePeopleReading, applyPeopleReading, planPeopleRelationshipReview, applyPeopleRelationshipReview, peopleAliasLayout, peopleAliasReviewAvailability, peopleRelationshipReviewAvailability, planPeopleAliasReview, applyPeopleAliasReview } from './relations.js';
 import { peopleRelationshipReviewState, peopleAliasGroups, peopleAliasReviewState } from './core.js';
-import { parseMonthlyAnalysisDocument, analysisStoreCodeChoices, revokeAnalysisStoreCode, monthlyAlertStoreIds, monthlyAnalysisSources, monthlyAnalysisForStore, prepareMonthlyAnalysis, applyMonthlyAnalysis, monthlyFeedbackState, prepareMonthlyFeedback, applyMonthlyFeedback, applyMonthlyFeedbackWithAttendance, rememberedMonthlyAnalysisChoice, exportMonthlyFeedback, monthlyAnalysisChangeSummary } from './core.js';
+import { typedFeedbackState, prepareTypedFeedback, typedFeedbackAnswers, applyTypedVisit, parseMonthlyAnalysisDocument, analysisStoreCodeChoices, revokeAnalysisStoreCode, monthlyAlertStoreIds, monthlyAnalysisSources, monthlyAnalysisForStore, prepareMonthlyAnalysis, applyMonthlyAnalysis, monthlyFeedbackState, prepareMonthlyFeedback, applyMonthlyFeedback, applyMonthlyFeedbackWithAttendance, rememberedMonthlyAnalysisChoice, exportMonthlyFeedback, monthlyAnalysisChangeSummary } from './core.js';
 import { supervisorRelationships, supervisorReviewHistory, reviewSupervisorRelationship, planStoreSupervision, applyStoreSupervision, supervisedStores } from './core.js';
 import { setupWeeklyRecovery, prepareWeeklyRecovery, createRecoveryBackup, newMeta, checkEnvelope, derive, seal, unseal, planBackupImport, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates, buildStoreEnrichmentRequest, planStoreEnrichment, applyStoreEnrichment, readonlyHealthAudit, dataSafetySummary, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, editReminderTasks, addReminderTasks, convertReminderTasks, completeReminderTask, reminderTaskHistory, searchStoreVisitText, scanInsightChanges, storeInsightDisplayForStore, storeInsightEvidenceForEntry, insightReviewForEntry, insightSharedReviewForEntry, storeInsightReviewHistory, planInsightReview, applyInsightReview, planStoreInsights, applyStoreInsights, planStoreInsightRelations, applyStoreInsightRelations, buildStoreInsightsSource, planStoreMerge, applyStoreMerge } from './core.js';
 import { readWeeklyRecovery, writeWeeklyRecovery, readLocal, writeLocal, archiveAndReplaceLocal, listLocalArchives, readLocalArchive } from './db.js';
@@ -864,9 +864,11 @@ function openVisitForStore(storeId) {
 function captureVisitDraft() {
   if (singleStoreContext && $('review').open && !$('single-store-capture-form')?.hidden) {
     const ctx = singleStoreContext;
+    if(ctx.typedReadOnly)return ctx.originalDraft;
     const checked = name => [...document.querySelectorAll(`#single-store-capture-form [name="${name}"]:checked`)].map(el => el.value);
     return {
       format: 'visit-draft-1', savedAt: new Date().toISOString(), id: ctx.id, parents: [...ctx.parents], baseData: null,
+      ...(ctx.typedPlan?{typedFeedback:{analysisId:ctx.typedPlan.analysisId,rowIndex:ctx.typedPlan.rowIndex,reportId:ctx.typedPlan.reportId,resolutionHead:ctx.typedPlan.resolutionHead,questions:structuredClone(ctx.typedPlan.questions),values:captureTypedValues(),keepAttachments:ctx.typedNoteAttachments||[]}}:{}),
       fields: {
         store: ctx.storeId, date: $('single-store-date')?.value || '', source: $('single-store-source')?.value || '',
         text: $('single-store-text')?.value || '', next: $('single-store-next')?.value || '',
@@ -1495,11 +1497,62 @@ function briefTraceHTML(occurrences, field = 'text') {
   const label = items.length > 1 ? `查看 ${items.length} 筆原始紀錄` : '查看同筆原始拜訪文字';
   return `<details class="brief-trace"><summary>${label}</summary>${items.map(item => `<article class="brief-trace-item">${item.source ? `<div><span class="pill">${esc(item.source)}</span></div>` : ''}${field === 'next' ? `<p><strong>下次跟進原文</strong></p><blockquote>${esc(item.text || '原文未提供')}</blockquote><p class="muted">同筆拜訪原文</p><pre>${esc(item.visitText || '原文未提供')}</pre>` : `<pre>${esc(item.text || '原文未提供')}</pre>`}</article>`).join('')}</details>`;
 }
+function typedAnswerControls(plan) {
+  return `<section class="typed-feedback"><h3>本次現場回報</h3>${plan.state?.conflict?`<details><summary>比較本次所有分歧版本</summary>${plan.state.heads.map(op=>`<article><p>保存 ${esc(op.at)}</p>${op.data.monthlyTypedFeedback.answers.map(answer=>`<p>${esc(answer.definition.label)}：${esc(answer.value??'未作答')}</p>`).join('')}</article>`).join('')}</details><label class="check"><input type="checkbox" id="typed-conflict-ack">我已核對全部分歧，以目前表單新增修訂；各版歷史保留</label>`:''}${plan.previousResult!==null?`<aside><strong>分析端回饋（上期）</strong><p class="analysis-verbatim">${esc(plan.previousResult)}</p></aside>`:''}<p class="muted">未作答保持未知；可只回答問題，不必寫筆記。答案不會自動寫入下方原文。</p>${plan.questions.map((q,i)=>{
+    const numeric=q.type==='number',text=q.type==='text';
+    return `<fieldset data-typed-question="${i}"><legend>${esc(q.label)}${numeric?`（${esc(q.unit)}）`:''}</legend>${numeric?`<input id="typed-value-${i}" aria-label="${esc(q.label)}" type="number" inputmode="${q.id==='core.shelf_haud'?'numeric':'decimal'}" step="${q.id==='core.shelf_haud'?'1':'any'}" ${q.min!==undefined?`min="${esc(q.min)}"`:''} ${q.max!==undefined?`max="${esc(q.max)}"`:''} placeholder="未填答">`:text?`<textarea id="typed-value-${i}" aria-label="${esc(q.label)}" maxlength="${q.maxLength||2000}" placeholder="未填答"></textarea>`:`<div class="typed-options">${(q.type==='yesno'?['是','否','未確認']:q.options).map(value=>`<label class="check"><input type="radio" name="typed-choice-${i}" value="${esc(value)}">${esc(value)}</label>`).join('')}</div>`}${q.id==='core.push_sku'?'<label>選「其他」時的說明（選填）<input id="typed-other" maxlength="100"></label>':''}<button type="button" class="text-button" data-typed-clear="${i}">清除此題，保留未作答</button></fieldset>`;
+  }).join('')}</section>`;
+}
+function captureTypedValues() {
+  const plan=singleStoreContext?.typedPlan;if(!plan)return null;
+  return plan.questions.map((q,i)=>{
+    const field=$(`typed-value-${i}`);let value=null;if(field?.validity?.badInput)throw new Error('數字尚未輸入完整，請先核對，不會改存為零或未知。');
+    if(field && field.value!=='')value=q.type==='number'?field.valueAsNumber:field.value.trim()?field.value:null;
+    if(q.type==='number' && value!==null && !Number.isFinite(value))throw new Error('數字無法完整保存，請核對；不會轉成零或 null。');
+    if(!field)value=document.querySelector(`input[name="typed-choice-${i}"]:checked`)?.value??null;
+    return {value,otherText:q.id==='core.push_sku' && value==='其他'?$('typed-other').value:null};
+  });
+}
+function restoreTypedValues(values) {
+  const plan=singleStoreContext?.typedPlan;if(!plan || !Array.isArray(values) || values.length!==plan.questions.length)throw new Error('回報草稿題目已變，保留草稿，請先核對。');
+  plan.questions.forEach((q,i)=>{const value=values[i].value,field=$(`typed-value-${i}`);if(field)field.value=value??'';else for(const radio of document.querySelectorAll(`input[name="typed-choice-${i}"]`))radio.checked=radio.value===value;if(q.id==='core.push_sku')$('typed-other').value=values[i].otherText??'';});
+}
+function setupTypedCapture(draft,edit) {
+  const ctx=singleStoreContext,items=monthlyAnalysisForStore(payload.bundle,ctx.storeId).filter(item=>item.current && item.format==='yq-alert-2');
+  const saved=draft?.typedFeedback;
+  if(!items.length && !saved && !edit)return;
+  if(items.length!==1)throw new Error('分析來源不是唯一有效版本；原草稿保留，請先核對。');
+  const item=items[0],rowIndex=item.assignments.findIndex(match=>match.storeId===ctx.storeId),reference=saved||edit;
+  if(reference && (reference.analysisId!==item.id || reference.rowIndex!==rowIndex))throw new Error('原草稿或回報的分析版本已換版，保留原內容，不套到新題目。');
+  const plan=prepareTypedFeedback(payload.bundle,item.id,rowIndex,reference?.reportId||uuid(),undefined,reference?.resolutionHead||null);
+  if(saved && JSON.stringify(saved.questions)!==JSON.stringify(plan.questions))throw new Error('草稿題目版本已變，不能直接搬答案。');
+  ctx.typedPlan=plan;$('single-store-typed').innerHTML=typedAnswerControls(plan);
+  const previous=plan.selected?.data.monthlyTypedFeedback;
+  if(previous?.note && !draft){
+    const note=by('visit',previous.note.id);
+    if(!note || note.conflict || note.heads[0].id!==previous.note.revisionId)throw new Error('連結的人工筆記已修改，需先核對精確版本，不覆蓋新內容。');
+    ctx.id=note.id;ctx.parents=[note.heads[0].id];ctx.typedNoteAttachments=structuredClone(note.attachments);
+    $('single-store-text').value=note.text;$('single-store-next').value=note.next;$('single-store-date').value=note.date;$('single-store-source').value=note.source;
+    for(const [name,ids] of [['single-person',note.people],['single-topic',note.topics]])for(const field of document.querySelectorAll(`[name="${name}"]`))field.checked=ids.includes(field.value);
+  }
+  if(saved){ctx.typedNoteAttachments=structuredClone(saved.keepAttachments||[]);restoreTypedValues(saved.values);}
+  else if(previous)restoreTypedValues(previous.answers.map(answer=>({value:answer.value,otherText:answer.otherText})));
+}
+function openTypedReport(button) {
+  if(payload?.draft || singleStoreContext || editorContext || syncInProgress)throw new Error('請先完成或收起目前草稿；不覆蓋輸入。');
+  const reference={analysisId:button.dataset.typedAnalysis,rowIndex:Number(button.dataset.typedRow),reportId:button.dataset.typedReport||uuid(),resolutionHead:button.dataset.typedResolve||null};
+  const source=monthlyAnalysisSources(payload.bundle).find(item=>item.id===reference.analysisId),storeId=source?.assignments[reference.rowIndex]?.storeId;
+  if(!storeId)throw new Error('回報來源不存在。');openVisitBrief(storeId);activateSingleStoreCapture(null,reference);
+}
+function typedFeedbackHTML(item) {
+  const rowIndex=item.assignments.findIndex(match=>match.storeId===item.storeId),state=typedFeedbackState(payload.bundle,item.id,rowIndex);
+  return `<section class="monthly-feedback"><h4>現場回報 · ${state.reports.length} 次</h4>${state.reports.map(report=>`<article><p>${report.conflict?'有並行分歧，請逐版比較後核對':'已保存'}</p>${report.heads.map(op=>`<details><summary>保存 ${esc(op.at)} · 查看答案</summary>${op.data.monthlyTypedFeedback.answers.map(answer=>`<p><strong>${esc(answer.definition.label)}</strong>：${esc(answer.value===null?'未作答':answer.value)}${answer.otherText?` · ${esc(answer.otherText)}`:''}</p>`).join('')}${item.current && report.conflict?`<button type="button" data-typed-report="${esc(report.reportId)}" data-typed-analysis="${esc(item.id)}" data-typed-row="${rowIndex}" data-typed-resolve="${esc(op.entity)}">以此版本為基礎核對分歧</button>`:''}</details>`).join('')}${item.current && !report.conflict?`<button type="button" data-typed-report="${esc(report.reportId)}" data-typed-analysis="${esc(item.id)}" data-typed-row="${rowIndex}">修改這次回報</button>`:''}</article>`).join('')}${!state.reports.length?'<p>尚未回報；未作答不代表零或未執行。</p>':''}${item.current?`<button type="button" data-typed-report="" data-typed-analysis="${esc(item.id)}" data-typed-row="${rowIndex}">填寫現場結果／新增一次拜訪</button>`:'<p>歷史回報保留，不套用至新題目。</p>'}<p class="muted">與人工筆記同一表單、各自保存；不自動填入原文、關係或待辦。</p></section>`;
+}
 function singleStoreCaptureHTML() {
   const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
   const options = ['', '現場觀察', '藥師主動提及', '詢問後回覆', '其他'];
   const pick = (type, inputName) => all(type).map(item => `<label class="check"><input type="checkbox" name="${inputName}" value="${esc(item.id)}">${esc(item.name)}</label>`).join('') || '<p class="muted">目前尚未建立可選項目，可直接完成拜訪紀錄。</p>';
-  return `<form id="single-store-capture-form" class="single-store-capture" hidden><div class="single-store-capture-head"><div><p class="eyebrow">QUICK CAPTURE</p><h3>記錄這次拜訪</h3></div><span class="pill">門市已固定</span></div><label>原始拜訪內容<textarea id="single-store-text" maxlength="20000" placeholder="直接輸入這次拜訪內容" spellcheck="false"></textarea></label><label>下次跟進（選填）<textarea id="single-store-next" maxlength="20000" placeholder="例如：下次確認庫存"></textarea></label><details class="single-store-more"><summary>更多欄位：日期、來源、人物、主題與附件</summary><div class="field-grid"><label>筆記日期（未知可留空）<input type="date" id="single-store-date" value="${today}"></label><label>資訊來源<select id="single-store-source">${options.map(source => `<option value="${esc(source)}">${esc(source || '未指定')}</option>`).join('')}</select></label></div><label>相關主題</label><div class="check-grid">${pick('topic', 'single-topic')}</div><label>提及人物</label><div class="check-grid">${pick('person', 'single-person')}</div><label>附件（每個上限 3 MB）<input type="file" id="single-store-files" multiple accept="image/jpeg,image/png,image/webp,image/heic,application/pdf"></label><p class="muted">新選的附件無法靠草稿跨 App 關閉保存；完成紀錄前若 App 被系統終止，請重新選擇附件。</p></details><p id="single-store-draft-state" class="draft-state" role="status">尚未變更</p><p class="muted">輸入會先加密保存成本機草稿；只有按「完成紀錄」才建立正式拜訪版本。</p><p id="single-store-error" class="error" role="alert"></p></form>`;
+  return `<form id="single-store-capture-form" class="single-store-capture" hidden><div class="single-store-capture-head"><div><p class="eyebrow">QUICK CAPTURE</p><h3>記錄這次拜訪</h3></div><span class="pill">門市已固定</span></div><div id="single-store-typed"></div><label>原始拜訪內容<textarea id="single-store-text" maxlength="20000" placeholder="直接輸入這次拜訪內容" spellcheck="false"></textarea></label><label>下次跟進（選填）<textarea id="single-store-next" maxlength="20000" placeholder="例如：下次確認庫存"></textarea></label><details class="single-store-more"><summary>更多欄位：日期、來源、人物、主題與附件</summary><div class="field-grid"><label>筆記日期（未知可留空）<input type="date" id="single-store-date" value="${today}"></label><label>資訊來源<select id="single-store-source">${options.map(source => `<option value="${esc(source)}">${esc(source || '未指定')}</option>`).join('')}</select></label></div><label>相關主題</label><div class="check-grid">${pick('topic', 'single-topic')}</div><label>提及人物</label><div class="check-grid">${pick('person', 'single-person')}</div><label>附件（每個上限 3 MB）<input type="file" id="single-store-files" multiple accept="image/jpeg,image/png,image/webp,image/heic,application/pdf"></label><p class="muted">新選的附件無法靠草稿跨 App 關閉保存；完成紀錄前若 App 被系統終止，請重新選擇附件。</p></details><p id="single-store-draft-state" class="draft-state" role="status">尚未變更</p><p class="muted">輸入會先加密保存成本機草稿；只有按「完成紀錄」才建立正式拜訪版本。</p><p id="single-store-error" class="error" role="alert"></p></form>`;
 }
 function singleStoreIdleActions(storeId) {
   const draft = payload?.draft?.format === 'visit-draft-1' ? payload.draft : null;
@@ -1507,15 +1560,22 @@ function singleStoreIdleActions(storeId) {
   if (draft) return '<button type="button" class="primary" data-resume-single-draft>先完成目前的未完成草稿</button>';
   return '<button type="button" class="primary" data-start-single-store-capture>＋ 開始記錄這次拜訪</button>';
 }
-function activateSingleStoreCapture(restoreDraft = null) {
+function activateSingleStoreCapture(restoreDraft = null, typedEdit = null) {
   const storeId = $('review').dataset.singleStoreId, store = by('store', storeId);
   if (!store || store.deleted || store.conflict || storeIdentityPending(store)) return toast('這間門市目前無法使用單店快速記錄，請先核對門市狀態。');
   const draft = restoreDraft || (payload?.draft?.format === 'visit-draft-1' && !payload.draft.baseData && payload.draft.fields?.store === storeId ? payload.draft : null);
   if (payload?.draft?.format === 'visit-draft-1' && !draft) return resumeSingleDraftFromReview();
   singleStoreContext = { storeId, id: draft?.id || uuid(), parents: [...(draft?.parents || [])], draftTouched: false };
   const form = $('single-store-capture-form'); form.hidden = false;
-  if (draft) applyVisitDraft(draft);
+  try { setupTypedCapture(draft,typedEdit); if (draft) applyVisitDraft(draft); } catch(error) {
+    if(!draft?.typedFeedback){singleStoreContext=null;form.hidden=true;toast(error.message);return;}
+    singleStoreContext.typedReadOnly=true;singleStoreContext.originalDraft=draft;singleStoreContext.typedPlan={...draft.typedFeedback,previousResult:null};
+    $('single-store-typed').innerHTML=typedAnswerControls(singleStoreContext.typedPlan);applyVisitDraft(draft);restoreTypedValues(draft.typedFeedback.values);
+    for(const field of form.querySelectorAll('input,select,textarea,button')){if(field.tagName==='TEXTAREA')field.readOnly=true;else field.disabled=true;}
+    $('single-store-error').textContent=error.message+' 原草稿唯讀保留，可查看及複製，不可保存至新來源。';
+  }
   $('review-persistent-actions').innerHTML = '<button type="button" class="danger" data-discard-single-store-draft>捨棄草稿</button><button type="button" data-collapse-single-store-capture>先收起</button><button type="submit" form="single-store-capture-form" class="primary">完成紀錄</button>';
+  if(singleStoreContext.typedReadOnly)$('review-persistent-actions').innerHTML='<button type="button" class="danger" data-discard-single-store-draft>捨棄草稿</button><button type="button" data-collapse-single-store-capture>先收起</button>';
   $('review-persistent-actions').classList.add('capture-active');
   refreshBriefSearch();
   form.scrollIntoView({ block: 'start' });
@@ -1542,15 +1602,17 @@ async function saveSingleStoreVisit(event) {
   event.preventDefault(); await run(async () => {
     const ctx = singleStoreContext;
     if (!ctx || !$('review').open || $('review').dataset.singleStoreId !== ctx.storeId) throw new Error('單店畫面已變更，這次沒有建立紀錄。');
+    const baseBundle=payload.bundle,sessionKey=key,sessionMeta=meta,sessionEpoch=syncEpoch;
+    if(ctx.typedReadOnly)throw new Error('過期草稿僅供查看，不可套用至新來源。');
     await flushVisitDraft();
     const store = by('store', ctx.storeId);
     if (!store || store.deleted || store.conflict || storeIdentityPending(store)) throw new Error('門市狀態已變更，這次沒有建立紀錄；請重新核對門市。');
     const text = $('single-store-text').value;
-    if (!text.trim()) throw new Error('請填寫拜訪內容。');
+    if (!text.trim() && !ctx.typedPlan) throw new Error('請填寫拜訪內容。');
     const checked = name => [...document.querySelectorAll(`#single-store-capture-form [name="${name}"]:checked`)].map(input => input.value);
     const data = {
       store: ctx.storeId, date: $('single-store-date').value.trim(), source: $('single-store-source').value.trim(), text,
-      next: $('single-store-next').value, topics: checked('single-topic'), people: checked('single-person'), attachments: []
+      next: $('single-store-next').value, topics: checked('single-topic'), people: checked('single-person'), attachments: structuredClone(ctx.typedNoteAttachments||[])
     };
     const blobs = {};
     for (const file of $('single-store-files').files) {
@@ -1558,14 +1620,18 @@ async function saveSingleStoreVisit(event) {
       if (!['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'application/pdf'].includes(file.type) && !/\.heic$/i.test(file.name)) throw new Error('附件只支援 JPEG、PNG、WebP、HEIC 與 PDF。');
       const bytes = new Uint8Array(await file.arrayBuffer()), id = await hashBytes(bytes); blobs[id] = b64(bytes); data.attachments.push({ blob: id, name: file.name.slice(0, 200), mime: file.type || 'application/octet-stream' });
     }
-    const choice = await confirmStoreSave(store.id, store.name); if (!choice) return;
+    const typedValues=ctx.typedPlan?captureTypedValues():null;
+    if(ctx.typedPlan){if(ctx.typedPlan.state.conflict && !$('typed-conflict-ack')?.checked)throw new Error('請先比較並勾選核對所有分歧，不會自動選擇答案。');typedFeedbackAnswers(ctx.typedPlan,typedValues);if(!text.trim() && (data.next.trim() || data.attachments.length || data.people.length || data.topics.length))throw new Error('有下次跟進、人物或附件時請自行填寫筆記；不會建立空白原文或丟棄內容。');if(!text.trim() && !typedValues.some(answer=>answer.value!==null) && !ctx.typedPlan.state.history.length)throw new Error('請回答至少一題或自行填寫筆記。');}
+    const choice = await confirmStoreSave(store.id, store.name,true,ctx.typedPlan?'本次人工作答與筆記各自保存。未勾選不更新實際拜訪日；只有親自勾選才確認今天到店。':''); if (!choice) return;
     if (singleStoreContext !== ctx) throw new Error('編輯畫面已變更，這次沒有建立紀錄。');
     assertSaveParents('visit', ctx.id, ctx.parents);
-    const bundle = structuredClone(payload.bundle); bundle.schema = 2;
-    bundle.ops.push(revision('visit', ctx.id, data, ctx.parents, payload.device, false, choice.attendance)); Object.assign(bundle.blobs, blobs); validateBundle(bundle);
-    await persist({ ...payload, bundle, dirty: true, draft: null });
+    const guard=()=>{if(singleStoreContext!==ctx || payload.bundle!==baseBundle || key!==sessionKey || meta!==sessionMeta || syncEpoch!==sessionEpoch || document.hidden || pendingLock || updateHolding || syncInProgress || ctx.typedPlan && JSON.stringify(payload.bundle)!==ctx.typedPlan.basis || choice.attendance && attendanceTaipeiDate(Date.now())!==choice.attendance.date)throw new Error('來源、工作階段或日期已變，請重新核對；草稿保留。');};guard();
+    let bundle;
+    if(ctx.typedPlan) bundle=await applyTypedVisit(payload.bundle,ctx.typedPlan,{answers:typedValues,note:text.trim()?data:null,noteId:ctx.id,noteParents:ctx.parents},payload.device,choice.attendance,new Date().toISOString(),blobs);
+    else {bundle=structuredClone(payload.bundle);bundle.schema=2;bundle.ops.push(revision('visit',ctx.id,data,ctx.parents,payload.device,false,choice.attendance));Object.assign(bundle.blobs,blobs);validateBundle(bundle);}
+    guard();await persist({ ...payload, bundle, dirty: payload.dirty || bundle!==payload.bundle, draft: null },{guard});
     clearTimeout(draftTimer); draftTimer = null; singleStoreContext = null; render(); openVisitBrief(ctx.storeId);
-    toast('拜訪已完成並保存於手機；你仍停留在這間門市，等待 Mac 確認收到。');
+    toast(ctx.typedPlan?`${typedValues.some(answer=>answer.value!==null)||ctx.typedPlan.state.history.length?'現場回報':'人工筆記'}已加密保存；${choice.attendance?'已確認今天實際拜訪。':'未勾選實際拜訪，不新增到店確認。'}等待 Mac 確認收到。`:'拜訪已完成並保存於手機；你仍停留在這間門市，等待 Mac 確認收到。');
   }, 'single-store-error');
 }
 // Private insights are imported only after an explicit, source-checked preview.
@@ -3946,6 +4012,7 @@ document.addEventListener('click', event => {
     $(b.dataset.close).close(); if (b.dataset.close === 'rebuild-dialog') $('rebuild-connect-form').reset(); if (b.dataset.close === 'editor') editorContext = null; if (b.dataset.close === 'store-reminder-dialog') reminderContext = null; return;
   }
   if (updateHolding || busy || !payload) return;
+  if(b.hasAttribute('data-typed-report'))return run(()=>openTypedReport(b));
   if (b.hasAttribute('data-feedback-resume')) return run(()=>openMonthlyFeedback(payload.monthlyFeedbackDraft.analysisId,payload.monthlyFeedbackDraft.rowIndex));
   if (b.hasAttribute('data-feedback-open')) return run(()=>openMonthlyFeedback(b.dataset.feedbackOpen,Number(b.dataset.feedbackRow)));
   if (b.hasAttribute('data-feedback-export-open')) return run(openMonthlyFeedbackExport);
@@ -4306,7 +4373,7 @@ $('review').addEventListener('close',()=>{if(!$('review').open) supervisionPrevi
 
 
 function analysisCardHTML(item) {
-  return `<article class="analysis-card">${item.format==='yq-alert-2' && item.row.previousResult!==null?`<section class="analysis-previous"><h4>分析端回饋（上期）</h4><p class="analysis-verbatim">${esc(item.row.previousResult)}</p><p class="muted">外部唯讀分析，不是拜訪原文或已核實的人物關係。</p></section>`:''}<p class="muted">拜訪 ${esc(item.visitMonth)} · 銷量 ${esc(item.salesMonth)} · ${esc(item.channel)}${item.needsReview ? ' · 門市資料有變化，需重新核對' : ''}</p><h4>${esc(item.row.name)}</h4><details class="analysis-detail" data-analysis-detail="${esc(item.id)}:reason"><summary>分析原因與數據</summary><p class="analysis-verbatim">${esc(item.row.reason)}</p></details><details class="analysis-detail" data-analysis-detail="${esc(item.id)}:checkpoints"><summary>現場詢問與執行 · ${item.row.checkpoints.length} 項</summary><ol>${item.row.checkpoints.map(text => `<li class="analysis-verbatim">${esc(text)}</li>`).join('')}</ol></details>${item.format==='yq-alert-2'?'<p class="muted">v2 核心四題及客製快選將於第二階段提供；目前僅供隔離匯入與唯讀核對。</p>':monthlyFeedbackHTML(item)}<details><summary>來源與配對依據</summary><p>${esc(item.file)} · ${esc(item.at)}</p><p>SHA256：${esc(item.blob)}</p><p>確認時名稱：${esc(item.assignments.find(m=>m.storeId === item.storeId)?.name || '')}</p><p>外部分析建議，並非已完成拜訪或已證實事實。</p></details></article>`;
+  return `<article class="analysis-card">${item.format==='yq-alert-2' && item.row.previousResult!==null?`<section class="analysis-previous"><h4>分析端回饋（上期）</h4><p class="analysis-verbatim">${esc(item.row.previousResult)}</p><p class="muted">外部唯讀分析，不是拜訪原文或已核實的人物關係。</p></section>`:''}<p class="muted">拜訪 ${esc(item.visitMonth)} · 銷量 ${esc(item.salesMonth)} · ${esc(item.channel)}${item.needsReview ? ' · 門市資料有變化，需重新核對' : ''}</p><h4>${esc(item.row.name)}</h4><details class="analysis-detail" data-analysis-detail="${esc(item.id)}:reason"><summary>分析原因與數據</summary><p class="analysis-verbatim">${esc(item.row.reason)}</p></details><details class="analysis-detail" data-analysis-detail="${esc(item.id)}:checkpoints"><summary>現場詢問與執行 · ${item.row.checkpoints.length} 項</summary><ol>${item.row.checkpoints.map(text => `<li class="analysis-verbatim">${esc(text)}</li>`).join('')}</ol></details>${item.format==='yq-alert-2'?typedFeedbackHTML(item):monthlyFeedbackHTML(item)}<details><summary>來源與配對依據</summary><p>${esc(item.file)} · ${esc(item.at)}</p><p>SHA256：${esc(item.blob)}</p><p>確認時名稱：${esc(item.assignments.find(m=>m.storeId === item.storeId)?.name || '')}</p><p>外部分析建議，並非已完成拜訪或已證實事實。</p></details></article>`;
 }
 function monthlyAnalysisStoreHTML(store) {
   const items = monthlyAnalysisForStore(payload.bundle, store.id).map(item=>({...item,storeId:store.id})), current = items.filter(item=>item.current), history = items.filter(item=>!item.current);
@@ -4317,8 +4384,8 @@ function analysisOverviewHTML(month) {
   const sources = monthlyAnalysisSources(payload.bundle), matches = sources.filter(source=>source.visitMonth === month);
   const draft=payload.monthlyFeedbackDraft, draftSource=draft? sources.find(source=>source.id===draft.analysisId):null, draftStore=draftSource?.assignments[draft.rowIndex];
   const replaced=new Set(matches.flatMap(source=>source.supersedes)),active=matches.filter(source=>!replaced.has(source.id));
-  const alerts=active.flatMap(source=>source.assignments.flatMap((match,rowIndex)=>{if(!match.storeId)return [];const state=monthlyFeedbackState(payload.bundle,source.id,rowIndex),item=monthlyAnalysisForStore(payload.bundle,match.storeId,month).find(item=>item.id===source.id);return [{...match,source,rowIndex,state,needsReview:!item?.current || item.needsReview}];}));
-  return `<section class="panel monthly-analysis">${draftStore?.storeId?`<p class="muted">未完成回報草稿：<button type="button" class="text-button" data-visit-brief="${esc(draftStore.storeId)}">${esc(draftStore.name)}</button> <button type="button" data-feedback-resume>繼續／查看回報草稿</button>（只在這台裝置，先完成再匯入新期）</p>`:''}<h3>每月分析建議</h3>${analysisCodeManagementHTML()}<p>每月選一次 JSON；沿用已確認且仍一致的門市對應，有疑義的逐店核對。新一期取代分析顯示，舊期與現場回報完整保留。</p><button type="button" data-analysis-open>匯入每月分析 JSON</button><button type="button" data-feedback-export-open>匯出給分析</button>${alerts.length?`<h4>${esc(month)} 分析警示門市 · ${new Set(alerts.map(row=>row.storeId)).size} 間</h4><p class="muted">獨立分析名單，不更動下方必訪名單或已訪狀態。</p><ul class="monthly-alert-list">${alerts.map(row=>`<li><button type="button" class="text-button" data-visit-brief="${esc(row.storeId)}">${esc(row.name)}</button><span>${esc(row.source.channel)} · ${row.needsReview?'分析來源需核對':row.state.conflict?'回報分歧需核對':row.state.current?`已回報 ${row.state.current.data.monthlyFeedback.answers.filter(answer=>answer.text.trim()).length}／${row.source.rows[row.rowIndex].checkpoints.length} 題`:row.source.format==='yq-alert-2'?'v2 題型回報尚未啟用':'尚未回報'}</span></li>`).join('')}</ul>`:''}<p>${matches.length ? `${esc(month)} 有 ${matches.length} 份來源（含修訂），點門市可讀完整原因與詢問清單。` : `${esc(month)} 尚無分析來源，不會沿用上個月建議。`}</p>${matches.map(s=>`<details><summary>${esc(s.channel)} · ${esc(s.file)} · ${s.assignments.filter(m=>m.storeId).length} 間已對應（含修訂歷史）</summary>${s.assignments.filter(m=>m.storeId).map(m=>`<p><button type="button" class="text-button" data-visit-brief="${esc(m.storeId)}">${esc(m.name)}</button> · ${esc(m.address || '無地址')}</p>`).join('')}</details>`).join('')}<details><summary>全部來源歷史 · ${sources.length} 份</summary>${sources.map(s=>`<p>拜訪 ${esc(s.visitMonth)}／銷量 ${esc(s.salesMonth)} · ${esc(s.channel)} · ${esc(s.file)}</p>`).join('') || '<p>尚無來源</p>'}</details></section>`;
+  const alerts=active.flatMap(source=>source.assignments.flatMap((match,rowIndex)=>{if(!match.storeId)return [];const state=source.format==='yq-alert-2'?typedFeedbackState(payload.bundle,source.id,rowIndex):monthlyFeedbackState(payload.bundle,source.id,rowIndex),item=monthlyAnalysisForStore(payload.bundle,match.storeId,month).find(item=>item.id===source.id);return [{...match,source,rowIndex,state,needsReview:!item?.current || item.needsReview}];}));
+  return `<section class="panel monthly-analysis">${draftStore?.storeId?`<p class="muted">未完成回報草稿：<button type="button" class="text-button" data-visit-brief="${esc(draftStore.storeId)}">${esc(draftStore.name)}</button> <button type="button" data-feedback-resume>繼續／查看回報草稿</button>（只在這台裝置，先完成再匯入新期）</p>`:''}<h3>每月分析建議</h3>${analysisCodeManagementHTML()}<p>每月選一次 JSON；沿用已確認且仍一致的門市對應，有疑義的逐店核對。新一期取代分析顯示，舊期與現場回報完整保留。</p><button type="button" data-analysis-open>匯入每月分析 JSON</button><button type="button" data-feedback-export-open>匯出給分析</button>${alerts.length?`<h4>${esc(month)} 分析警示門市 · ${new Set(alerts.map(row=>row.storeId)).size} 間</h4><p class="muted">獨立分析名單，不更動下方必訪名單或已訪狀態。</p><ul class="monthly-alert-list">${alerts.map(row=>`<li><button type="button" class="text-button" data-visit-brief="${esc(row.storeId)}">${esc(row.name)}</button><span>${esc(row.source.channel)} · ${row.needsReview?'分析來源需核對':row.state.conflict?'回報分歧需核對':row.state.current?`已回報 ${row.state.current.data.monthlyFeedback.answers.filter(answer=>answer.text.trim()).length}／${row.source.rows[row.rowIndex].checkpoints.length} 題`:row.source.format==='yq-alert-2' && row.state.reports.length?`已回報 ${row.state.reports.length} 次`:'尚未回報'}</span></li>`).join('')}</ul>`:''}<p>${matches.length ? `${esc(month)} 有 ${matches.length} 份來源（含修訂），點門市可讀完整原因與詢問清單。` : `${esc(month)} 尚無分析來源，不會沿用上個月建議。`}</p>${matches.map(s=>`<details><summary>${esc(s.channel)} · ${esc(s.file)} · ${s.assignments.filter(m=>m.storeId).length} 間已對應（含修訂歷史）</summary>${s.assignments.filter(m=>m.storeId).map(m=>`<p><button type="button" class="text-button" data-visit-brief="${esc(m.storeId)}">${esc(m.name)}</button> · ${esc(m.address || '無地址')}</p>`).join('')}</details>`).join('')}<details><summary>全部來源歷史 · ${sources.length} 份</summary>${sources.map(s=>`<p>拜訪 ${esc(s.visitMonth)}／銷量 ${esc(s.salesMonth)} · ${esc(s.channel)} · ${esc(s.file)}</p>`).join('') || '<p>尚無來源</p>'}</details></section>`;
 }
 function analysisCodeManagementHTML() {
   const choices=analysisStoreCodeChoices(payload.bundle);if(!choices.length)return '';
@@ -4369,7 +4436,7 @@ async function previewAnalysisImport() {
   guard(); if($('analysis-sales').value!==sales || $('analysis-visit').value!==visit || [...$('analysis-files').files].some((file,i)=>file!==files[i]) || $('analysis-files').files.length!==files.length) throw new Error('選檔或月份已改變，請重新讀取。'); const plan=await prepareMonthlyAnalysis(payload.bundle,inputs,sales,visit);guard();
   plan.files.forEach(file=>{file.remembered=file.rows.map(row=>rememberedMonthlyAnalysisChoice(payload.bundle,row));});
   analysisImport={plan,session,guard};
-  $('analysis-matches').innerHTML=`<h3>逐間核對 · 只沿用已確認且身分一致的對應</h3><p>v2 僅沿用人工確認的店碼對照；v1 保留原對應流程。同名或不同寫法只列候選，請核對完整名稱與地址；不確定請先關閉，詢問 Kit 後再匯入。選「不套用」仍保存該列原文。</p>${plan.files.map((file,f)=>`<section><h3>${esc(file.channel)} · ${esc(file.name)}</h3>${file.rows.map((row,r)=>`<article class="analysis-card"><h4>${esc(row.name)} · ${esc(row.channel)}${file.format==='yq-alert-2'?` · 店碼 ${esc(row.storeCode)}`:''}</h4>${file.format==='yq-alert-2'?`<p class="muted">核心四題與客製 ${row.checks.length} 題；目前第一階段僅核對來源，不填答。</p>${row.previousResult!==null?`<details><summary>分析端回饋（上期）</summary><p class="analysis-verbatim">${esc(row.previousResult)}</p></details>`:''}`:''}<details><summary>完整分析與現場清單</summary><p class="analysis-verbatim">${esc(row.reason)}</p><ol>${row.checkpoints.map(t=>`<li>${esc(t)}</li>`).join('')}</ol></details><label>對應既有門市<select data-analysis-choice="${f}:${r}"><option value="">待核對，請選擇</option><option value="skip">本期不套用至門市（原文留存）</option>${file.candidates[r].map(({store,exact})=>`<option value="${esc(store.id)}" ${file.remembered[r]===store.id?'selected':''}>${file.remembered[r]===store.id?'沿用已確認':exact?'名稱相符候選':'其他同通路'} · ${esc(store.name)} · ${esc(store.address || '無地址，須另行核對')} · ${esc(store.id)}</option>`).join('')}</select></label></article>`).join('')}</section>`).join('')}<button type="button" data-analysis-final>下一步：最後完整名單／全部確認預選</button><div id="analysis-final"></div>`;
+  $('analysis-matches').innerHTML=`<h3>逐間核對 · 只沿用已確認且身分一致的對應</h3><p>v2 僅沿用人工確認的店碼對照；v1 保留原對應流程。同名或不同寫法只列候選，請核對完整名稱與地址；不確定請先關閉，詢問 Kit 後再匯入。選「不套用」仍保存該列原文。</p>${plan.files.map((file,f)=>`<section><h3>${esc(file.channel)} · ${esc(file.name)}</h3>${file.rows.map((row,r)=>`<article class="analysis-card"><h4>${esc(row.name)} · ${esc(row.channel)}${file.format==='yq-alert-2'?` · 店碼 ${esc(row.storeCode)}`:''}</h4>${file.format==='yq-alert-2'?`<p class="muted">核心四題與客製 ${row.checks.length} 題；匯入後由你在門市表單親自作答。</p>${row.previousResult!==null?`<details><summary>分析端回饋（上期）</summary><p class="analysis-verbatim">${esc(row.previousResult)}</p></details>`:''}`:''}<details><summary>完整分析與現場清單</summary><p class="analysis-verbatim">${esc(row.reason)}</p><ol>${row.checkpoints.map(t=>`<li>${esc(t)}</li>`).join('')}</ol></details><label>對應既有門市<select data-analysis-choice="${f}:${r}"><option value="">待核對，請選擇</option><option value="skip">本期不套用至門市（原文留存）</option>${file.candidates[r].map(({store,exact})=>`<option value="${esc(store.id)}" ${file.remembered[r]===store.id?'selected':''}>${file.remembered[r]===store.id?'沿用已確認':exact?'名稱相符候選':'其他同通路'} · ${esc(store.name)} · ${esc(store.address || '無地址，須另行核對')} · ${esc(store.id)}</option>`).join('')}</select></label></article>`).join('')}</section>`).join('')}<button type="button" data-analysis-final>下一步：最後完整名單／全部確認預選</button><div id="analysis-final"></div>`;
 }
 function analysisSelections() { return analysisImport.plan.files.map((file,f)=>file.rows.map((_,r)=>document.querySelector(`[data-analysis-choice="${f}:${r}"]`).value)); }
 function finalAnalysisImport() {
@@ -4392,6 +4459,7 @@ $('monthly-analysis-dialog').addEventListener('close',()=>{analysisImport=null;a
 $('monthly-analysis-dialog').addEventListener('change', event=>{ if(event.target.matches('[data-analysis-choice]') && analysisImport){delete analysisImport.finalChoices;$('analysis-final').innerHTML='';} if(event.target.matches('#analysis-files,#analysis-sales,#analysis-visit')){analysisImport=null;$('analysis-matches').innerHTML='';if(event.target.id==='analysis-files')void run(prefillAnalysisMonths,'analysis-error');} });
 
 $('review').addEventListener('click',event=>{
+ const clear=event.target.closest?.('[data-typed-clear]');if(clear && singleStoreContext?.typedPlan && !singleStoreContext.typedReadOnly){const i=Number(clear.dataset.typedClear),field=$(`typed-value-${i}`);if(field)field.value='';for(const radio of document.querySelectorAll(`input[name="typed-choice-${i}"]`))radio.checked=false;if(singleStoreContext.typedPlan.questions[i]?.id==='core.push_sku')$('typed-other').value='';scheduleVisitDraftSave();return;}
  const refreshButton=event.target.closest?.('[data-reading-refresh]');if(refreshButton){void run(()=>requestPeopleReadingRefresh(refreshButton.dataset.readingRefresh),'people-relation-error');return;}
  const aliasButton=event.target.closest?.('[data-reading-alias-status]');if(aliasButton){void run(()=>changePeopleAliasReview(aliasButton),'people-relation-error');return;}
  const relationButton=event.target.closest?.('[data-reading-relation-status]');if(relationButton){void run(()=>changePeopleRelationshipReview(relationButton),'people-relation-error');return;}
