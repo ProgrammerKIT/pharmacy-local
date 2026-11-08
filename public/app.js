@@ -1,4 +1,4 @@
-import { peopleBriefSourcePlan, validatePeopleBriefResult, currentPeopleReading, peopleReadingRequest, preparePeopleReading, applyPeopleReading, planPeopleRelationshipReview, applyPeopleRelationshipReview, peopleAliasLayout, planPeopleAliasReview, applyPeopleAliasReview } from './relations.js';
+import { peopleBriefSourcePlan, validatePeopleBriefResult, currentPeopleReading, peopleReadingRequest, preparePeopleReading, applyPeopleReading, planPeopleRelationshipReview, applyPeopleRelationshipReview, peopleAliasLayout, peopleAliasReviewAvailability, peopleRelationshipReviewAvailability, planPeopleAliasReview, applyPeopleAliasReview } from './relations.js';
 import { peopleRelationshipReviewState, peopleAliasGroups, peopleAliasReviewState } from './core.js';
 import { monthlyAlertStoreIds, monthlyAnalysisSources, monthlyAnalysisForStore, prepareMonthlyAnalysis, applyMonthlyAnalysis, monthlyFeedbackState, prepareMonthlyFeedback, applyMonthlyFeedback, applyMonthlyFeedbackWithAttendance, rememberedMonthlyAnalysisChoice, exportMonthlyFeedback, monthlyAnalysisChangeSummary } from './core.js';
 import { supervisorRelationships, supervisorReviewHistory, reviewSupervisorRelationship, planStoreSupervision, applyStoreSupervision, supervisedStores } from './core.js';
@@ -1847,16 +1847,16 @@ function renderPeopleBatchStatus(){
  const state=peopleBatchStatus,entries=state?.entries||[],count=kind=>entries.filter(j=>j.state===kind).length;
  panel.innerHTML=`<h2>人物速覽 · 批次自動整理</h2><p>${state?.enabled?'已啟用：由 Codex 排程整理，無需逐店下載或載入 JSON。':state?'尚未啟用批次排程；原人物速覽保留。':'正在確認排程狀態；已保存速覽仍可查看。'}</p><p>可整理 ${state?.eligibleCount??'核對中'} 間；已準備 ${entries.length} 間。</p><p role="status">等待 ${count('queued')} · 整理中 ${count('running')} · 等待保存 ${count('ready')} · 已保存 ${count('saved')} · 失敗 ${count('failed')} · 來源已變 ${count('stale')}</p>${state?.error?`<p class="error">${esc(state.error)}</p>`:''}<p class="muted">AI 速覽不等於 Kit 已確認；不合併人物、不改關係判斷或待辦。Mac、Codex 與網路可執行時才整理，App 解鎖並同步後準備新來源；保留前份速覽與歷史。</p>${state?.lastWorkerAt?`<p>最近排程執行：${esc(dateText(state.lastWorkerAt))}</p>`:''}<details><summary>門市進度及例外 · ${entries.length} 間</summary>${entries.map(j=>`<p>${esc(j.name)}：${esc({queued:'等待整理',running:'整理中',ready:'等待保存',saved:'已保存',failed:'失敗',stale:'待新來源'}[j.state]||j.state)}${j.message?' · '+esc(j.message):''}</p>`).join('')}${(state?.excluded||[]).map(j=>`<p>${esc(j.name)}：${esc(j.reason)}</p>`).join('')}</details>`;
 }
-async function peopleBatchTick(force=false){
- if(peopleBatchRunning||!canScanInsights()||!payload?.token||payload.dirty||!Number.isSafeInteger(payload.serverVersion)||!force&&Date.now()-peopleBatchChecked<15000)return;
+async function peopleBatchTick(force=false,allowBusy=false){
+ if(peopleBatchRunning||!canScanInsights(allowBusy)||!payload?.token||payload.dirty||!Number.isSafeInteger(payload.serverVersion)||!force&&Date.now()-peopleBatchChecked<15000)return;
  // Hold only scheduled work; edits/lock/source changes still cancel the guarded save.
  peopleBatchRunning=true;syncScheduler.pause();const sessionKey=key,epoch=peopleReadingEpoch;
- const eligible=()=>payload&&key===sessionKey&&peopleReadingEpoch===epoch&&canScanInsights()&&!payload.dirty;
+ const eligible=()=>payload&&key===sessionKey&&peopleReadingEpoch===epoch&&canScanInsights(allowBusy)&&!payload.dirty;
  try{
   const vaultId=payload.bundle.vaultId,state=await api('/api/people-batch/status',{method:'POST',body:{vaultId}});if(!eligible())return;peopleBatchStatus=state;peopleBatchChecked=Date.now();renderPeopleBatchStatus();if(!state.enabled)return;
   const acknowledgements=[];let nextBundle=payload.bundle;
   for(const item of state.ready||[]){try{const existing=currentPeopleReading(nextBundle,item.input.result.storeId).current?.peopleReading;const plan=preparePeopleReading(nextBundle,item.input);if(!(existing?.basis===plan.result.basis&&(!existing.mode||JSON.stringify(existing.result)===JSON.stringify(plan.result))))nextBundle=await applyPeopleReading(nextBundle,item.input,plan,payload.device,new Date().toISOString(),'automatic');acknowledgements.push({...item,outcome:'saved'});}catch(error){acknowledgements.push({...item,outcome:'stale',message:error.message});}}
-  if(nextBundle!==payload.bundle){const before=payload;const guard=()=>{if(!payload||key!==sessionKey||epoch!==peopleReadingEpoch||payload!==before||payload.dirty||!insightScanIdle())throw Error('整理保存前資料或工作階段已變更，稍後補做。');};guard();await persist({...payload,bundle:nextBundle,dirty:true},{guard});}
+  if(nextBundle!==payload.bundle){const before=payload;const guard=()=>{if(!payload||key!==sessionKey||epoch!==peopleReadingEpoch||payload!==before||payload.dirty||!insightScanIdle(allowBusy))throw Error('整理保存前資料或工作階段已變更，稍後補做。');};guard();await persist({...payload,bundle:nextBundle,dirty:true},{guard});}
   for(const item of acknowledgements){if(key!==sessionKey||epoch!==peopleReadingEpoch)return;await api('/api/people-batch/ack',{method:'POST',body:{vaultId,id:item.id,basis:item.basis,outcome:item.outcome,message:item.message||''}});const entry=peopleBatchStatus.entries.find(j=>j.id===item.id);if(entry)entry.state=item.outcome;renderPeopleBatchStatus();}
   if(!eligible())return;
   const known=new Map(state.entries.map(j=>[j.storeId,j])),requests=[],excluded=[];let eligibleCount=0;
@@ -1875,8 +1875,8 @@ const PEOPLE_RELATION_LABELS={confirmed:'確定',rejected:'否定',pending:'待�
 function peopleRelationshipHTML(storeId,view,person,personIndex,item,itemIndex) {
   const readingId=view.readingId,state=peopleRelationshipReviewState(payload.bundle,readingId,personIndex,itemIndex);
   const status=state.conflict?'conflict':state.status||'unreviewed';
-  const current=['success','automatic'].includes(view.state)&&view.result.basis===view.basis;
-  const actions=current?`<div class="people-relation-options" role="group" aria-label="人工判斷 ${esc(person.name)}：${esc(item.text)}">${['confirmed','rejected','pending'].map(s=>`<button type="button" data-reading-relation-status="${s}" data-reading-relation-reading="${esc(readingId)}" data-reading-relation-person="${personIndex}" data-reading-relation-item="${itemIndex}" aria-pressed="${status===s}" ${status===s?'disabled':''}>${PEOPLE_RELATION_LABELS[s]}</button>`).join('')}</div>`:'<p class="muted">來源或速覽已變更；保留當時判斷，待重新整理後再核對。</p>';
+  const scope=peopleRelationshipReviewAvailability(payload.bundle,readingId,personIndex,itemIndex),current=scope.canReview;
+  const actions=current?`${scope.otherSourcesChanged?'<p class="muted">其他筆記已更新；本條原句版本仍一致。請對照下方最新原文，再判斷這條說法。</p>':''}<div class="people-relation-options" role="group" aria-label="人工判斷 ${esc(person.name)}：${esc(item.text)}">${['confirmed','rejected','pending'].map(s=>`<button type="button" data-reading-relation-status="${s}" data-reading-relation-reading="${esc(readingId)}" data-reading-relation-person="${personIndex}" data-reading-relation-item="${itemIndex}" aria-pressed="${status===s}" ${status===s?'disabled':''}>${PEOPLE_RELATION_LABELS[s]}</button>`).join('')}</div>`:`<p class="muted">來源或速覽已變更；保留當時判斷，待重新整理後再核對。</p>${scope.canWithdraw?`<button type="button" data-reading-relation-status="pending" data-reading-relation-reading="${esc(readingId)}" data-reading-relation-person="${personIndex}" data-reading-relation-item="${itemIndex}">撤回判斷，改為待確認</button>`:''}`;
   const content=`${peopleEvidenceHTML(item.evidence)}<p class="people-relation-status" role="status">你的判斷：${PEOPLE_RELATION_LABELS[status]}</p>${state.conflict?'<p class="error">裝置間有不同判斷，請查看歷史再決定；未自動選擇任何一方。</p>':''}${actions}`;
   return ['confirmed','rejected'].includes(status)?`<details class="people-reading-relation" data-reading-claim="${personIndex}:${itemIndex}"><summary><span>${esc(item.text)}</span><strong>${PEOPLE_RELATION_LABELS[status]}</strong></summary>${content}</details>`:`<article class="people-reading-relation"><p>${esc(item.text)}</p>${content}</article>`;
 }
@@ -1890,7 +1890,7 @@ async function changePeopleRelationshipReview(button) {
   const sessionKey=key,sessionMeta=meta,before=payload,epoch=peopleReadingEpoch;
   const plan=planPeopleRelationshipReview(payload.bundle,button.dataset.readingRelationReading,Number(button.dataset.readingRelationPerson),Number(button.dataset.readingRelationItem),button.dataset.readingRelationStatus);
   if(plan.storeId!==storeId)throw new Error('請回到對應門市核對。');if(!plan.changed)return;
-  if(!confirm(`${plan.storeName}／${plan.personName}\n${plan.item.text}\n\n${PEOPLE_RELATION_LABELS[plan.beforeStatus]} → ${PEOPLE_RELATION_LABELS[plan.status]}\n\n只保存這條關係的判斷與歷史；不合併人物，不修改原文、待辦、其他關係或其他門市的判斷。\n確認保存？`))return;
+  if(!confirm(`${plan.storeName}／${plan.personName}\n${plan.item.text}\n\n${plan.otherSourcesChanged?'其他筆記已更新；請先核對最新原文。本次僅判斷這條保留的說法。\n\n':''}${PEOPLE_RELATION_LABELS[plan.beforeStatus]} → ${PEOPLE_RELATION_LABELS[plan.status]}\n\n只保存這條關係的判斷與歷史；不合併人物，不修改原文、待辦、其他關係或其他門市的判斷。\n確認保存？`))return;
   const guard=()=>{assertInsightReviewReady(storeId);if(payload!==before||key!==sessionKey||meta!==sessionMeta||peopleReadingEpoch!==epoch)throw new Error('資料或工作階段已變更，請重新核對；尚未保存。');};
   guard();const bundle=await applyPeopleRelationshipReview(payload.bundle,plan,payload.device);guard();
   await persist({...payload,bundle,dirty:true},{guard});
@@ -1900,9 +1900,9 @@ async function changePeopleRelationshipReview(button) {
 const PEOPLE_ALIAS_LABELS={confirmed:'同一人',rejected:'不同人',pending:'待確認',unreviewed:'尚未審核',conflict:'判斷不一致'};
 function peopleAliasReviewHTML(storeId,view,indices,state) {
   const people=indices.map(i=>view.result.people[i]),status=state?.conflict?'conflict':state?.status||'unreviewed';
-  const current=['success','automatic'].includes(view.state)&&view.result.basis===view.basis&&!!view.readingId;
+  const scope=view.readingId&&payload?.bundle?peopleAliasReviewAvailability(payload.bundle,view.readingId,indices):{canReview:false,canWithdraw:false},current=scope.canReview;
   const reasons=[...new Set(people.map(p=>p.candidateReason).filter(Boolean))];
-  return `<details class="people-alias-review" data-alias-review><summary>${status==='confirmed'?'同人連結 · 查看或撤回':'核對是否同一人'} · ${PEOPLE_ALIAS_LABELS[status]}</summary><p>${people.map(p=>esc(p.name)).join('／')}</p>${reasons.length?reasons.map(t=>'<p>'+esc(t)+'</p>').join(''):'<p class="muted">舊速覽未另列同人理由，請核對以下兩個稱呼的原句；同音或字形相似本身不是同人證據。</p>'}${people.map(p=>`<details><summary>${esc(p.name)} · 原句與來源</summary>${peopleEvidenceHTML(p.items.flatMap(i=>i.evidence))}</details>`).join('')}<p>只整合本店這組人物的速覽，不修改原文或正式人物；不連帶確認任何人物關係。可改為「不同人」或「待確認」恢復分開顯示，歷史保留。</p>${state?.conflict?'<p class="error">不同裝置的同人判斷不一致，保留分開顯示；請重新核對。</p>':''}${current?`<label>合併後的主要稱呼<select data-alias-primary><option value="">請選擇，另一稱呼仍保留</option>${people.map(p=>`<option value="${esc(p.name)}" ${state?.primaryName===p.name?'selected':''}>${esc(p.name)}</option>`).join('')}</select></label><div class="people-relation-options" role="group" aria-label="同人判斷">${['confirmed','rejected','pending'].map(s=>`<button type="button" data-reading-alias-status="${s}" data-reading-alias-reading="${esc(view.readingId)}" data-reading-alias-indices="${esc(JSON.stringify(indices))}">${PEOPLE_ALIAS_LABELS[s]}</button>`).join('')}</div>`:'<p class="muted">速覽或來源待更新，暫不保存新判斷；舊判斷完整保留。</p>'}</details>`;
+  return `<details class="people-alias-review" data-alias-review><summary>${status==='confirmed'?'同人連結 · 查看或撤回':'核對是否同一人'} · ${PEOPLE_ALIAS_LABELS[status]}</summary><p>${people.map(p=>esc(p.name)).join('／')}</p>${reasons.length?reasons.map(t=>'<p>'+esc(t)+'</p>').join(''):'<p class="muted">舊速覽未另列同人理由，請核對以下兩個稱呼的原句；同音或字形相似本身不是同人證據。</p>'}${people.map(p=>`<details><summary>${esc(p.name)} · 原句與來源</summary>${peopleEvidenceHTML(p.items.flatMap(i=>i.evidence))}</details>`).join('')}<p>只整合本店這組人物的速覽，不修改原文或正式人物；不連帶確認任何人物關係。可改為「不同人」或「待確認」恢復分開顯示，歷史保留。</p>${state?.conflict?'<p class="error">不同裝置的同人判斷不一致，保留分開顯示；請重新核對。</p>':''}${current?`${scope.otherSourcesChanged?'<p class="muted">其他筆記已更新；本組原句版本仍一致。請對照下方最新原文，再決定是否同人。</p>':''}<label>合併後的主要稱呼<select data-alias-primary><option value="">請選擇，另一稱呼仍保留</option>${people.map(p=>`<option value="${esc(p.name)}" ${state?.primaryName===p.name?'selected':''}>${esc(p.name)}</option>`).join('')}</select></label><div class="people-relation-options" role="group" aria-label="同人判斷">${['confirmed','rejected','pending'].map(s=>`<button type="button" data-reading-alias-status="${s}" data-reading-alias-reading="${esc(view.readingId)}" data-reading-alias-indices="${esc(JSON.stringify(indices))}">${PEOPLE_ALIAS_LABELS[s]}</button>`).join('')}</div>`:`<p class="muted">本組來源待更新，暫不保存新的同人判斷；舊判斷完整保留。</p>${scope.canWithdraw?`<button type="button" data-reading-alias-status="pending" data-reading-alias-reading="${esc(view.readingId)}" data-reading-alias-indices="${esc(JSON.stringify(indices))}">撤回合併，改為待確認</button>`:''}`}</details>`;
 }
 function peopleAliasHistoryHTML(storeId,view) {
   const readings=new Map(payload.bundle.ops.filter(o=>o.type==='source'&&o.data.peopleReading?.storeId===storeId).map(o=>[o.entity,o.data.peopleReading]));
@@ -1918,12 +1918,36 @@ async function changePeopleAliasReview(button) {
   const plan=planPeopleAliasReview(payload.bundle,button.dataset.readingAliasReading,JSON.parse(button.dataset.readingAliasIndices),status,primary);
   if(plan.storeId!==storeId)throw new Error('請回到對應門市核對。');if(!plan.changed)return;
   const label=status==='confirmed'?primary+'（'+plan.people.filter(p=>p.name!==primary).map(p=>p.name).join('、')+'）':plan.people.map(p=>p.name).join('／');
-  if(!confirm(`${plan.storeName}\n${label}\n\n${PEOPLE_ALIAS_LABELS[plan.beforeStatus]} → ${PEOPLE_ALIAS_LABELS[status]}\n\n${status==='confirmed'?'整合速覽顯示，保留兩個原稱呼。':'恢復分開顯示。'}\n只保存可撤回的同人連結與歷史；不改正式人物、原文、任何關係判斷、待辦或其他門市。\n確認保存？`))return;
+  if(!confirm(`${plan.storeName}\n${label}\n\n${plan.otherSourcesChanged?'其他筆記已更新；請先核對最新原文。本次僅判斷這組保留的原句。\n\n':''}${PEOPLE_ALIAS_LABELS[plan.beforeStatus]} → ${PEOPLE_ALIAS_LABELS[status]}\n\n${status==='confirmed'?'整合速覽顯示，保留兩個原稱呼。':'恢復分開顯示。'}\n只保存可撤回的同人連結與歷史；不改正式人物、原文、任何關係判斷、待辦或其他門市。\n確認保存？`))return;
   const guard=()=>{assertInsightReviewReady(storeId);if(payload!==before||key!==sessionKey||meta!==sessionMeta||peopleReadingEpoch!==epoch)throw new Error('資料或工作階段已變更，請重新核對；尚未保存。');};
   guard();const bundle=await applyPeopleAliasReview(payload.bundle,plan,payload.device);guard();
   await persist({...payload,bundle,dirty:true},{guard});
   if(!payload||key!==sessionKey||pendingLock||document.hidden)return;
   render();openVisitBrief(storeId,{preservePosition:true});toast(`同人判斷已保存為「${PEOPLE_ALIAS_LABELS[status]}」；原文與人物關係判斷保留。`);
+}
+function peopleReadingRecoveryHTML(storeId,view) {
+  if(['success','automatic'].includes(view?.state)&&view.result?.basis===view.basis)return '';
+  const job=typeof peopleBatchStatus==='undefined'?null:peopleBatchStatus?.entries?.find(j=>j.storeId===storeId);
+  return `<section class="people-reading-recovery"><p role="status">${esc(job?({queued:'本店已排隊，等待 Codex 整理；不是等待你確認。',running:'Codex 正在整理本店。',ready:'本店已整理，等待 App 核對版本並保存。',saved:'前份已保存；正在核對本店新來源。',failed:'本店整理失敗，可重新排隊。',stale:'整理期間來源已變，可重新排隊。'}[job.state]||'等待核對整理狀態。'):'可要求更新本店速覽，或檢查整理進度。')}${job?.message?' '+esc(job.message):''}</p><button type="button" data-reading-refresh="${esc(storeId)}">${job&&['queued','running','ready'].includes(job.state)?'檢查本店整理進度':'要求更新本店速覽／重試'}</button><p class="muted">由既有 Codex 排程處理，不在 App 呼叫 AI；排隊不等於已完成。每4天的既有排程不變，Mac 與 Codex 需可執行。原文與判斷歷史保留。</p></section>`;
+}
+async function requestPeopleReadingRefresh(storeId) {
+  assertInsightReviewReady(storeId);
+  if(!canScanInsights(true)||payload.dirty||!payload.token||!Number.isSafeInteger(payload.serverVersion)||peopleBatchRunning)throw Error('請先關閉編輯並等同步完成；尚未重新排隊。');
+  await peopleBatchTick(true,true);assertInsightReviewReady(storeId);
+  loadPeopleReadingView(storeId);refreshPeopleReadingPanel(storeId);
+  if(['success','automatic'].includes(peopleReadingViews.get(storeId)?.state)){toast('本店速覽已跟上目前筆記版本。');return;}
+  if(payload.dirty){toast('本機已有新整理，請先關閉門市等待同步，再檢查本店進度。');return;}
+  const before=payload,sessionKey=key,epoch=peopleReadingEpoch;
+  const guard=()=>{assertInsightReviewReady(storeId);if(payload!==before||key!==sessionKey||peopleReadingEpoch!==epoch||payload.dirty)throw Error('來源或同步已變更，請重新檢查本店進度。');};
+  guard();const request=peopleReadingRequest(payload.bundle,storeId);const state=await api('/api/people-batch/status',{method:'POST',body:{vaultId:payload.bundle.vaultId}});guard();
+  if(!state.enabled)throw Error('既有批次整理尚未啟用，請在資料與安全檢查；未擅自啟用。');
+  const job=state.entries.find(j=>j.storeId===storeId);
+  if(!job||!['queued','running','ready'].includes(job.state)){
+    await api('/api/people-batch/stage',{method:'POST',body:{vaultId:payload.bundle.vaultId,snapshotVersion:payload.serverVersion,requests:[request],retry:true}});guard();
+  }
+  peopleBatchStatus=await api('/api/people-batch/status',{method:'POST',body:{vaultId:payload.bundle.vaultId}});guard();
+  loadPeopleReadingView(storeId);refreshPeopleReadingPanel(storeId);renderPeopleBatchStatus();
+  toast('已檢查本店整理進度；排隊工作由既有 Codex 排程處理，尚未代表完成。');
 }
 function peopleReadingHTML(storeId) {
   const view=peopleReadingViews.get(storeId),data=view?.result;
@@ -1931,7 +1955,7 @@ function peopleReadingHTML(storeId) {
   const actions=`${view?.state==='automatic'?`<button type="button" data-reading-approve="${esc(storeId)}">核對這份速覽</button>`:''}<details><summary>手動單店工具（備援）</summary><div class="people-reading-actions"><button type="button" data-reading-export="${esc(storeId)}">準備本店整理資料</button><button type="button" data-reading-import="${esc(storeId)}">載入整理結果並核對</button><input type="file" accept=".json,application/json" data-reading-file="${esc(storeId)}" hidden></div><p class="muted">只在需要手動處理時使用；日常由批次排程接手，不必逐店下載。</p></details>`;
 
   const history=view?.history?.length?`<details><summary>人物速覽歷史 · ${view.history.length} 份</summary>${view.history.map(h=>`<details><summary>${h.peopleReading.mode==='automatic'?'AI 整理':'人工核對'} · ${esc(dateText(h.peopleReading.approvedAt||h.peopleReading.generatedAt))} · ${esc(h.id)}</summary><pre>${esc(JSON.stringify(h.peopleReading.result,null,2))}</pre></details>`).join('')}</details>`:'';
-  if(!data)return `<h2>到店前先掃這一區</h2><p class="people-reading-status" role="status">${esc(state)}</p>${actions}${payload?.bundle?peopleRelationshipHistoryHTML(storeId):''}${history}`;
+  if(!data)return `<h2>到店前先掃這一區</h2><p class="people-reading-status" role="status">${esc(state)}</p>${peopleReadingRecoveryHTML(storeId,view)}${actions}${payload?.bundle?peopleRelationshipHistoryHTML(storeId):''}${history}`;
   const aliasState=indices=>view.readingId&&payload?.bundle?peopleAliasReviewState(payload.bundle,view.readingId,indices):null;
   const units=peopleAliasLayout(data,aliasState);
   const card=(person,index,indices=[index],merged=false,same=false)=>{
@@ -1951,12 +1975,12 @@ function peopleReadingHTML(storeId) {
   };
   const group=(kind,title)=>{const selected=units.filter(u=>u.kind===kind);return selected.length?`<details class="people-reading-tier"><summary>${title} · ${selected.reduce((n,u)=>n+u.indices.length,0)}</summary>${selected.map(unitHTML).join('')}</details>`:'';};
 
-  return `<h2>到店前先掃這一區</h2><span data-insight-change-slot="${esc(storeId)}">${insightChangeBadgeHTML(storeId)}</span><p class="people-reading-status" role="status">${esc(state)}${view.generatedAt?' · '+esc(dateText(view.generatedAt)):''}</p>${(!['success','automatic'].includes(view.state)||data.basis!==view.basis)?'<p class="muted">目前保留前次速覽，以完整原文為準。</p>':''}${units.some(u=>u.kind==='local')?units.filter(u=>u.kind==='local').map(unitHTML).join(''):'<p class="muted">未能安全辨識本店人物；完整原文保留在下方。</p>'}${group('historical','歷史人物')}${group('mentioned','其他門市提及')}${group('uncertain','稱呼待釐清')}<p id="people-relation-error" class="error" role="alert"></p>${actions}${view.readingId?peopleAliasHistoryHTML(storeId,view):''}${view.readingId?peopleRelationshipHistoryHTML(storeId):''}${history}<details><summary>閱讀來源與限制</summary><p>${view.state==='automatic'?'Codex 自動整理，尚未人工核對；':'經人工核對的閱讀整理；'}可回查原句。紫色相鄰卡是疑似同人；只有你逐組確認後才合併速覽顯示，保留原稱呼、原句與可撤回的審核歷史。正式人物與關係圖身分不會被自動改寫；整理不更改原文、日期、關係審核或待辦。新版同人檢視規則首次啟用會補整理；之後沒有新來源不反覆分析。關係原文不等於已人工確認。逐筆「確定／否定／待確認」只作用於當前人物下的這條具體說法；不連帶確認同名人物或跨店關係。既有關係卡的判斷獨立保留，不以相似姓名或引句自動互相覆蓋；整份速覽核對不代替關係核實。</p></details>`;
+  return `<h2>到店前先掃這一區</h2><span data-insight-change-slot="${esc(storeId)}">${insightChangeBadgeHTML(storeId)}</span><p class="people-reading-status" role="status">${esc(state)}${view.generatedAt?' · '+esc(dateText(view.generatedAt)):''}</p>${(!['success','automatic'].includes(view.state)||data.basis!==view.basis)?'<p class="muted">目前保留前次速覽，以完整原文為準。</p>':''}${units.some(u=>u.kind==='local')?units.filter(u=>u.kind==='local').map(unitHTML).join(''):'<p class="muted">未能安全辨識本店人物；完整原文保留在下方。</p>'}${group('historical','歷史人物')}${group('mentioned','其他門市提及')}${group('uncertain','稱呼待釐清')}<p id="people-relation-error" class="error" role="alert"></p>${peopleReadingRecoveryHTML(storeId,view)}${actions}${view.readingId?peopleAliasHistoryHTML(storeId,view):''}${view.readingId?peopleRelationshipHistoryHTML(storeId):''}${history}<details><summary>閱讀來源與限制</summary><p>${view.mode==='automatic'||view.state==='automatic'?'Codex 自動整理，尚未人工核對；':'經人工核對的閱讀整理；'}可回查原句。紫色相鄰卡是疑似同人；只有你逐組確認後才合併速覽顯示，保留原稱呼、原句與可撤回的審核歷史。正式人物與關係圖身分不會被自動改寫；整理不更改原文、日期、關係審核或待辦。新版同人檢視規則首次啟用會補整理；之後沒有新來源不反覆分析。關係原文不等於已人工確認。逐筆「確定／否定／待確認」只作用於當前人物下的這條具體說法；不連帶確認同名人物或跨店關係。既有關係卡的判斷獨立保留，不以相似姓名或引句自動互相覆蓋；整份速覽核對不代替關係核實。</p></details>`;
 }
 function refreshPeopleReadingPanel(storeId) {
   if(document.hidden||pendingLock||inlineTextContext||editorContext||singleStoreContext||!$('review')?.open||$('review').dataset.singleStoreId!==storeId)return;
   const slot=$('people-reading-panel');if(!slot)return;
-  const snapshot=peopleReadingViews.get(storeId);const signature=JSON.stringify([snapshot?.state,snapshot?.readingId,snapshot?.basis,snapshot?.generatedAt,snapshot?.result,snapshot?.progress,payload?.bundle.ops.filter(o=>o.data.peopleRelationshipReview||o.data.peopleAliasReview)]);if(slot.dataset.readingSignature===signature)return;
+  const snapshot=peopleReadingViews.get(storeId);const signature=JSON.stringify([snapshot?.state,snapshot?.readingId,snapshot?.basis,snapshot?.generatedAt,snapshot?.result,snapshot?.progress,typeof peopleBatchStatus==='undefined'?null:peopleBatchStatus?.entries?.find(j=>j.storeId===storeId),payload?.bundle.ops.filter(o=>o.data.peopleRelationshipReview||o.data.peopleAliasReview)]);if(slot.dataset.readingSignature===signature)return;
   // Preserve open people/evidence and source focus; never rerender the editor.
   const open=[...slot.querySelectorAll('[data-reading-key][open]')].map(n=>n.dataset.readingPerson);
   const tiers=[...slot.querySelectorAll('.people-reading-tier[open]')].map(n=>n.querySelector('summary')?.textContent);
@@ -1982,7 +2006,7 @@ function loadPeopleReadingView(storeId) {
   const saved=currentPeopleReading(payload.bundle,storeId);let basis='';
   try{basis=peopleReadingPlan(storeId).basis;}catch{}
   const doc=saved.current?.peopleReading;
-  peopleReadingViews.set(storeId,{basis,readingId:saved.current?.id,result:doc?.result||null,generatedAt:doc?.approvedAt||doc?.generatedAt||null,history:saved.history,state:saved.conflict?'conflict':doc?(doc.basis===basis?(doc.mode==='automatic'?'automatic':'success'):'stale'):'missing'});
+  peopleReadingViews.set(storeId,{basis,readingId:saved.current?.id,result:doc?.result||null,generatedAt:doc?.approvedAt||doc?.generatedAt||null,history:saved.history,mode:doc?.mode||'manual',state:saved.conflict?'conflict':doc?(doc.basis===basis?(doc.mode==='automatic'?'automatic':'success'):'stale'):'missing'});
 }
 function peopleReadingTick() {
   if(!payload||pendingLock||document.hidden||!$('review')?.open||!$('review').dataset.singleStoreId)return;
@@ -4334,6 +4358,7 @@ $('monthly-analysis-dialog').addEventListener('close',()=>{analysisImport=null;}
 $('monthly-analysis-dialog').addEventListener('change', event=>{ if(event.target.matches('[data-analysis-choice]') && analysisImport){delete analysisImport.finalChoices;$('analysis-final').innerHTML='';} if(event.target.matches('#analysis-files,#analysis-sales,#analysis-visit')){analysisImport=null;$('analysis-matches').innerHTML='';} });
 
 $('review').addEventListener('click',event=>{
+ const refreshButton=event.target.closest?.('[data-reading-refresh]');if(refreshButton){void run(()=>requestPeopleReadingRefresh(refreshButton.dataset.readingRefresh),'people-relation-error');return;}
  const aliasButton=event.target.closest?.('[data-reading-alias-status]');if(aliasButton){void run(()=>changePeopleAliasReview(aliasButton),'people-relation-error');return;}
  const relationButton=event.target.closest?.('[data-reading-relation-status]');if(relationButton){void run(()=>changePeopleRelationshipReview(relationButton),'people-relation-error');return;}
  const approveButton=event.target.closest?.('[data-reading-approve]');if(approveButton){const storeId=approveButton.dataset.readingApprove,doc=currentPeopleReading(payload.bundle,storeId).current?.peopleReading;if(doc){const text=JSON.stringify({format:'pharmacy-people-review-1',vaultId:payload.bundle.vaultId,result:doc.result});void run(()=>previewPeopleReadingFile({size:new TextEncoder().encode(text).length,text:async()=>text},storeId));}return;}

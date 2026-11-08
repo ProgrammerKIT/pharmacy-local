@@ -17,3 +17,13 @@ test('real TLS handoff requires existing device auth and cannot modify the forma
 });
 
 test('queue uses existing application data rather than protected Documents',async()=>{const {peopleAutomationDirectory,defaultDataDir}=await import('../server.mjs');assert.equal(peopleAutomationDirectory(),path.join(defaultDataDir(),'people-automation'));assert.ok(!peopleAutomationDirectory().includes('/Documents/'));});
+
+test('explicit retry requeues only failed/stale same-basis jobs and cannot reset running or saved work',t=>{
+ const x=fixture(t);x.api.configure(true,x.b.vaultId);x.api.stage(x.body);let claim=x.api.claim();
+ x.api.submit({...claim,error:'虛構失敗'});x.api.stage({...x.body,retry:true});assert.equal(x.api.status(x.body).entries[0].state,'queued');
+ claim=x.api.claim();x.api.stage({...x.body,retry:true});assert.equal(x.api.status(x.body).entries[0].state,'running');
+ x.api.submit(x.output(claim));x.api.stage({...x.body,retry:true});assert.equal(x.api.status(x.body).entries[0].state,'ready');
+ x.api.acknowledge({...x.body,id:claim.id,basis:x.q.plan.basis,outcome:'stale'});x.api.stage({...x.body,retry:true});assert.equal(x.api.status(x.body).entries[0].state,'queued');
+ claim=x.api.claim();x.api.submit(x.output(claim));x.api.acknowledge({...x.body,id:claim.id,basis:x.q.plan.basis,outcome:'saved'});x.api.stage({...x.body,retry:true});assert.equal(x.api.status(x.body).entries[0].state,'saved');
+ assert.throws(()=>x.api.stage({...x.body,retry:'yes'}));
+});
