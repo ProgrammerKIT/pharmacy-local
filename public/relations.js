@@ -514,15 +514,48 @@ export async function applyPeopleReading(bundle,input,expected,device,approvedAt
   return validateBundle(next);
 }
 
+// A review belongs to its exact people/claim evidence, not unrelated reminders or
+// other notes. Never rebase quotes onto a newer visit revision. The current full
+// basis is still captured by the save plan to reject changes during confirmation.
+function peopleReviewScope(bundle,readingId,state,evidence) {
+  const saved=currentPeopleReading(bundle,state.reading.storeId),records=project(bundle);
+  const store=records.find(r=>r.type==='store'&&r.id===state.reading.storeId);
+  const active=!saved.conflict&&saved.current?.id===readingId&&safeRegionalStore(store)&&!store.mergedInto;
+  let basis='',identity=false;
+  try {
+    basis=peopleReadingRequest(bundle,state.reading.storeId).plan.basis;
+    const old=JSON.parse(state.reading.basis),now=JSON.parse(basis);
+    const ignored=new Set(['nextRemember','nextRememberTasks','nextRememberImports','monthlyVisits','datePlans','datePlanOrder','everyTimeMust']);
+    const relevant=d=>JSON.stringify(Object.entries(d).filter(([k])=>!ignored.has(k)).sort(([a],[b])=>a.localeCompare(b)));
+    const before=old[2]?.length===1?bundle.ops.find(o=>o.id===old[2][0]&&o.type==='store'&&o.entity===store.id&&!o.deleted):null;
+    identity=old[0]===now[0]&&old[4]===now[4]&&!!before&&relevant(before.data)===relevant(store.heads[0].data);
+  } catch {}
+  const exact=evidence.length>0&&evidence.every(e=>{
+    const visit=records.find(r=>r.type==='visit'&&r.id===e.visitId);
+    return visit&&!visit.deleted&&!visit.conflict&&!visit.googleUpdatePending&&!visit.sourceMissing&&visit.store===store?.id&&visit.heads.length===1&&visit.heads[0].id===e.revisionId&&String(visit.text||'').includes(e.quote);
+  });
+  return {canReview:active&&identity&&exact,canWithdraw:active&&state.heads.length>0,
+    otherSourcesChanged:state.reading.basis!==basis,basis: basis||JSON.stringify([store?.heads?.map(h=>h.id)||[],records.filter(r=>r.type==='visit'&&r.store===store?.id).map(r=>r.heads.map(h=>h.id))])};
+}
+export function peopleAliasReviewAvailability(bundle,readingId,indices) {
+  const state=peopleAliasReviewState(bundle,readingId,indices);
+  return peopleReviewScope(bundle,readingId,state,state.people.flatMap(p=>p.items.flatMap(i=>i.evidence)));
+}
+export function peopleRelationshipReviewAvailability(bundle,readingId,personIndex,itemIndex) {
+  const state=peopleRelationshipReviewState(bundle,readingId,personIndex,itemIndex);
+  return peopleReviewScope(bundle,readingId,state,state.item.evidence);
+}
+
 export function planPeopleRelationshipReview(bundle, readingId, personIndex, itemIndex, status) {
   validateBundle(bundle);
   if(!['confirmed','rejected','pending'].includes(status))throw new Error('請選擇確定、否定或待確認。');
   const state=peopleRelationshipReviewState(bundle,readingId,personIndex,itemIndex),storeId=state.reading.storeId;
-  const saved=currentPeopleReading(bundle,storeId),request=peopleReadingRequest(bundle,storeId);
-  if(saved.conflict||saved.current?.id!==readingId||state.reading.basis!==request.plan.basis)throw new Error('速覽或來源已變更，請先重新整理核對；舊判斷與原文保留。');
-  return {vaultId:bundle.vaultId,storeId,storeName:request.store.name,readingId,personIndex,itemIndex,status,
+  const store=project(bundle).find(r=>r.type==='store'&&r.id===storeId);
+  const scope=peopleRelationshipReviewAvailability(bundle,readingId,personIndex,itemIndex);
+  if(!scope.canReview&&!(status==='pending'&&scope.canWithdraw))throw new Error('這條關係的來源或速覽已變更，請先重新整理；既有判斷可撤回為待確認。');
+  return {vaultId:bundle.vaultId,storeId,storeName:store.name,readingId,personIndex,itemIndex,status,
     beforeStatus:state.conflict?'conflict':state.status||'unreviewed',personName:state.person.name,item:structuredClone(state.item),
-    basis:request.plan.basis,replaces:state.heads.map(o=>o.entity).sort(),changed:state.conflict||state.status!==status};
+    basis:scope.basis,otherSourcesChanged:scope.otherSourcesChanged,replaces:state.heads.map(o=>o.entity).sort(),changed:state.conflict||state.status!==status};
 }
 export async function applyPeopleRelationshipReview(bundle, expected, device, reviewedAt=new Date().toISOString()) {
   if(!expected)throw new Error('缺少關係審核預覽。');
@@ -544,12 +577,13 @@ export function planPeopleAliasReview(bundle,readingId,personIndices,status,prim
   validateBundle(bundle);
   if(!['confirmed','rejected','pending'].includes(status))throw new Error('請選擇同一人、不同人或待確認。');
   const state=peopleAliasReviewState(bundle,readingId,personIndices),storeId=state.reading.storeId;
-  const saved=currentPeopleReading(bundle,storeId),request=peopleReadingRequest(bundle,storeId);
-  if(saved.conflict||saved.current?.id!==readingId||state.reading.basis!==request.plan.basis)throw new Error('速覽或來源已變更，請重新整理核對；原判斷保留。');
+  const store=project(bundle).find(r=>r.type==='store'&&r.id===storeId);
+  const scope=peopleAliasReviewAvailability(bundle,readingId,personIndices);
+  if(!scope.canReview&&!(status==='pending'&&scope.canWithdraw))throw new Error('這組人物的來源或速覽已變更，請重新整理；既有合併可撤回為待確認。');
   if(status==='confirmed'&&!state.people.some(p=>p.name===primaryName)||status!=='confirmed'&&primaryName!=='')throw new Error('請選擇這組人物的主要稱呼。');
-  return {vaultId:bundle.vaultId,storeId,storeName:request.store.name,readingId,personIndices:personIndices.slice(),status,primaryName,
+  return {vaultId:bundle.vaultId,storeId,storeName:store.name,readingId,personIndices:personIndices.slice(),status,primaryName,
     beforeStatus:state.conflict?'conflict':state.status||'unreviewed',beforePrimaryName:state.primaryName,
-    people:structuredClone(state.people),basis:request.plan.basis,replaces:state.heads.map(o=>o.entity).sort(),
+    people:structuredClone(state.people),basis:scope.basis,otherSourcesChanged:scope.otherSourcesChanged,replaces:state.heads.map(o=>o.entity).sort(),
     changed:state.conflict||state.status!==status||state.primaryName!==primaryName};
 }
 export async function applyPeopleAliasReview(bundle,expected,device,reviewedAt=new Date().toISOString()) {

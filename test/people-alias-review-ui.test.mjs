@@ -15,7 +15,7 @@ async function harness(){
   confirm:t=>{confirmations.push(t);return ctx.answer;},render(){},openVisitBrief(){},toast:t=>ctx.lastToast=t,
   persist:async(next,{guard})=>{if(ctx.duringSave)ctx.duringSave();guard();writes.push(next);ctx.payload=next;}});
  vm.runInContext(app.slice(app.indexOf('const peopleReadingViews'),app.indexOf('function loadPeopleReadingView(')),ctx);
- const view={readingId:f.readingId,result:f.input.result,basis:f.input.result.basis,state:'automatic'};
+ const view={readingId:f.readingId,result:f.input.result,basis:f.input.result.basis,state:'automatic',mode:'automatic'};
  vm.runInContext(`peopleReadingViews.set('s',${JSON.stringify(view)})`,ctx);
  const button={dataset:{readingAliasReading:f.readingId,readingAliasIndices:'[0,2]',readingAliasStatus:'confirmed'},closest:()=>({querySelector:()=>({value:ctx.primary??'雨晴'})})};
  return {ctx,f,writes,confirmations,button,view,html:()=>ctx.peopleReadingHTML('s')};
@@ -50,7 +50,22 @@ test('disk failure, lock, hidden page, draft and async changes preserve prior st
  }
 });
 test('source staleness disables identity choices, keeps history; text escapes HTML',async()=>{
- const h=await harness();const view={...h.view,state:'stale',basis:'new'};vm.runInContext(`peopleReadingViews.set('s',${JSON.stringify(view)})`,h.ctx);
- assert.doesNotMatch(h.html(),/data-reading-alias-status/);assert.match(h.html(),/暫不保存新判斷/);
+ const h=await harness();const op=h.ctx.payload.bundle.ops.find(o=>o.type==='visit'&&o.entity==='v0');h.ctx.payload.bundle.ops.push(c.revision('visit','v0',{...op.data,text:op.data.text+'新原文'},[op.id],'test'));const view={...h.view,state:'stale',basis:r.peopleReadingRequest(h.ctx.payload.bundle,'s').plan.basis};vm.runInContext(`peopleReadingViews.set('s',${JSON.stringify(view)})`,h.ctx);
+ assert.doesNotMatch(h.html(),/data-reading-alias-status/);assert.match(h.html(),/暫不保存新的同人判斷/);
  const data=structuredClone(view.result);data.people[0].candidateReason='<script>bad</script>';assert.match(h.ctx.peopleAliasReviewHTML('s',{...view,result:data},[0,2],null),/&lt;script&gt;/);
+});
+
+test('stale automatic reading keeps AI attribution, scoped choices and a visible recovery progress entry',async()=>{
+ const h=await harness(),op=h.ctx.payload.bundle.ops.find(o=>o.type==='store'&&o.entity==='s');
+ h.ctx.payload.bundle.ops.push(c.revision('store','s',{...op.data,nextRemember:'提醒更新'},[op.id],'synthetic'));
+ vm.runInContext(`peopleReadingViews.set('s',${JSON.stringify({...h.view,state:'stale',mode:'automatic',basis:r.peopleReadingRequest(h.ctx.payload.bundle,'s').plan.basis})})`,h.ctx);
+ const html=h.html();assert.match(html,/data-reading-alias-status="confirmed"/);assert.match(html,/本組原句版本仍一致/);assert.match(html,/data-reading-refresh="s"/);assert.match(html,/Codex 自動整理，尚未人工核對/);assert.doesNotMatch(html,/經人工核對的閱讀整理/);
+ h.ctx.peopleBatchStatus={entries:[{storeId:'s',state:'queued'}]};assert.match(h.html(),/不是等待你確認/);
+});
+test('an already merged card with changed source keeps an explicit withdrawal button but no new approval',async()=>{
+ const h=await harness();h.ctx.answer=true;await h.ctx.changePeopleAliasReview(h.button);
+ const op=h.ctx.payload.bundle.ops.find(o=>o.type==='visit'&&o.entity==='v0');h.ctx.payload.bundle.ops.push(c.revision('visit','v0',{...op.data,text:op.data.text+'新來源'},[op.id],'synthetic'));
+ vm.runInContext(`peopleReadingViews.set('s',${JSON.stringify({...h.view,state:'stale',mode:'automatic',basis:r.peopleReadingRequest(h.ctx.payload.bundle,'s').plan.basis})})`,h.ctx);
+ assert.match(h.html(),/雨晴（雨清）/);assert.match(h.html(),/撤回合併，改為待確認/);assert.doesNotMatch(h.html(),/data-reading-alias-status="confirmed"/);
+ h.button.dataset.readingAliasStatus='pending';await h.ctx.changePeopleAliasReview(h.button);assert.doesNotMatch(h.html(),/雨晴（雨清）/);assert.match(h.html(),/同人審核歷史 · 2 筆/);
 });

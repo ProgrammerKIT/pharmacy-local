@@ -11,7 +11,7 @@ async function harness(){
  const $=id=>{if(!nodes.has(id))nodes.set(id,{dataset:{singleStoreId:'s'}});return nodes.get(id);};
  const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
  const ctx=vm.createContext({JSON,Date,Number,Set,Map,peopleReadingEpoch:0,key:{},meta:{},payload:{device:'synthetic',bundle:f.bundle},pendingLock:false,document:{hidden:false},$,
-  peopleRelationshipReviewState:c.peopleRelationshipReviewState,planPeopleRelationshipReview:r.planPeopleRelationshipReview,applyPeopleRelationshipReview:r.applyPeopleRelationshipReview,
+  peopleRelationshipReviewState:c.peopleRelationshipReviewState,peopleRelationshipReviewAvailability:r.peopleRelationshipReviewAvailability,planPeopleRelationshipReview:r.planPeopleRelationshipReview,applyPeopleRelationshipReview:r.applyPeopleRelationshipReview,
   esc,dateText:v=>v,peopleEvidenceHTML:e=>`<details><summary>原句與來源版本</summary>${e.map(x=>esc(x.quote)).join('')}</details>`,
   assertInsightReviewReady(){if(ctx.pendingLock||ctx.document.hidden||ctx.draft)throw Error('blocked');},
   confirm:t=>{confirmations.push(t);return ctx.answer;},render(){},openVisitBrief(){},toast:t=>ctx.lastToast=t,
@@ -24,7 +24,7 @@ async function harness(){
 test('every relationship has three accessible choices and exact evidence; stale source disables choices',async()=>{
  const h=await harness(),html=h.html();for(const s of ['confirmed','rejected','pending'])assert.match(html,new RegExp(`data-reading-relation-status="${s}"`));
  assert.match(html,/尚未人工判斷/);assert.match(html,/原句與來源版本/);assert.match(html,/aria-label="人工判斷/);
- h.view.state='stale';assert.doesNotMatch(h.html(),/data-reading-relation-status/);assert.match(h.html(),/來源或速覽已變更/);
+ const op=h.ctx.payload.bundle.ops.find(o=>o.type==='visit');h.ctx.payload.bundle.ops.push(c.revision('visit',op.entity,{...op.data,text:op.data.text+'新原文'},[op.id],'test'));h.view.state='stale';assert.doesNotMatch(h.html(),/data-reading-relation-status/);assert.match(h.html(),/來源或速覽已變更/);
 });
 test('cancel is inert; explicit confirmation saves only this decision and offers accurate scope',async()=>{
  const h=await harness();h.ctx.answer=false;await h.ctx.changePeopleRelationshipReview(h.button);assert.equal(h.writes.length,0);
