@@ -817,6 +817,8 @@ export function validData(type, d) {
   if (!plain(d)) return false;
   if (d.manualVisitAttendance !== undefined && !validManualVisitAttendance({ type, data: d, deleted: false, parents: [], at: d.manualVisitAttendance?.at })) return false;
   if(d.peopleAliasReview!==undefined&&(type!=='source'||!validPeopleAliasReview(d.peopleAliasReview)||['peopleReading','peopleRelationshipReview','monthlyAnalysis','monthlyFeedback','csvExclusionEvents','csvExclusionAuditOf'].some(k=>d[k]!==undefined)))return false;
+  if (d.monthlyTypedFeedback !== undefined && (type!=='source' || !validMonthlyTypedFeedback(d.monthlyTypedFeedback) || ['analysisStoreCode','monthlyAnalysis','monthlyFeedback','peopleReading','peopleRelationshipReview','peopleAliasReview','manualVisitAttendance'].some(key=>d[key]!==undefined))) return false;
+  if (d.analysisStoreCode !== undefined && (type !== 'source' || !validAnalysisStoreCode(d.analysisStoreCode) || ['monthlyAnalysis','monthlyFeedback','peopleReading','peopleRelationshipReview','peopleAliasReview','manualVisitAttendance','csvExclusionEvents'].some(key=>d[key]!==undefined))) return false;
   if (d.monthlyFeedback !== undefined && (type !== 'source' || !validMonthlyFeedback(d.monthlyFeedback) || d.monthlyAnalysis !== undefined || d.peopleReading !== undefined || d.peopleRelationshipReview !== undefined)) return false;
   if (d.peopleRelationshipReview !== undefined && (type !== 'source' || !validPeopleRelationshipReview(d.peopleRelationshipReview))) return false;
   if (d.peopleReading !== undefined && (type !== 'source' || !validPeopleReadingDocument(d.peopleReading))) return false;
@@ -923,7 +925,8 @@ export function validateBundle(b) {
       const prior = sourceEntities.get(id);
       if (!prior || prior.entity === source.entity || !prior.data.monthlyAnalysis || prior.data.monthlyAnalysis.channel !== info.channel || prior.data.monthlyAnalysis.visitMonth !== info.visitMonth || prior.data.monthlyAnalysis.supersedes.includes(source.entity)) throw new Error('每月分析修訂鏈不一致。');
     }
-    const rows = parseMonthlyAnalysis(unb64(b.blobs[data.blob]));
+    const document = parseMonthlyAnalysisDocument(unb64(b.blobs[data.blob])), rows=document.stores;
+    if(document.format==='yq-alert-2' && (document.salesMonth!==info.salesMonth || document.visitMonth!==info.visitMonth)) throw new Error('分析原件月份與保存期別不一致。');
     if (rows.length !== info.assignments.length || rows.length !== data.rows || rows.some(row => analysisChannel(row.channel) !== info.channel)) throw new Error('每月分析原文與配對資料不一致。');
     const assigned = new Set();
     for (const match of info.assignments) if (match.storeId) {
@@ -941,7 +944,9 @@ export function validateBundle(b) {
   }
   for (let i = 0; i < analysisQueue.length; i++) for (const child of analysisChildren.get(analysisQueue[i]) || []) { const degree = analysisDegrees.get(child) - 1; analysisDegrees.set(child, degree); if (!degree) analysisQueue.push(child); }
   if (analysisQueue.length !== analysisAncestors.size) throw new Error('每月分析修訂鏈形成循環。');
+  validateAnalysisStoreCodes(b, sourceEntities, seen);
   validateMonthlyFeedbackSources(b, sourceEntities, seen);
+  validateMonthlyTypedFeedbackSources(b, sourceEntities, seen);
   return b;
 }
 export function merge(a, b) {
@@ -2441,20 +2446,142 @@ export function analysisName(value) {
     .replace(/^(?:大樹連鎖藥局|大樹藥局|大樹|佑全保健藥妝|佑全藥局|佑全|健康人生藥局)[\s\-－]*/, '')
     .replace(/\s/g, '').replace(/藥局$/, '').replace(/店$/, '');
 }
-export function parseMonthlyAnalysis(raw) {
+// v2 is a separate, closed input contract; v1 originals retain their exact path.
+export const YQ_CORE_CHECKS = Object.freeze([
+  {id:'core.shelf_haud',label:'架上 HAUD 盒數',type:'number',unit:'盒',min:0,max:999},
+  {id:'core.stock_status',label:'HAUD 庫存狀態',type:'single',options:['正常','偏低','斷貨','未確認']},
+  {id:'core.push_sku',label:'店員現在主推哪一支',type:'single',options:['HAUD','HAMD','Complete','其他','沒特別推','未詢問'],otherTextOption:'其他'},
+  {id:'core.main_action',label:'本店主軸動作',type:'single',options:['做了','忘了','店員不配合','不適用']}
+].map(check=>Object.freeze({...check,...(check.options?{options:Object.freeze(check.options)}:{})})));
+const analysisCode = code => typeof code==='string' && /^[A-Z]?\d{3,4}$/.test(code);
+function analysisInputError(path, message) { throw new Error(`${path}：${message}；尚未匯入，原檔不變。`); }
+function analysisKeys(value, required, optional, path) {
+  if(!plain(value)) analysisInputError(path,'必須是物件');
+  for(const key of Object.keys(value)) if(!required.includes(key) && !optional.includes(key)) analysisInputError(`${path}.${key}`,'不支援的欄位');
+  for(const key of required) if(!Object.hasOwn(value,key)) analysisInputError(`${path}.${key}`,'缺少必填欄位');
+}
+function analysisInputText(value, max, path, nonempty=false) {
+  if(!str(value,max) || nonempty && !value.trim()) analysisInputError(path,`必須是${nonempty?'非空白':''}字串，上限 ${max} 字元`);
+}
+export function parseMonthlyAnalysisDocument(raw) {
   if (!(raw instanceof Uint8Array) || raw.length > 2097152) throw new Error('JSON 原檔上限 2 MB。');
-  const root = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(raw).replace(/^\uFEFF/, ''));
+  let root;
+  try { root=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(raw).replace(/^\uFEFF/,'')); }
+  catch { analysisInputError('$','不是有效 UTF-8 JSON'); }
+  if(plain(root) && root.format==='yq-alert-2') {
+    analysisKeys(root,['format','salesMonth','visitMonth','channel','coreChecks','stores'],[],'$');
+    for(const key of ['salesMonth','visitMonth']) if(!analysisMonth(root[key])) analysisInputError(`$.${key}`,'需要 YYYY-MM');
+    if(analysisChannel(root.channel)!=='佑全') analysisInputError('$.channel','v2 僅支援佑全');
+    if(!Array.isArray(root.coreChecks) || root.coreChecks.length!==4) analysisInputError('$.coreChecks','必須提供固定四題');
+    root.coreChecks.forEach((check,i)=>{
+      const expected=YQ_CORE_CHECKS[i],path=`$.coreChecks[${i}]`;
+      analysisKeys(check,Object.keys(expected),[],path);
+      for(const key of Object.keys(expected)) if(JSON.stringify(check[key])!==JSON.stringify(expected[key])) analysisInputError(`${path}.${key}`,'必須符合契約固定核心題');
+    });
+    if(!Array.isArray(root.stores) || root.stores.length<1 || root.stores.length>500) analysisInputError('$.stores','需要 1–500 列');
+    const codes=new Set(),questionIds=new Set();
+    root.stores.forEach((row,i)=>{
+      const path=`$.stores[${i}]`;
+      analysisKeys(row,['name','storeCode','channel','reason','checkpoints','checks','previousResult'],[],path);
+      analysisInputText(row.name,500,`${path}.name`,true);
+      if(!analysisCode(row.storeCode) || codes.has(row.storeCode)) analysisInputError(`${path}.storeCode`,'店碼格式錯誤或同檔重複');
+      codes.add(row.storeCode);
+      if(analysisChannel(row.channel)!=='佑全') analysisInputError(`${path}.channel`,'須與頂層佑全通路一致');
+      analysisInputText(row.reason,50000,`${path}.reason`);
+      if(row.previousResult!==null) analysisInputText(row.previousResult,600,`${path}.previousResult`);
+      if(!Array.isArray(row.checkpoints) || row.checkpoints.length>100) analysisInputError(`${path}.checkpoints`,'上限 100 項');
+      row.checkpoints.forEach((text,n)=>analysisInputText(text,20000,`${path}.checkpoints[${n}]`));
+      if(!Array.isArray(row.checks) || row.checks.length>20) analysisInputError(`${path}.checks`,'上限 20 題');
+      row.checks.forEach((check,n)=>{
+        const p=`${path}.checks[${n}]`,typeKeys={yesno:[],single:['options'],number:['unit','min','max'],text:['maxLength']},optional=Object.hasOwn(typeKeys,check?.type)?typeKeys[check.type]:null;
+        if(!optional) analysisInputError(`${p}.type`,'不支援的題型');
+        const required=['id','label','type',...(check.type==='single'?['options']:check.type==='number'?['unit']:[])];
+        analysisKeys(check,required,optional,p);
+        if(typeof check.id!=='string' || !new RegExp(`^c\\.${root.visitMonth}\\.${row.storeCode}\\.[1-9][0-9]*$`).test(check.id) || check.id.length>100 || questionIds.has(check.id)) analysisInputError(`${p}.id`,'需要本期、本店的唯一正整數題號');
+        questionIds.add(check.id);analysisInputText(check.label,300,`${p}.label`,true);
+        if(check.type==='single') {
+          if(!Array.isArray(check.options) || check.options.length<2 || check.options.length>8 || new Set(check.options).size!==check.options.length) analysisInputError(`${p}.options`,'需要 2–8 個不同選項');
+          check.options.forEach((option,j)=>analysisInputText(option,300,`${p}.options[${j}]`,true));
+        }
+        if(check.type==='number') {
+          analysisInputText(check.unit,100,`${p}.unit`,true);
+          for(const key of ['min','max']) if(Object.hasOwn(check,key) && (typeof check[key]!=='number' || !Number.isFinite(check[key]))) analysisInputError(`${p}.${key}`,'必須是有限數字');
+          if(check.min!==undefined && check.max!==undefined && check.min>check.max) analysisInputError(`${p}.min`,'不得大於 max');
+        }
+        if(check.type==='text' && Object.hasOwn(check,'maxLength') && (!Number.isInteger(check.maxLength) || check.maxLength<1 || check.maxLength>2000)) analysisInputError(`${p}.maxLength`,'需要 1–2000 的整數');
+      });
+    });
+    return root;
+  }
+  if(plain(root) && Object.hasOwn(root,'format')) analysisInputError('$.format','不支援的格式');
+  if(plain(root) && ['salesMonth','visitMonth','channel','coreChecks'].some(key=>Object.hasOwn(root,key))) analysisInputError('$.format','缺少 v2 格式識別');
+  // Keep the legacy four-column format, its limits, and row text unchanged.
   if (!plain(root) || Object.keys(root).join() !== 'stores' || !Array.isArray(root.stores) || !root.stores.length || root.stores.length > 500) throw new Error('需要 stores 陣列；額外欄位或不支援格式請先核對，原檔不變。');
   for (const row of root.stores) if (!plain(row) || Object.keys(row).sort().join() !== 'channel,checkpoints,name,reason' || !str(row.name, 500) || !row.name.trim() || !analysisChannel(row.channel) || !str(row.reason, 50000) || !Array.isArray(row.checkpoints) || row.checkpoints.length > 100 || !row.checkpoints.every(text => str(text, 20000))) throw new Error('門市分析欄位不完整或通路不支援，尚未匯入。');
   const channels = new Set(root.stores.map(row => analysisChannel(row.channel)));
   if (channels.size !== 1) throw new Error('每個檔案須為單一通路，請先核對來源。');
-  return root.stores;
+  return {...root,format:'yq-alert-1'};
 }
+export function parseMonthlyAnalysis(raw) { return parseMonthlyAnalysisDocument(raw).stores; }
 export function monthlyAnalysisCandidates(row, stores) {
   const channel = analysisChannel(row.channel), key = analysisName(row.name);
   return stores.filter(store => store.type === 'store' && !store.deleted && !store.conflict && !store.mergedInto && !store.csvIdentityPending && analysisStoreChannel(store) === channel)
     .map(store => ({ store, exact: !!key && analysisName(store.name) === key }))
     .sort((a, b) => Number(b.exact) - Number(a.exact) || a.store.name.localeCompare(b.store.name, 'zh-Hant'));
+}
+// Human-confirmed codes are independent source events, never store edits.
+function validAnalysisStoreCode(value) {
+  return plain(value) && Object.keys(value).sort().join() === 'address,channel,code,confirmedAt,format,name,replaces,status,storeHead,storeId'
+    && value.format==='pharmacy-analysis-store-code-1' && value.channel==='佑全' && analysisCode(value.code)
+    && ['confirmed','revoked'].includes(value.status) && attendanceInstant(value.confirmedAt)
+    && ['storeId','storeHead'].every(key=>str(value[key],100) && !!value[key])
+    && str(value.name,200) && !!value.name && str(value.address,2000)
+    && ids(value.replaces) && new Set(value.replaces).size===value.replaces.length;
+}
+function validateAnalysisStoreCodes(bundle,sources,revisions) {
+  const events=new Map([...sources].filter(([,op])=>op.data.analysisStoreCode));
+  const degrees=new Map(),children=new Map(),queue=[];
+  for(const [id,op] of events) {
+    const value=op.data.analysisStoreCode,head=revisions.get(value.storeHead);
+    if(!head || head.type!=='store' || head.entity!==value.storeId || head.deleted || head.data.csvIdentityPending || head.data.mergedInto || head.data.name!==value.name || (head.data.address||'')!==value.address || analysisStoreChannel(head.data)!==value.channel) throw new Error('店碼裁定缺少確認時的門市身分。');
+    if(op.at!==value.confirmedAt || JSON.stringify(JSON.parse(dec.decode(unb64(bundle.blobs[op.data.blob]))))!==JSON.stringify(value)) throw new Error('店碼裁定原件與保存內容不符。');
+    degrees.set(id,value.replaces.length);if(!value.replaces.length)queue.push(id);
+    for(const parent of value.replaces) {
+      const prior=events.get(parent)?.data.analysisStoreCode;
+      if(!prior || parent===id || prior.channel!==value.channel || prior.code!==value.code)throw new Error('店碼裁定不可接替其他通路或店碼。');
+      if(!children.has(parent))children.set(parent,[]);children.get(parent).push(id);
+    }
+  }
+  for(let i=0;i<queue.length;i++)for(const id of children.get(queue[i])||[]){degrees.set(id,degrees.get(id)-1);if(!degrees.get(id))queue.push(id);}
+  if(queue.length!==events.size)throw new Error('店碼裁定歷史不可循環。');
+}
+export function analysisStoreCodeState(bundle,channel,code) {
+  const history=bundle.ops.filter(op=>op.type==='source' && op.data.analysisStoreCode?.channel===channel && op.data.analysisStoreCode.code===code);
+  const replaced=new Set(history.flatMap(op=>op.data.analysisStoreCode.replaces)),heads=history.filter(op=>!replaced.has(op.entity));
+  const current=heads.length===1?heads[0]:null,value=current?.data.analysisStoreCode;
+  const store=value?project(bundle).find(op=>op.type==='store' && op.id===value.storeId):null;
+  const usable=!!value && value.status==='confirmed' && !monthlyAnalysisIdentityChanged(store,{name:value.name,address:value.address},channel);
+  return {history,heads,current,conflict:heads.length>1,usable,storeId:usable?value.storeId:''};
+}
+export function analysisStoreCodeChoices(bundle) {
+  const keys=new Map();for(const op of bundle.ops)if(op.data.analysisStoreCode){const {channel,code}=op.data.analysisStoreCode;keys.set(channel+':'+code,{channel,code});}
+  return [...keys.values()].sort((a,b)=>a.code.localeCompare(b.code)).map(key=>({...key,...analysisStoreCodeState(bundle,key.channel,key.code)}));
+}
+async function appendAnalysisStoreCode(bundle,channel,code,store,device,status='confirmed') {
+  const state=analysisStoreCodeState(bundle,channel,code),previous=state.current?.data.analysisStoreCode;
+  if(status==='confirmed' && state.usable && state.storeId===store.id)return bundle;
+  if(status==='revoked' && (!previous || previous.status!=='confirmed'))throw new Error('店碼對照有分歧或已撤銷，請重新核對。');
+  const identity=status==='revoked'?previous:{storeId:store.id,storeHead:store.heads[0].id,name:store.name,address:store.address||''};
+  const value={format:'pharmacy-analysis-store-code-1',channel,code,status,storeId:identity.storeId,storeHead:identity.storeHead,name:identity.name,address:identity.address,confirmedAt:new Date().toISOString(),replaces:state.heads.map(op=>op.entity).sort()};
+  if(!validAnalysisStoreCode(value))throw new Error('店碼對照尚未核對完整。');
+  const raw=enc.encode(JSON.stringify(value)),blob=await hashBytes(raw),next=structuredClone(bundle);next.blobs[blob]=b64(raw);
+  const op=revision('source',uuid(),{file:'分析店碼人工裁定.json',list:'分析店碼人工裁定',blob,batch:uuid(),rows:1,headers:[],encoding:'UTF-8',delimiter:'',analysisStoreCode:value},[],device);op.at=value.confirmedAt;next.ops.push(op);
+  return next;
+}
+export async function revokeAnalysisStoreCode(bundle,channel,code,expectedHead,device) {
+  validateBundle(bundle);const state=analysisStoreCodeState(bundle,channel,code);
+  if(!state.current || state.current.entity!==expectedHead)throw new Error('店碼對照已變更，請重新核對。');
+  return validateBundle(await appendAnalysisStoreCode(bundle,channel,code,null,device,'revoked'));
 }
 function validMonthlyAnalysis(value) {
   return plain(value) && Object.keys(value).sort().join() === 'assignments,channel,salesMonth,supersedes,visitMonth'
@@ -2466,7 +2593,10 @@ function validMonthlyAnalysis(value) {
       && (item.storeId ? !!item.head && !!item.name : !item.head && !item.name && !item.address));
 }
 export function monthlyAnalysisSources(bundle) {
-  return bundle.ops.filter(op => op.type === 'source' && op.data.monthlyAnalysis).map(op => ({ ...op.data.monthlyAnalysis, id: op.entity, at: op.at, batch: op.data.batch, file: op.data.file, blob: op.data.blob, rows: parseMonthlyAnalysis(unb64(bundle.blobs[op.data.blob])) }));
+  return bundle.ops.filter(op => op.type === 'source' && op.data.monthlyAnalysis).map(op => {
+    const document=parseMonthlyAnalysisDocument(unb64(bundle.blobs[op.data.blob]));
+    return {...op.data.monthlyAnalysis,id:op.entity,at:op.at,batch:op.data.batch,file:op.data.file,blob:op.data.blob,rows:document.stores,format:document.format,...(document.format==='yq-alert-2'?{coreChecks:document.coreChecks}:{})};
+  });
 }
 function monthlyAnalysisIdentityChanged(store, match, channel) {
   return !store || store.deleted || store.conflict || store.csvIdentityPending || store.mergedInto || store.name !== match.name || (store.address || '') !== match.address || analysisStoreChannel(store) !== channel;
@@ -2495,10 +2625,11 @@ export async function prepareMonthlyAnalysis(bundle, files, salesMonth, visitMon
   if (!files.length || files.length > 2) throw new Error('每批請選 1–2 個通路 JSON。');
   const stores = project(bundle), sources = monthlyAnalysisSources(bundle), result = [], channels = new Set();
   for (const file of files) {
-    const rows = parseMonthlyAnalysis(file.raw), channel = analysisChannel(rows[0].channel), hash = await hashBytes(file.raw);
+    const document=parseMonthlyAnalysisDocument(file.raw), rows=document.stores, channel=analysisChannel(rows[0].channel), hash=await hashBytes(file.raw);
+    if(document.format==='yq-alert-2' && (document.salesMonth!==salesMonth || document.visitMonth!==visitMonth)) throw new Error('JSON 銷量／拜訪月份與畫面不一致，請重新核對。');
     if (channels.has(channel)) throw new Error('同一批同通路只能有一份檔案。'); channels.add(channel);
     if (sources.some(s => s.blob === hash && s.salesMonth === salesMonth && s.visitMonth === visitMonth)) throw new Error('此期原檔已匯入，不重複新增；若需修正配對請另行核對。');
-    result.push({ name: file.name, raw: file.raw, rows, channel, hash, replacing: sources.some(s => s.visitMonth === visitMonth && s.channel === channel), candidates: rows.map(row => monthlyAnalysisCandidates(row, stores)) });
+    result.push({ name: file.name, raw: file.raw, rows, channel, hash, format:document.format, replacing: sources.some(s => s.visitMonth === visitMonth && s.channel === channel), candidates: rows.map(row => monthlyAnalysisCandidates(row, stores)) });
   }
   return { basis: JSON.stringify(bundle), salesMonth, visitMonth, files: result };
 }
@@ -2508,7 +2639,7 @@ export async function applyMonthlyAnalysis(bundle, plan, selections, device, rep
   if (!Array.isArray(selections) || selections.length !== plan.files.length) throw new Error('門市核對尚未完成。');
   // Reparse originals and recompute hashes instead of trusting the displayed plan.
   const fresh = await prepareMonthlyAnalysis(bundle, plan.files.map(f => ({ name: f.name, raw: f.raw })), plan.salesMonth, plan.visitMonth);
-  const next = structuredClone(bundle), batch = uuid(), used = new Set();
+  let next = structuredClone(bundle); const batch = uuid(), used = new Set();
   for (let f = 0; f < fresh.files.length; f++) {
     const file = fresh.files[f], choices = selections[f];
     if (file.hash !== plan.files[f].hash) throw new Error('原檔已改變，請重新讀取核對。');
@@ -2519,6 +2650,7 @@ export async function applyMonthlyAnalysis(bundle, plan, selections, device, rep
       if (!candidate || used.has(id)) throw new Error('門市未核對、通路不符或同店重複；尚未寫入。');
       used.add(id); return { storeId:id, head:candidate.heads[0].id, name:candidate.name, address:candidate.address || '' };
     });
+    if(file.format==='yq-alert-2') for(let r=0;r<choices.length;r++) if(choices[r]!=='skip') next=await appendAnalysisStoreCode(next,file.channel,file.rows[r].storeCode,file.candidates[r].find(c=>c.store.id===choices[r]).store,device);
     next.blobs[file.hash] = b64(file.raw);
     const source = revision('source', uuid(), { file:file.name, list:'每月分析 JSON', blob:file.hash, batch, rows:file.rows.length, headers:[], encoding:'UTF-8', delimiter:'', monthlyAnalysis:{ salesMonth:plan.salesMonth, visitMonth:plan.visitMonth, channel:file.channel, supersedes:monthlyAnalysisSources(bundle).filter(s => s.channel === file.channel && s.visitMonth === plan.visitMonth).map(s => s.id), assignments } }, [], device);
     const earlier = monthlyAnalysisSources(bundle).filter(s => s.channel === file.channel && s.visitMonth === plan.visitMonth).map(s => Date.parse(s.at)).filter(Number.isFinite);
@@ -2579,6 +2711,7 @@ export function prepareMonthlyFeedback(bundle, analysisId, rowIndex, month=month
   const sources=new Map(bundle.ops.filter(op=>op.type==='source').map(op=>[op.entity,op]));
   const {analysis,match}=feedbackTarget(sources,{analysisId,rowIndex,storeId:sources.get(analysisId)?.data.monthlyAnalysis?.assignments[rowIndex]?.storeId});
   const item=monthlyAnalysisForStore(bundle,match.storeId,month).find(item=>item.id===analysisId);
+  if(item?.format==='yq-alert-2')throw new Error('v2 題型回報尚未啟用；第一階段僅提供匯入與唯讀預覽，不使用舊文字表單填答。');
   if(!item?.current || item.needsReview)throw new Error('分析已過期、修訂或門市身分有變；先重新核對，既有回報保留。');
   const store=project(bundle).find(op=>op.type==='store' && op.id===match.storeId),state=monthlyFeedbackState(bundle,analysisId,rowIndex);
   return {basis:JSON.stringify(bundle),analysisId,rowIndex,storeId:store.id,storeHead:store.heads[0].id,storeName:store.name,salesMonth:analysis.salesMonth,visitMonth:analysis.visitMonth,questions:[...item.row.checkpoints],state};
@@ -2613,7 +2746,103 @@ export async function applyMonthlyFeedbackWithAttendance(bundle, plan, input, de
   op.at = attendance.at; next.ops.push(op);
   return validateBundle(next);
 }
+// Typed v2 reports: one stable reportId per visit; immutable source events per edit.
+export function typedFeedbackState(bundle,analysisId,rowIndex,reportId=null) {
+  const history=bundle.ops.filter(op=>op.type==='source' && op.data.monthlyTypedFeedback?.analysisId===analysisId && op.data.monthlyTypedFeedback.rowIndex===rowIndex && (!reportId || op.data.monthlyTypedFeedback.reportId===reportId));
+  const replaced=new Set(history.flatMap(op=>op.data.monthlyTypedFeedback.replaces)),heads=history.filter(op=>!replaced.has(op.entity));
+  const groups=new Map();for(const op of heads){const id=op.data.monthlyTypedFeedback.reportId;if(!groups.has(id))groups.set(id,[]);groups.get(id).push(op);}
+  return {history,heads,reports:[...groups].map(([id,versions])=>({reportId:id,heads:versions,current:versions.length===1?versions[0]:null,conflict:versions.length>1})),conflict:[...groups.values()].some(items=>items.length>1)};
+}
+function validTypedAnswers(questions,answers) {
+  return Array.isArray(answers) && answers.length===questions.length && answers.every((answer,i)=>{
+    const q=questions[i];
+    if(!plain(answer) || Object.keys(answer).sort().join()!=='definition,otherText,value' || JSON.stringify(answer.definition)!==JSON.stringify(q))return false;
+    if(answer.otherText!==null && !(q.id==='core.push_sku' && answer.value==='其他' && str(answer.otherText,100)))return false;
+    const v=answer.value;if(v===null)return answer.otherText===null;
+    if(q.type==='number')return typeof v==='number' && Number.isFinite(v) && (q.id!=='core.shelf_haud' || Number.isInteger(v)) && (q.min===undefined || v>=q.min) && (q.max===undefined || v<=q.max);
+    if(q.type==='yesno')return ['是','否','未確認'].includes(v);
+    if(q.type==='single')return q.options.includes(v);
+    return q.type==='text' && str(v,q.maxLength||2000) && !!v.trim();
+  });
+}
+function validMonthlyTypedFeedback(value) {
+  return plain(value) && Object.keys(value).sort().join()==='analysisId,answers,attendance,createdAt,format,note,replaces,reportId,rowIndex,salesMonth,storeCode,storeHead,storeId,visitMonth'
+    && value.format==='pharmacy-yq-feedback-1' && ['analysisId','reportId','storeId','storeHead'].every(key=>str(value[key],100) && !!value[key])
+    && Number.isSafeInteger(value.rowIndex) && value.rowIndex>=0 && value.rowIndex<500 && analysisCode(value.storeCode)
+    && analysisMonth(value.salesMonth) && analysisMonth(value.visitMonth) && attendanceInstant(value.createdAt)
+    && ids(value.replaces) && new Set(value.replaces).size===value.replaces.length
+    && Array.isArray(value.answers) && value.answers.length>=4 && value.answers.length<=24
+    && (value.note===null || plain(value.note) && Object.keys(value.note).sort().join()==='id,revisionId' && ['id','revisionId'].every(key=>str(value.note[key],100) && !!value.note[key]))
+    && (value.attendance===null || plain(value.attendance) && Object.keys(value.attendance).sort().join()==='at,date,store' && value.attendance.store===value.storeId && attendanceInstant(value.attendance.at) && value.attendance.date===attendanceTaipeiDate(value.attendance.at));
+}
+function validateMonthlyTypedFeedbackSources(bundle,sources,revisions) {
+  const events=new Map([...sources].filter(([,op])=>op.data.monthlyTypedFeedback)),degrees=new Map(),children=new Map(),queue=[],identities=new Map();
+  for(const [id,op] of events){
+    const value=op.data.monthlyTypedFeedback,{op:analysis,match}=feedbackTarget(sources,value),doc=parseMonthlyAnalysisDocument(unb64(bundle.blobs[analysis.data.blob]));
+    const row=doc.stores[value.rowIndex],head=revisions.get(value.storeHead),identity=JSON.stringify([value.analysisId,value.rowIndex,value.storeId,value.storeCode]);
+    if(doc.format!=='yq-alert-2' || value.salesMonth!==doc.salesMonth || value.visitMonth!==doc.visitMonth || value.storeCode!==row.storeCode || !validTypedAnswers([...doc.coreChecks,...row.checks],value.answers))throw new Error('v2 回報題目、答案或期別與精確來源不符。');
+    if(identities.has(value.reportId) && identities.get(value.reportId)!==identity)throw new Error('回報識別不可跨來源或門市重用。');identities.set(value.reportId,identity);
+    if(!head || head.type!=='store' || head.entity!==value.storeId || head.deleted || head.data.csvIdentityPending || head.data.mergedInto || head.data.name!==match.name || (head.data.address||'')!==match.address || analysisStoreChannel(head.data)!=='佑全')throw new Error('v2 回報缺少確認時門市身分。');
+    if(value.note){const note=revisions.get(value.note.revisionId);if(!note || note.entity!==value.note.id || note.type!=='visit' || note.deleted || note.data.store!==value.storeId)throw new Error('回報連結的人工筆記版本不符。');}
+    if(value.attendance && !bundle.ops.some(event=>{const a=visitAttendanceEvidence(event);return a && a.store===value.storeId && a.date===value.attendance.date && a.at===value.attendance.at;}))throw new Error('回報缺少明確人工拜訪確認。');
+    if(op.at!==value.createdAt || JSON.stringify(JSON.parse(dec.decode(unb64(bundle.blobs[op.data.blob]))))!==JSON.stringify(value))throw new Error('v2 回報原件與保存內容不符。');
+    degrees.set(id,value.replaces.length);if(!value.replaces.length)queue.push(id);
+    for(const parent of value.replaces){const prior=events.get(parent)?.data.monthlyTypedFeedback;if(!prior || parent===id || prior.reportId!==value.reportId || prior.analysisId!==value.analysisId || prior.rowIndex!==value.rowIndex || prior.storeId!==value.storeId)throw new Error('回報修訂不可接替另一個訪次、門市或來源。');if(!children.has(parent))children.set(parent,[]);children.get(parent).push(id);}
+  }
+  for(let i=0;i<queue.length;i++)for(const id of children.get(queue[i])||[]){degrees.set(id,degrees.get(id)-1);if(!degrees.get(id))queue.push(id);}
+  if(queue.length!==events.size)throw new Error('v2 回報修訂歷史不可循環。');
+}
+export function prepareTypedFeedback(bundle,analysisId,rowIndex,reportId,month=monthlyVisitMonth(),resolutionHead=null) {
+  validateBundle(bundle);if(!str(reportId,100) || !reportId)throw new Error('缺少本次回報識別。');
+  const sources=new Map(bundle.ops.filter(op=>op.type==='source').map(op=>[op.entity,op]));
+  const {analysis,match}=feedbackTarget(sources,{analysisId,rowIndex,storeId:sources.get(analysisId)?.data.monthlyAnalysis?.assignments[rowIndex]?.storeId});
+  const item=monthlyAnalysisForStore(bundle,match.storeId,month).find(item=>item.id===analysisId);
+  if(item?.format!=='yq-alert-2' || !item.current || item.needsReview)throw new Error('分析已變更、過期或身分待核對；保留原回報，先重新核對。');
+  const state=typedFeedbackState(bundle,analysisId,rowIndex,reportId);
+  if(state.conflict && !resolutionHead || resolutionHead && !state.heads.some(op=>op.entity===resolutionHead))throw new Error('這次回報有並行分歧或分歧版本已變，請先核對，不選擇時間較新的版本。');
+  const store=project(bundle).find(op=>op.type==='store' && op.id===match.storeId);
+  if(bundle.ops.some(op=>op.data.monthlyTypedFeedback?.reportId===reportId && (op.data.monthlyTypedFeedback.analysisId!==analysisId || op.data.monthlyTypedFeedback.rowIndex!==rowIndex)))throw new Error('回報識別已屬於其他來源。');
+  return {basis:JSON.stringify(bundle),analysisId,rowIndex,reportId,storeId:store.id,storeHead:store.heads[0].id,storeName:store.name,salesMonth:item.salesMonth,visitMonth:item.visitMonth,storeCode:item.row.storeCode,questions:[...item.coreChecks,...item.row.checks],previousResult:item.row.previousResult,resolutionHead,selected:resolutionHead?state.heads.find(op=>op.entity===resolutionHead):state.reports[0]?.current||null,state};
+}
+export function typedFeedbackAnswers(plan,values) {
+  if(!Array.isArray(values) || values.length!==plan.questions.length || !values.every(answer=>plain(answer) && Object.hasOwn(answer,'value') && Object.keys(answer).every(key=>['value','otherText'].includes(key))))throw new Error('請保留每題位置；未答為 null。');
+  const answers=plan.questions.map((definition,i)=>({definition:structuredClone(definition),value:values[i]?.value,otherText:values[i]?.otherText??null}));
+  if(!validTypedAnswers(plan.questions,answers))throw new Error('答案型別、範圍或選項不符；請核對，不會猜填數字。');return answers;
+}
+export async function applyTypedVisit(bundle,plan,input,device,attendance,now=new Date().toISOString(),attachmentBlobs={}) {
+  if(!plan || plan.basis!==JSON.stringify(bundle))throw new Error('資料已變更，草稿保留，請重新核對。');
+  const fresh=prepareTypedFeedback(bundle,plan.analysisId,plan.rowIndex,plan.reportId,monthlyVisitMonth(now),plan.resolutionHead);
+  if(JSON.stringify(fresh)!==JSON.stringify(plan) || !plain(input) || Object.keys(input).sort().join()!=='answers,note,noteId,noteParents')throw new Error('來源、訪次或輸入有變，請重新核對。');
+  const answers=typedFeedbackAnswers(fresh,input.answers),previous=fresh.selected?.data.monthlyTypedFeedback;
+  if(attendance!==undefined && (!plain(attendance) || Object.keys(attendance).sort().join()!=='at,date,store' || attendance.store!==fresh.storeId || !attendanceInstant(now) || !attendanceInstant(attendance.at) || attendance.at>now || attendance.date!==attendanceTaipeiDate(attendance.at) || attendance.date!==attendanceTaipeiDate(now)))throw new Error('今天拜訪確認已變或跨日，請重新勾選。');
+  const hasAnswer=answers.some(answer=>answer.value!==null),hasNote=input.note!==null;
+  if(!hasAnswer && !hasNote && !previous)throw new Error('請至少回答一題或自行填寫拜訪筆記。');
+  let next=structuredClone(bundle),note=previous?.note||null,noteSaved=false;
+  if(!plain(attachmentBlobs) || Object.keys(attachmentBlobs).length>20)throw new Error('附件資料不完整。');
+  for(const [blob,encoded]of Object.entries(attachmentBlobs)){if(!input.note?.attachments.some(item=>item.blob===blob) || typeof encoded!=='string')throw new Error('附件必須連結本次人工筆記。');const bytes=unb64(encoded);if(bytes.length>3*1024*1024 || await hashBytes(bytes)!==blob || next.blobs[blob] && next.blobs[blob]!==encoded)throw new Error('附件雜湊或大小不符。');next.blobs[blob]=encoded;}
+  if(hasNote){
+    if(!validData('visit',input.note) || input.note.store!==fresh.storeId || !input.note.text.trim() || !str(input.noteId,100) || !input.noteId || !ids(input.noteParents))throw new Error('人工筆記不完整；不會建立空白原文。');
+    const current=project(bundle).find(op=>op.type==='visit' && op.id===input.noteId);
+    if(current && (current.deleted || current.conflict || current.store!==fresh.storeId) || JSON.stringify((current?.heads||[]).map(op=>op.id).sort())!==JSON.stringify([...input.noteParents].sort()))throw new Error('人工筆記版本已變，請先核對，不覆蓋。');
+    if(!current || JSON.stringify(current.heads[0].data)!==JSON.stringify(input.note)){
+      const op=revision('visit',input.noteId,structuredClone(input.note),input.noteParents,device,false,attendance);next.ops.push(op);note={id:op.entity,revisionId:op.id};noteSaved=true;
+    }else note={id:current.id,revisionId:current.heads[0].id};
+  }
+  if(attendance && !noteSaved){
+    const value={format:manualAttendanceFormat,...attendance},raw=enc.encode(JSON.stringify(value)),blob=await hashBytes(raw);next.blobs[blob]=b64(raw);const op=revision('source',uuid(),{file:'人工拜訪確認.json',list:'人工拜訪確認',blob,batch:uuid(),rows:1,headers:[],encoding:'UTF-8',delimiter:'',manualVisitAttendance:value},[],device);op.at=attendance.at;next.ops.push(op);
+  }
+  // Note-only saves do not invent an all-null report; edits may explicitly clear answers.
+  if(hasAnswer || previous){
+    const value={format:'pharmacy-yq-feedback-1',reportId:fresh.reportId,analysisId:fresh.analysisId,rowIndex:fresh.rowIndex,storeId:fresh.storeId,storeHead:fresh.storeHead,storeCode:fresh.storeCode,salesMonth:fresh.salesMonth,visitMonth:fresh.visitMonth,answers,note,attendance:attendance||previous?.attendance||null,replaces:fresh.state.heads.map(op=>op.entity).sort(),createdAt:now};
+    if(!validMonthlyTypedFeedback(value))throw new Error('v2 回報資料不完整。');
+    if(!previous || JSON.stringify([previous.answers,previous.note,previous.attendance])!==JSON.stringify([value.answers,value.note,value.attendance])){
+      const raw=enc.encode(JSON.stringify(value)),blob=await hashBytes(raw);next.blobs[blob]=b64(raw);const op=revision('source',uuid(),{file:'佑全結構化現場回報.json',list:'佑全結構化現場回報',blob,batch:uuid(),rows:1,headers:[],encoding:'UTF-8',delimiter:'',monthlyTypedFeedback:value},[],device);op.at=now;next.ops.push(op);
+    }
+  }
+  validateBundle(next);return next.ops.length===bundle.ops.length && Object.keys(next.blobs).length===Object.keys(bundle.blobs).length?bundle:next;
+}
 export function rememberedMonthlyAnalysisChoice(bundle,row) {
+  if(Object.hasOwn(row,'storeCode')) return analysisStoreCodeState(bundle,analysisChannel(row.channel),row.storeCode).storeId;
   const stores=project(bundle),candidates=monthlyAnalysisCandidates(row,stores);
   const prior=monthlyAnalysisSources(bundle).filter(source=>source.channel===analysisChannel(row.channel));
   const choices=[];
@@ -2624,12 +2853,54 @@ export function rememberedMonthlyAnalysisChoice(bundle,row) {
   });
   const unique=[...new Set(choices)];return unique.length===1?unique[0]:'';
 }
-export function exportMonthlyFeedback(bundle,channel,visitMonth,{includeHistory=false,at=new Date().toISOString()}={}) {
+// Read-only yq-report-1 export. sourceId and cited historical sources were
+// explicitly approved by Kit; no guessing or legacy-answer conversion.
+export function exportTypedFeedback(bundle,channel,visitMonth,{appVersion,excludedNotes=[],at=new Date().toISOString()}={}) {
+  validateBundle(bundle);
+  if(analysisChannel(channel)!=='佑全' || !analysisMonth(visitMonth) || !attendanceInstant(at) || !/^\d+\.\d+\.\d+$/.test(appVersion||'') || !ids(excludedNotes))throw new Error('請核對佑全、拜訪月份與程式版本。');
+  const sources=monthlyAnalysisSources(bundle).filter(s=>s.channel==='佑全' && s.visitMonth===visitMonth),replaced=new Set(sources.flatMap(s=>s.supersedes)),current=sources.filter(s=>!replaced.has(s.id));
+  if(current.length!==1 || current[0].format!=='yq-alert-2')throw new Error('本期需有唯一有效的 v2 來源；v1 請使用既有格式，來源分歧請先核對。');
+  const primary=current[0],sourceMap=new Map(sources.map(s=>[s.id,s])),records=project(bundle),stores=new Map(records.filter(r=>r.type==='store').map(r=>[r.id,r])),revisions=new Map(bundle.ops.map(op=>[op.id,op]));
+  const groups=new Map(),cited=new Set([primary.id]),excluded=new Set(excludedNotes);
+  const addRow=(source,rowIndex)=>{
+    const row=source.rows[rowIndex],match=source.assignments[rowIndex],existing=groups.get(row.storeCode);
+    if(existing && existing.appStoreId!==match.storeId)throw new Error(`店碼 ${row.storeCode} 的本期與歷史門市對照不一致，請先核對，不合併輸出。`);
+    if(existing)return existing;
+    const entry={storeCode:row.storeCode,analysisName:row.name,appStoreId:match.storeId,appStoreName:match.name,mapping:match.storeId?'confirmed':'skipped',status:match.storeId?'not_visited':'unmapped',reports:[]};groups.set(row.storeCode,entry);return entry;
+  };
+  primary.rows.forEach((row,i)=>{
+    const match=primary.assignments[i];
+    if(match.storeId && monthlyAnalysisIdentityChanged(stores.get(match.storeId),match,'佑全'))throw new Error('門市身分有變，請先重新核對分析對應。');
+    const entry=addRow(primary,i);
+    if(match.storeId){
+      const hasNote=records.some(record=>record.type==='visit' && !record.deleted && !record.conflict && record.store===match.storeId && record.date?.startsWith(visitMonth+'-'));
+      const hasAttendance=bundle.ops.some(op=>{const a=visitAttendanceEvidence(op);return a?.store===match.storeId && a.date.startsWith(visitMonth+'-');});
+      if(hasNote || hasAttendance)entry.status='visited_no_report';
+    }
+  });
+  for(const source of sources.filter(s=>s.format==='yq-alert-2'))source.rows.forEach((row,rowIndex)=>{
+    const state=typedFeedbackState(bundle,source.id,rowIndex);
+    if(state.conflict)throw new Error('回報仍有並行分歧，請逐版核對後再匯出；不依時間選勝者。');
+    for(const report of state.reports){
+      const op=report.current,value=op.data.monthlyTypedFeedback,match=source.assignments[rowIndex],entry=addRow(source,rowIndex);
+      if(!match.storeId)throw new Error('回報缺少已確認門市對照。');
+      cited.add(source.id);
+      const noteOp=value.note?revisions.get(value.note.revisionId):null,noteCurrent=value.note?records.find(record=>record.type==='visit' && record.id===value.note.id):null;
+      const includeNote=!!noteOp && !!noteCurrent && !noteCurrent.deleted && !noteCurrent.conflict && !excluded.has(value.reportId);
+      const answers=Object.fromEntries(value.answers.map(answer=>[answer.definition.id,{value:structuredClone(answer.value),...(answer.definition.id.startsWith('c.')?{question:answer.definition.label}:{}),...(answer.definition.id==='core.push_sku' && answer.value==='其他' && answer.otherText!==null?{otherText:answer.otherText}:{})}]));
+      entry.status='reported';entry.reports.push({reportId:value.reportId,revisionId:op.id,sourceId:value.analysisId,attendanceDate:value.attendance?.date??null,noteDate:noteOp?.data.date||null,savedAt:value.createdAt,answers,note:{included:includeNote,text:includeNote?noteOp.data.text:'',next:includeNote?noteOp.data.next:''}});
+    }
+  });
+  for(const entry of groups.values())entry.reports.sort((a,b)=>a.savedAt.localeCompare(b.savedAt)||a.reportId.localeCompare(b.reportId));
+  return {format:'yq-report-1',exportedAt:at,appVersion,channel:'佑全',visitMonth,analysisSources:[...cited].sort().map(id=>{const s=sourceMap.get(id);return {sourceId:s.id,salesMonth:s.salesMonth,file:s.file,blob:s.blob,format:s.format};}),stores:[...groups.values()]};
+}
+export function exportMonthlyFeedback(bundle,channel,visitMonth,{includeHistory=false,legacyOnly=false,at=new Date().toISOString()}={}) {
   validateBundle(bundle);
   channel=analysisChannel(channel);if(!channel || !analysisMonth(visitMonth) || !attendanceInstant(at))throw new Error('請選擇通路與建議拜訪月份。');
   const sources=monthlyAnalysisSources(bundle).filter(source=>source.channel===channel && source.visitMonth===visitMonth),replaced=new Set(sources.flatMap(source=>source.supersedes));
   const currentSources=sources.filter(source=>!replaced.has(source.id)),sourceConflict=currentSources.length>1;
-  const selected=includeHistory?sources:currentSources;
+  const selected=(includeHistory?sources:currentSources).filter(source=>!legacyOnly || source.format==='yq-alert-1');
+  if(selected.some(source=>source.format==='yq-alert-2'))throw new Error('匯出範圍含 v2 分析，請待新版結構化匯出完成；不以舊格式輸出或遺漏資料。');
   return {format:'pharmacy-monthly-feedback-export-1',generatedAt:at,channel,visitMonth,includeHistory,sourceConflict,stores:selected.flatMap(source=>source.assignments.flatMap((match,rowIndex)=>{
     if(!match.storeId)return [];
     const state=monthlyFeedbackState(bundle,source.id,rowIndex),display=monthlyAnalysisForStore(bundle,match.storeId,visitMonth).find(item=>item.id===source.id);
