@@ -1,6 +1,6 @@
 import { peopleBriefSourcePlan, validatePeopleBriefResult, currentPeopleReading, peopleReadingRequest, preparePeopleReading, applyPeopleReading, planPeopleRelationshipReview, applyPeopleRelationshipReview, peopleAliasLayout, peopleAliasReviewAvailability, peopleRelationshipReviewAvailability, planPeopleAliasReview, applyPeopleAliasReview } from './relations.js';
 import { peopleRelationshipReviewState, peopleAliasGroups, peopleAliasReviewState } from './core.js';
-import { typedFeedbackState, prepareTypedFeedback, typedFeedbackAnswers, applyTypedVisit, parseMonthlyAnalysisDocument, analysisStoreCodeChoices, revokeAnalysisStoreCode, monthlyAlertStoreIds, monthlyAnalysisSources, monthlyAnalysisForStore, prepareMonthlyAnalysis, applyMonthlyAnalysis, monthlyFeedbackState, prepareMonthlyFeedback, applyMonthlyFeedback, applyMonthlyFeedbackWithAttendance, rememberedMonthlyAnalysisChoice, exportMonthlyFeedback, monthlyAnalysisChangeSummary } from './core.js';
+import { exportTypedFeedback, YQ_CORE_CHECKS, typedFeedbackState, prepareTypedFeedback, typedFeedbackAnswers, applyTypedVisit, parseMonthlyAnalysisDocument, analysisStoreCodeChoices, revokeAnalysisStoreCode, monthlyAlertStoreIds, monthlyAnalysisSources, monthlyAnalysisForStore, prepareMonthlyAnalysis, applyMonthlyAnalysis, monthlyFeedbackState, prepareMonthlyFeedback, applyMonthlyFeedback, applyMonthlyFeedbackWithAttendance, rememberedMonthlyAnalysisChoice, exportMonthlyFeedback, monthlyAnalysisChangeSummary } from './core.js';
 import { supervisorRelationships, supervisorReviewHistory, reviewSupervisorRelationship, planStoreSupervision, applyStoreSupervision, supervisedStores } from './core.js';
 import { setupWeeklyRecovery, prepareWeeklyRecovery, createRecoveryBackup, newMeta, checkEnvelope, derive, seal, unseal, planBackupImport, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates, buildStoreEnrichmentRequest, planStoreEnrichment, applyStoreEnrichment, readonlyHealthAudit, dataSafetySummary, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, editReminderTasks, addReminderTasks, convertReminderTasks, completeReminderTask, reminderTaskHistory, searchStoreVisitText, scanInsightChanges, storeInsightDisplayForStore, storeInsightEvidenceForEntry, insightReviewForEntry, insightSharedReviewForEntry, storeInsightReviewHistory, planInsightReview, applyInsightReview, planStoreInsights, applyStoreInsights, planStoreInsightRelations, applyStoreInsightRelations, buildStoreInsightsSource, planStoreMerge, applyStoreMerge } from './core.js';
 import { readWeeklyRecovery, writeWeeklyRecovery, readLocal, writeLocal, archiveAndReplaceLocal, listLocalArchives, readLocalArchive } from './db.js';
@@ -1542,7 +1542,9 @@ function openTypedReport(button) {
   if(payload?.draft || singleStoreContext || editorContext || syncInProgress)throw new Error('請先完成或收起目前草稿；不覆蓋輸入。');
   const reference={analysisId:button.dataset.typedAnalysis,rowIndex:Number(button.dataset.typedRow),reportId:button.dataset.typedReport||uuid(),resolutionHead:button.dataset.typedResolve||null};
   const source=monthlyAnalysisSources(payload.bundle).find(item=>item.id===reference.analysisId),storeId=source?.assignments[reference.rowIndex]?.storeId;
-  if(!storeId)throw new Error('回報來源不存在。');openVisitBrief(storeId);activateSingleStoreCapture(null,reference);
+  if(!storeId)throw new Error('回報來源不存在。');
+  if(!$('review').open || $('review').dataset.singleStoreId!==storeId)openVisitBrief(storeId);
+  activateSingleStoreCapture(null,reference);
 }
 function typedFeedbackHTML(item) {
   const rowIndex=item.assignments.findIndex(match=>match.storeId===item.storeId),state=typedFeedbackState(payload.bundle,item.id,rowIndex);
@@ -1580,6 +1582,10 @@ function activateSingleStoreCapture(restoreDraft = null, typedEdit = null) {
   refreshBriefSearch();
   form.scrollIntoView({ block: 'start' });
   focusReadingSurface($('review'));
+  // The dialog's queued opening reset must settle before the capture's final scroll.
+  // Keep later navigation or a collapsed draft from being pulled back into this form.
+  const captureContext=singleStoreContext;
+  requestAnimationFrame(()=>{if(singleStoreContext===captureContext && $('review').open && !form.hidden)form.scrollIntoView({block:'start'});});
 }
 function resumeSingleDraftFromReview() {
   singleStoreContext = null;
@@ -4016,7 +4022,8 @@ document.addEventListener('click', event => {
   if (b.hasAttribute('data-feedback-resume')) return run(()=>openMonthlyFeedback(payload.monthlyFeedbackDraft.analysisId,payload.monthlyFeedbackDraft.rowIndex));
   if (b.hasAttribute('data-feedback-open')) return run(()=>openMonthlyFeedback(b.dataset.feedbackOpen,Number(b.dataset.feedbackRow)));
   if (b.hasAttribute('data-feedback-export-open')) return run(openMonthlyFeedbackExport);
-  if (b.hasAttribute('data-feedback-export-download')) return run(downloadMonthlyFeedbackExport,'feedback-export-error');
+  if (b.hasAttribute('data-feedback-export-preview')) return run(previewMonthlyFeedbackExport,'feedback-export-error');
+  if (b.hasAttribute('data-feedback-export-download')) return run(monthlyExportPreview?downloadReviewedMonthlyFeedbackExport:downloadMonthlyFeedbackExport,'feedback-export-error');
   if (b.hasAttribute('data-analysis-code-revoke')) return run(()=>openRemoveAnalysisStoreCode(b));
   if (b.hasAttribute('data-analysis-code-revoke-save')) return run(saveRemoveAnalysisStoreCode,'analysis-error');
   if (b.hasAttribute('data-analysis-open')) return run(openAnalysisImport, 'monthly-visit-notice');
@@ -4455,8 +4462,8 @@ async function saveAnalysisImport() {
   $('monthly-analysis-dialog').close();analysisImport=null;render();toast('每月分析已保存，原筆記與拜訪歷史未更改。');
 }
 
-$('monthly-analysis-dialog').addEventListener('close',()=>{analysisImport=null;analysisCodeRevocation=null;});
-$('monthly-analysis-dialog').addEventListener('change', event=>{ if(event.target.matches('[data-analysis-choice]') && analysisImport){delete analysisImport.finalChoices;$('analysis-final').innerHTML='';} if(event.target.matches('#analysis-files,#analysis-sales,#analysis-visit')){analysisImport=null;$('analysis-matches').innerHTML='';if(event.target.id==='analysis-files')void run(prefillAnalysisMonths,'analysis-error');} });
+$('monthly-analysis-dialog').addEventListener('close',()=>{analysisImport=null;analysisCodeRevocation=null;monthlyExportPreview=null;});
+$('monthly-analysis-dialog').addEventListener('change', event=>{ if(event.target.matches('#feedback-export-channel,#feedback-export-month,#feedback-export-format,#feedback-export-history')){monthlyExportPreview=null;if($('feedback-export-preview'))$('feedback-export-preview').innerHTML='';} if(event.target.matches('[data-yq-export-note]') && $('feedback-export-ack'))$('feedback-export-ack').checked=false; if(event.target.matches('[data-analysis-choice]') && analysisImport){delete analysisImport.finalChoices;$('analysis-final').innerHTML='';} if(event.target.matches('#analysis-files,#analysis-sales,#analysis-visit')){analysisImport=null;$('analysis-matches').innerHTML='';if(event.target.id==='analysis-files')void run(prefillAnalysisMonths,'analysis-error');} });
 
 $('review').addEventListener('click',event=>{
  const clear=event.target.closest?.('[data-typed-clear]');if(clear && singleStoreContext?.typedPlan && !singleStoreContext.typedReadOnly){const i=Number(clear.dataset.typedClear),field=$(`typed-value-${i}`);if(field)field.value='';for(const radio of document.querySelectorAll(`input[name="typed-choice-${i}"]`))radio.checked=false;if(singleStoreContext.typedPlan.questions[i]?.id==='core.push_sku')$('typed-other').value='';scheduleVisitDraftSave();return;}
@@ -4541,9 +4548,28 @@ async function saveMonthlyFeedback(event) {
   },'monthly-feedback-error');
 }
 function openMonthlyFeedbackExport() {
-  assertMonthlyVisitIdle();
-  $('monthly-analysis-dialog').innerHTML=`<h2 id="analysis-title" data-dialog-focus tabindex="-1" autofocus>匯出給分析</h2><p>只匯出所選通路與建議拜訪月份的外部建議、門市對應及獨立現場回報；不讀取一般筆記、人物或待辦。未回報明列未知；有分歧保留各版本。</p><label>通路<select id="feedback-export-channel"><option>大樹</option><option>佑全</option></select></label><label>建議拜訪月份<input type="month" id="feedback-export-month" value="${esc(monthlyVisitSelectedMonth || monthlyVisitMonth())}"></label><label class="check"><input type="checkbox" id="feedback-export-history">包含此期被接替的分析與回報歷史</label><p id="feedback-export-error" class="error" role="alert"></p><div class="dialog-footer"><button type="button" data-close="monthly-analysis-dialog">取消</button><button type="button" data-feedback-export-download>核對範圍並下載 JSON</button></div>`;
+  assertMonthlyVisitIdle();monthlyExportPreview=null;
+  const month=monthlyVisitSelectedMonth || monthlyVisitMonth(),sources=monthlyAnalysisSources(payload.bundle),replaced=new Set(sources.flatMap(s=>s.supersedes)),hasV2=sources.some(s=>s.channel==='佑全' && s.visitMonth===month && s.format==='yq-alert-2' && !replaced.has(s.id));
+  $('monthly-analysis-dialog').innerHTML=`<h2 id="analysis-title" data-dialog-focus tabindex="-1" autofocus>匯出給分析</h2><p>先逐店預覽；佑全 v2 可逐筆勾除直接連結的自由筆記。明文檔只由你自行下載及交給分析端，不自動傳送。</p><label>通路<select id="feedback-export-channel"><option ${!hasV2?'selected':''}>大樹</option><option ${hasV2?'selected':''}>佑全</option></select></label><label>建議拜訪月份<input type="month" id="feedback-export-month" value="${esc(month)}"></label><label>輸出格式<select id="feedback-export-format"><option value="legacy" ${!hasV2?'selected':''}>既有 v1 回報（保留原格式）</option><option value="typed" ${hasV2?'selected':''}>佑全 v2 結構化回報（yq-report-1）</option></select></label><label class="check"><input type="checkbox" id="feedback-export-history">既有 v1 格式：包含此期被接替的 v1 分析與回報歷史</label><p class="muted">v2 自動包含全部訪次及引用的舊來源；每次回報只取其已保存最新修訂，舊修訂仍留在 App。v1 需另外使用原格式匯出，不猜轉舊答案。</p><p id="feedback-export-error" class="error" role="alert"></p><button type="button" data-feedback-export-preview>產生匯出預覽</button><div id="feedback-export-preview"></div><div class="dialog-footer"><button type="button" data-close="monthly-analysis-dialog">取消，不下載</button></div>`;
   openDialog($('monthly-analysis-dialog'));
+}
+let monthlyExportPreview=null;
+function previewMonthlyFeedbackExport() {
+  const channel=$('feedback-export-channel').value,month=$('feedback-export-month').value,typed=$('feedback-export-format').value==='typed',at=new Date().toISOString(),includeHistory=$('feedback-export-history').checked;
+  const result=typed?exportTypedFeedback(payload.bundle,channel,month,{appVersion:APP_VERSION,at}):exportMonthlyFeedback(payload.bundle,channel,month,{includeHistory,legacyOnly:true,at});
+  if(!result.stores.length)throw new Error('此範圍沒有可匯出資料；舊 v1 歷史請勾選包含修訂歷史，不會轉換成 v2 答案。');
+  monthlyExportPreview={bundle:payload.bundle,basis:JSON.stringify(payload.bundle),key,meta,epoch:syncEpoch,channel,month,typed,at,includeHistory};
+  const labels={unmapped:'未對照／本期略過',not_visited:'無本期已保存拜訪證據（不代表確定沒去）',visited_no_report:'有本期紀錄、尚無結構化回報',reported:'已回報'};
+  $('feedback-export-preview').innerHTML=`<h3>匯出前預覽 · 尚未下載</h3><p>${esc(result.channel)}／${esc(result.visitMonth)} · ${result.stores.length} 間。只含此裝置已正式保存且可見資料；草稿及其他裝置尚未同步資料不在內。筆記日期未知時不推定期別。</p>${typed?`<p>每筆回報標明原分析來源版本，包含它實際引用的舊來源。下方自由筆記只取回報連結當時的精確版本，可能含你自行書寫的人名或聯絡資訊，請逐筆預覽勾除。</p>${result.analysisSources.map(s=>`<details><summary>來源 ${esc(s.file)}</summary><p>${esc(s.sourceId)} · SHA256 ${esc(s.blob)}</p></details>`).join('')}${result.stores.map(store=>`<article class="analysis-card"><h4>${esc(store.storeCode)} ${esc(store.appStoreName||store.analysisName)}</h4><p>${esc(labels[store.status])}</p>${store.reports.map(report=>`<section><p>回報 ${esc(report.reportId)} · 版本 ${esc(report.revisionId)}<br>分析來源 ${esc(report.sourceId)}<br>實際拜訪日：${esc(report.attendanceDate||'未確認')} · 筆記日期：${esc(report.noteDate||'未提供')}</p>${Object.entries(report.answers).map(([id,answer])=>`<p>${esc(answer.question||YQ_CORE_CHECKS.find(q=>q.id===id)?.label||id)}：${esc(answer.value===null?'未作答':answer.value)}${answer.otherText?` · ${esc(answer.otherText)}`:''}</p>`).join('')}${report.note.included?`<label class="check"><input type="checkbox" data-yq-export-note="${esc(report.reportId)}" checked>匯出這筆回報連結的自由筆記及下次跟進</label><details><summary>預覽將附上的人工文字</summary><pre>${esc(report.note.text)}</pre><p>下次跟進：${esc(report.note.next)}</p></details>`:'<p>沒有可匯出的連結筆記，或該筆記已刪除／有分歧；不附文字。</p>'}</section>`).join('')||'<p>本期沒有結構化回報。</p>'}</article>`).join('')}`:`<p>維持既有 v1 匯出；不包含一般拜訪筆記，亦不把 v2 回報轉成舊文字格式。</p><details><summary>查看完整匯出內容</summary><pre>${esc(JSON.stringify(result,null,2))}</pre></details>`}<label class="check"><input type="checkbox" id="feedback-export-ack">我已核對通路、月份、來源版本與文字範圍，確認下載明文 JSON（不會自動上傳）</label><button type="button" data-feedback-export-download>確認範圍並下載 JSON</button>`;
+}
+function downloadReviewedMonthlyFeedbackExport() {
+  const ctx=monthlyExportPreview;
+  const guard=()=>{if(!ctx || !payload || payload.bundle!==ctx.bundle || JSON.stringify(payload.bundle)!==ctx.basis || key!==ctx.key || meta!==ctx.meta || syncEpoch!==ctx.epoch || document.hidden || pendingLock || updateHolding || syncInProgress || !$('monthly-analysis-dialog').open || $('feedback-export-channel').value!==ctx.channel || $('feedback-export-month').value!==ctx.month || ($('feedback-export-format').value==='typed')!==ctx.typed || $('feedback-export-history').checked!==ctx.includeHistory)throw new Error('匯出範圍、資料或工作階段已變，請重新預覽；尚未下載。');};guard();
+  if(!$('feedback-export-ack')?.checked)throw new Error('請先核對預覽並勾選確認。');
+  const excludedNotes=[...document.querySelectorAll('[data-yq-export-note]')].filter(node=>!node.checked).map(node=>node.dataset.yqExportNote);
+  const result=ctx.typed?exportTypedFeedback(payload.bundle,ctx.channel,ctx.month,{appVersion:APP_VERSION,excludedNotes,at:ctx.at}):exportMonthlyFeedback(payload.bundle,ctx.channel,ctx.month,{includeHistory:ctx.includeHistory,legacyOnly:true,at:ctx.at});guard();
+  download(JSON.stringify(result,null,2),ctx.typed?`佑全_拜訪回報_${ctx.month}.json`:`pharmacy-monthly-feedback-${ctx.channel}-${ctx.month}.json`,'application/json');
+  toast('已產生明文 JSON 下載，請核對實際存好；未修改資料，也未自動上傳。');
 }
 function downloadMonthlyFeedbackExport() {
   const bundle=payload.bundle,sessionKey=key;

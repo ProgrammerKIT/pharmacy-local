@@ -2853,12 +2853,53 @@ export function rememberedMonthlyAnalysisChoice(bundle,row) {
   });
   const unique=[...new Set(choices)];return unique.length===1?unique[0]:'';
 }
-export function exportMonthlyFeedback(bundle,channel,visitMonth,{includeHistory=false,at=new Date().toISOString()}={}) {
+// Read-only yq-report-1 export. sourceId and cited historical sources were
+// explicitly approved by Kit; no guessing or legacy-answer conversion.
+export function exportTypedFeedback(bundle,channel,visitMonth,{appVersion,excludedNotes=[],at=new Date().toISOString()}={}) {
+  validateBundle(bundle);
+  if(analysisChannel(channel)!=='佑全' || !analysisMonth(visitMonth) || !attendanceInstant(at) || !/^\d+\.\d+\.\d+$/.test(appVersion||'') || !ids(excludedNotes))throw new Error('請核對佑全、拜訪月份與程式版本。');
+  const sources=monthlyAnalysisSources(bundle).filter(s=>s.channel==='佑全' && s.visitMonth===visitMonth),replaced=new Set(sources.flatMap(s=>s.supersedes)),current=sources.filter(s=>!replaced.has(s.id));
+  if(current.length!==1 || current[0].format!=='yq-alert-2')throw new Error('本期需有唯一有效的 v2 來源；v1 請使用既有格式，來源分歧請先核對。');
+  const primary=current[0],sourceMap=new Map(sources.map(s=>[s.id,s])),records=project(bundle),stores=new Map(records.filter(r=>r.type==='store').map(r=>[r.id,r])),revisions=new Map(bundle.ops.map(op=>[op.id,op]));
+  const groups=new Map(),cited=new Set([primary.id]),excluded=new Set(excludedNotes);
+  const addRow=(source,rowIndex)=>{
+    const row=source.rows[rowIndex],match=source.assignments[rowIndex],existing=groups.get(row.storeCode);
+    if(existing && existing.appStoreId!==match.storeId)throw new Error(`店碼 ${row.storeCode} 的本期與歷史門市對照不一致，請先核對，不合併輸出。`);
+    if(existing)return existing;
+    const entry={storeCode:row.storeCode,analysisName:row.name,appStoreId:match.storeId,appStoreName:match.name,mapping:match.storeId?'confirmed':'skipped',status:match.storeId?'not_visited':'unmapped',reports:[]};groups.set(row.storeCode,entry);return entry;
+  };
+  primary.rows.forEach((row,i)=>{
+    const match=primary.assignments[i];
+    if(match.storeId && monthlyAnalysisIdentityChanged(stores.get(match.storeId),match,'佑全'))throw new Error('門市身分有變，請先重新核對分析對應。');
+    const entry=addRow(primary,i);
+    if(match.storeId){
+      const hasNote=records.some(record=>record.type==='visit' && !record.deleted && !record.conflict && record.store===match.storeId && record.date?.startsWith(visitMonth+'-'));
+      const hasAttendance=bundle.ops.some(op=>{const a=visitAttendanceEvidence(op);return a?.store===match.storeId && a.date.startsWith(visitMonth+'-');});
+      if(hasNote || hasAttendance)entry.status='visited_no_report';
+    }
+  });
+  for(const source of sources.filter(s=>s.format==='yq-alert-2'))source.rows.forEach((row,rowIndex)=>{
+    const state=typedFeedbackState(bundle,source.id,rowIndex);
+    if(state.conflict)throw new Error('回報仍有並行分歧，請逐版核對後再匯出；不依時間選勝者。');
+    for(const report of state.reports){
+      const op=report.current,value=op.data.monthlyTypedFeedback,match=source.assignments[rowIndex],entry=addRow(source,rowIndex);
+      if(!match.storeId)throw new Error('回報缺少已確認門市對照。');
+      cited.add(source.id);
+      const noteOp=value.note?revisions.get(value.note.revisionId):null,noteCurrent=value.note?records.find(record=>record.type==='visit' && record.id===value.note.id):null;
+      const includeNote=!!noteOp && !!noteCurrent && !noteCurrent.deleted && !noteCurrent.conflict && !excluded.has(value.reportId);
+      const answers=Object.fromEntries(value.answers.map(answer=>[answer.definition.id,{value:structuredClone(answer.value),...(answer.definition.id.startsWith('c.')?{question:answer.definition.label}:{}),...(answer.definition.id==='core.push_sku' && answer.value==='其他' && answer.otherText!==null?{otherText:answer.otherText}:{})}]));
+      entry.status='reported';entry.reports.push({reportId:value.reportId,revisionId:op.id,sourceId:value.analysisId,attendanceDate:value.attendance?.date??null,noteDate:noteOp?.data.date||null,savedAt:value.createdAt,answers,note:{included:includeNote,text:includeNote?noteOp.data.text:'',next:includeNote?noteOp.data.next:''}});
+    }
+  });
+  for(const entry of groups.values())entry.reports.sort((a,b)=>a.savedAt.localeCompare(b.savedAt)||a.reportId.localeCompare(b.reportId));
+  return {format:'yq-report-1',exportedAt:at,appVersion,channel:'佑全',visitMonth,analysisSources:[...cited].sort().map(id=>{const s=sourceMap.get(id);return {sourceId:s.id,salesMonth:s.salesMonth,file:s.file,blob:s.blob,format:s.format};}),stores:[...groups.values()]};
+}
+export function exportMonthlyFeedback(bundle,channel,visitMonth,{includeHistory=false,legacyOnly=false,at=new Date().toISOString()}={}) {
   validateBundle(bundle);
   channel=analysisChannel(channel);if(!channel || !analysisMonth(visitMonth) || !attendanceInstant(at))throw new Error('請選擇通路與建議拜訪月份。');
   const sources=monthlyAnalysisSources(bundle).filter(source=>source.channel===channel && source.visitMonth===visitMonth),replaced=new Set(sources.flatMap(source=>source.supersedes));
   const currentSources=sources.filter(source=>!replaced.has(source.id)),sourceConflict=currentSources.length>1;
-  const selected=includeHistory?sources:currentSources;
+  const selected=(includeHistory?sources:currentSources).filter(source=>!legacyOnly || source.format==='yq-alert-1');
   if(selected.some(source=>source.format==='yq-alert-2'))throw new Error('匯出範圍含 v2 分析，請待新版結構化匯出完成；不以舊格式輸出或遺漏資料。');
   return {format:'pharmacy-monthly-feedback-export-1',generatedAt:at,channel,visitMonth,includeHistory,sourceConflict,stores:selected.flatMap(source=>source.assignments.flatMap((match,rowIndex)=>{
     if(!match.storeId)return [];

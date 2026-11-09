@@ -1,5 +1,5 @@
-const VERSION = '1.5.100';
-const CACHE = `pharmacy-shell-v${VERSION}`;
+const VERSION = '1.5.101';
+const CACHE = `pharmacy-shell-v${VERSION}-yq-opening-1`;
 const ASSETS = ['/', '/index.html', '/style.css', '/app.js', '/core.js', '/db.js', '/relations.js', '/csv.js', '/csv-ui.js', '/version.js', '/update-client.js', '/manifest.webmanifest', '/icon.svg', '/icon-192.png', '/icon-512.png'];
 self.addEventListener('install', event => event.waitUntil((async () => {
   const responses = await Promise.all(ASSETS.map(async asset => {
