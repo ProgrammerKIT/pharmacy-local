@@ -2601,12 +2601,23 @@ export function monthlyAnalysisSources(bundle) {
 function monthlyAnalysisIdentityChanged(store, match, channel) {
   return !store || store.deleted || store.conflict || store.csvIdentityPending || store.mergedInto || store.name !== match.name || (store.address || '') !== match.address || analysisStoreChannel(store) !== channel;
 }
-export function monthlyAlertStoreIds(bundle, month = monthlyVisitMonth()) {
+export function monthlyAlertSalesMonths(bundle, month = monthlyVisitMonth()) {
   const sources = monthlyAnalysisSources(bundle), replaced = new Set(sources.flatMap(source => source.supersedes));
   const tips = sources.filter(source => source.visitMonth === month && !replaced.has(source.id));
   const stores = new Map(project(bundle).filter(store => store.type === 'store').map(store => [store.id, store]));
-  return new Set(tips.filter(source => tips.filter(other => other.channel === source.channel).length === 1)
-    .flatMap(source => source.assignments.filter(match => match.storeId && !monthlyAnalysisIdentityChanged(stores.get(match.storeId), match, source.channel)).map(match => match.storeId)));
+  const salesMonths = new Map();
+  for (const source of tips) {
+    if (tips.some(other => other !== source && other.channel === source.channel)) continue;
+    for (const match of source.assignments) {
+      if (match.storeId && !monthlyAnalysisIdentityChanged(stores.get(match.storeId), match, source.channel)) {
+        salesMonths.set(match.storeId, source.salesMonth);
+      }
+    }
+  }
+  return salesMonths;
+}
+export function monthlyAlertStoreIds(bundle, month = monthlyVisitMonth()) {
+  return new Set(monthlyAlertSalesMonths(bundle, month).keys());
 }
 export function monthlyAnalysisForStore(bundle, storeId, month = monthlyVisitMonth()) {
   const all = monthlyAnalysisSources(bundle), currentStore = project(bundle).find(s => s.type === 'store' && s.id === storeId);

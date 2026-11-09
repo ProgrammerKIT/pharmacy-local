@@ -287,7 +287,8 @@ test('the shared browser QA corpus renders every eligible profile and preserves 
 test('monthly warning marker appears beside homepage store titles and search groups while original text stays identical',async()=>{
  const bundle=await makeMonthlyFixture(core),h=harness([],{bundle}),before=h.snapshot();
  for(const html of [h.render(),h.render('青禾')]) {
-  assert.match(html,/class="monthly-alert-badge"/);assert.match(html,/本月警示店/);
+  const salesMonth = core.monthlyAnalysisSources(bundle)[0].salesMonth;
+  assert.match(html,/class="monthly-alert-badge"/);assert.ok(html.includes(Number(salesMonth.slice(-2))+'月警示店'));
   assert.match(html,/大樹藥局-虛構青禾店|search-match/);
  }
  const noAlert=h.render('晨光');assert.doesNotMatch(noAlert,/class="monthly-alert-badge"/);

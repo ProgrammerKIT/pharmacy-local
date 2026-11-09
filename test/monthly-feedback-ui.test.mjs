@@ -44,9 +44,10 @@ test('export confirmation cancel is inert and unknown replies are exported witho
 test('calendar refresh removes stale homepage markers without re-rendering titles, drafts or notes',async()=>{
  const bundle=await makeFixture(c),slots=[{dataset:{monthlyAlertStore:'qa-alert-a'},innerHTML:''},{dataset:{monthlyAlertStore:'qa-alert-other'},innerHTML:''}];
  let scans=0,period=c.monthlyVisitMonth();
- const ctx=vm.createContext({payload:{bundle},document:{hidden:false,querySelectorAll:()=>slots},monthlyVisitMonth:()=>period,monthlyAlertStoreIds:(...args)=>{scans++;return c.monthlyAlertStoreIds(...args);},esc:value=>String(value)});
+ const ctx=vm.createContext({payload:{bundle},document:{hidden:false,querySelectorAll:()=>slots},monthlyVisitMonth:()=>period,monthlyAlertSalesMonths:(...args)=>{scans++;return c.monthlyAlertSalesMonths(...args);},esc:value=>String(value)});
  vm.runInContext(source.slice(source.indexOf('var monthlyAlertBadgeCache;'),source.indexOf('function visitStoreNameHTML(')),ctx);
- ctx.refreshMonthlyAlertBadges();assert.match(slots[0].innerHTML,/本月警示店/);assert.equal(slots[1].innerHTML,'');
+ const salesMonth = c.monthlyAnalysisSources(bundle)[0].salesMonth;
+ ctx.refreshMonthlyAlertBadges();assert.ok(slots[0].innerHTML.includes(Number(salesMonth.slice(-2))+'月警示店'));assert.equal(slots[1].innerHTML,'');
  ctx.refreshMonthlyAlertBadges();assert.equal(scans,1);
  period='9999-12';ctx.refreshMonthlyAlertBadges();assert.equal(slots[0].innerHTML,'');assert.equal(scans,2);
  assert.equal(ctx.payload.bundle,bundle);
