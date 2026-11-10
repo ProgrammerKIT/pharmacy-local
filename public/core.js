@@ -23,8 +23,10 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 export const uuid = () => crypto.randomUUID();
 export function b64(bytes) {
-  let s = ''; for (let i = 0; i < bytes.length; i += 8192) s += String.fromCharCode(...bytes.subarray(i, i + 8192));
-  return btoa(s);
+  if (typeof bytes.toBase64 === 'function') return bytes.toBase64();
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+  return btoa(binary);
 }
 export function unb64(str) { return Uint8Array.from(atob(str), c => c.charCodeAt(0)); }
 
