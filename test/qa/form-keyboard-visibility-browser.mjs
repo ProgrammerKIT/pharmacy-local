@@ -80,7 +80,7 @@ async function isolated(width, { empty = false } = {}) {
     const visit = (store, text) => ({ store, date: '2026-10-02', source: '虛構來源', text, next: '', topics: [], people: [], attachments: [] });
     bundle.ops.push(c.revision('visit', 'qa-note', visit('qa-store-a', text), [], 'qa'), c.revision('visit', 'qa-other', visit('qa-store-b', '虛構乙店原文'), [], 'qa'));
     c.validateBundle(bundle);
-    await db.writeLocal(await c.seal({ schema: 1, device: 'qa-device', deviceName: 'Fictional Keyboard QA', token: null, bundle, dirty: false, serverVersion: 0, lastSync: null, lastHealthAudit: new Date().toISOString() }, key, meta, 'device'), 0, key);
+    await db.writeLocal(await c.seal({ schema: 1, device: 'qa-device', deviceName: 'Fictional Keyboard QA', token: null, bundle, dirty: false, pendingSync: { entities: [], unknown: false }, serverVersion: 0, lastSync: null, lastHealthAudit: new Date().toISOString() }, key, meta, 'device'), 0, key);
     return bundle;
   }, empty);
   await page.goto(origin + '/'); await page.locator(empty ? '#gate-form' : '#workspace').waitFor({ state: 'visible' }); await page.waitForTimeout(180);
@@ -231,7 +231,8 @@ async function acceptance(width, spec) {
     await field.evaluate(el => el.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: '' })));
     if (width === 393) await viewport(page, 320, 30);
     await field.evaluate(el => { el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertCompositionText', data: '中', isComposing: true })); });
-    await page.waitForTimeout(150);
+    await page.waitForTimeout(spec.draft ? 450 : 150);
+    if (spec.draft) assert.deepEqual(await snapshot(page), stable, 'Composition does not start an autosave before text is committed');
     const during = await field.evaluate(el => ({ start: el.selectionStart, end: el.selectionEnd, direction: el.selectionDirection, value: el.value }));
     assert.deepEqual(during, selected, 'Controller must preserve selection direction, CRLF-normalized DOM text and IME state');
     await field.evaluate(el => el.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '中' })));
@@ -260,6 +261,15 @@ async function acceptance(width, spec) {
       for (const op of t.initialBundle.ops) assert.deepEqual(saved.payload.bundle.ops.find(item => item.id === op.id), op);
       confirmedVersion = true;
     } else if (spec.kind !== 'gate') assert.deepEqual((await snapshot(page)).payload.bundle, t.initialBundle);
+    if (spec.kind === 'single') {
+      const latest = normalized + '\n立刻收起前的最後一字';
+      await field.fill(latest);
+      await page.locator('[data-collapse-single-store-capture]').click();
+      const saved = await stored(page, value => value?.payload.draft?.fields.text === latest);
+      assert.deepEqual(saved.payload.bundle, t.initialBundle);
+      await page.locator('[data-start-single-store-capture]').click();
+      assert.equal(await field.inputValue(), latest, 'Reopening the draft restores the most recent input');
+    }
     const pageWidth = await page.evaluate(() => document.documentElement.scrollWidth); assert.ok(pageWidth <= width + 1);
     assert.deepEqual(t.errors, []); assert.deepEqual(t.external, []); assert.equal(t.apiRequests.includes('/api/pair'), false);
     report.scenarios.push({ name: spec.name, width, beforeResize, firstVisible, longVisible, shorterVisible, offsetVisible, manualScroll, confirmedVersion, legacySyntheticLauncher: spec.kind === 'quick', checks: ['deliberate-focus-only', 'visible-caret', 'textarea-native-newline-normalization', 'selection-preserved', 'composition-preserved', 'viewport-no-persistence', 'no-horizontal-overflow'] });

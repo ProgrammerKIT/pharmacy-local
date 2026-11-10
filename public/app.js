@@ -1,6 +1,6 @@
 import { peopleBriefSourcePlan, validatePeopleBriefResult, currentPeopleReading, peopleReadingRequest, preparePeopleReading, applyPeopleReading, planPeopleRelationshipReview, applyPeopleRelationshipReview, peopleAliasLayout, peopleAliasReviewAvailability, peopleRelationshipReviewAvailability, planPeopleAliasReview, applyPeopleAliasReview } from './relations.js';
 import { peopleRelationshipReviewState, peopleAliasGroups, peopleAliasReviewState } from './core.js';
-import { exportTypedFeedback, YQ_CORE_CHECKS, typedFeedbackState, prepareTypedFeedback, typedFeedbackAnswers, applyTypedVisit, parseMonthlyAnalysisDocument, analysisStoreCodeChoices, revokeAnalysisStoreCode, monthlyAlertStoreIds, monthlyAnalysisSources, monthlyAnalysisForStore, prepareMonthlyAnalysis, applyMonthlyAnalysis, monthlyFeedbackState, prepareMonthlyFeedback, applyMonthlyFeedback, applyMonthlyFeedbackWithAttendance, rememberedMonthlyAnalysisChoice, exportMonthlyFeedback, monthlyAnalysisChangeSummary } from './core.js';
+import { exportTypedFeedback, YQ_CORE_CHECKS, typedFeedbackState, prepareTypedFeedback, typedFeedbackAnswers, applyTypedVisit, parseMonthlyAnalysisDocument, analysisStoreCodeChoices, revokeAnalysisStoreCode, monthlyAlertSalesMonths, monthlyAnalysisSources, monthlyAnalysisForStore, prepareMonthlyAnalysis, applyMonthlyAnalysis, monthlyFeedbackState, prepareMonthlyFeedback, applyMonthlyFeedback, applyMonthlyFeedbackWithAttendance, rememberedMonthlyAnalysisChoice, exportMonthlyFeedback, monthlyAnalysisChangeSummary } from './core.js';
 import { supervisorRelationships, supervisorReviewHistory, reviewSupervisorRelationship, planStoreSupervision, applyStoreSupervision, supervisedStores } from './core.js';
 import { setupWeeklyRecovery, prepareWeeklyRecovery, createRecoveryBackup, newMeta, checkEnvelope, derive, seal, unseal, planBackupImport, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates, buildStoreEnrichmentRequest, planStoreEnrichment, applyStoreEnrichment, readonlyHealthAudit, dataSafetySummary, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, editReminderTasks, addReminderTasks, convertReminderTasks, completeReminderTask, reminderTaskHistory, searchStoreVisitText, scanInsightChanges, storeInsightDisplayForStore, storeInsightEvidenceForEntry, insightReviewForEntry, insightSharedReviewForEntry, storeInsightReviewHistory, planInsightReview, applyInsightReview, planStoreInsights, applyStoreInsights, planStoreInsightRelations, applyStoreInsightRelations, buildStoreInsightsSource, planStoreMerge, applyStoreMerge } from './core.js';
 import { readWeeklyRecovery, writeWeeklyRecovery, readLocal, writeLocal, archiveAndReplaceLocal, listLocalArchives, readLocalArchive } from './db.js';
@@ -673,15 +673,17 @@ async function persist(next, { guard = null } = {}) {
   } finally { renderDataSafetyEntry(); }
 }
 function hasNewFormalChanges(previous, next) {
-  if (!previous || !next?.dirty || previous.bundle?.vaultId !== next.bundle?.vaultId) return false;
+  if (!previous || !next?.dirty || previous.bundle === next.bundle || previous.bundle?.vaultId !== next.bundle?.vaultId) return false;
   const before = new Set(previous.bundle.ops.map(op => op.id));
   return next.bundle.ops.some(op => !before.has(op.id));
 }
 function withPendingSync(previous, next) {
   if (!next.dirty) return { ...next, pendingSync: { entities: [], unknown: false } };
   const entities = new Set(Array.isArray(previous?.pendingSync?.entities) ? previous.pendingSync.entities : []);
-  const before = new Set((previous?.bundle?.ops || []).map(op => op.id));
-  for (const op of next.bundle?.ops || []) if (!before.has(op.id)) entities.add(op.type + ':' + op.entity);
+  if (previous?.bundle !== next.bundle) {
+    const before = new Set((previous?.bundle?.ops || []).map(op => op.id));
+    for (const op of next.bundle?.ops || []) if (!before.has(op.id)) entities.add(op.type + ':' + op.entity);
+  }
   const legacyUnknown = previous?.dirty === true && !previous.pendingSync;
   return { ...next, pendingSync: { entities: [...entities].sort(), unknown: legacyUnknown && !entities.size } };
 }
@@ -704,7 +706,8 @@ function pendingSyncText(summary) {
 }
 function draftState(message, state = '') {
   const el = singleStoreContext ? $('single-store-draft-state') : $('draft-save-state'); if (!el) return;
-  el.textContent = message; el.dataset.state = state;
+  if (el.textContent !== message) el.textContent = message;
+  if (el.dataset.state !== state) el.dataset.state = state;
 }
 function recentStores(limit = 6) {
   const latest = new Map();
@@ -920,38 +923,50 @@ function toggleQuickStoreFields() {
   const box = $('quick-store-fields'), select = $('f-store'); if (!box || !select) return;
   box.hidden = select.value !== '__new__';
 }
-async function persistVisitDraftNow() {
-  clearTimeout(draftTimer); draftTimer = null;
-  if (discardingDraft) return;
-  const draft = captureVisitDraft(); if (!draft || !payload) return;
+function activeVisitDraftContext() {
+  return singleStoreContext || (editorContext?.type === 'visit' ? editorContext : null);
+}
+async function persistVisitDraftNow(ctx) {
+  if (discardingDraft || !ctx || ctx !== activeVisitDraftContext() || !ctx.draftTouched || !payload) return;
+  const draft = captureVisitDraft(); if (!draft) return;
+  const generation = ctx.draftGeneration;
   draftState('儲存中…', 'saving');
   try {
     await persist({ ...payload, draft });
-    if (singleStoreContext?.id === draft.id) singleStoreContext.draftTouched = false;
-    if (editorContext?.type === 'visit' && editorContext.id === draft.id) editorContext.draftTouched = false;
+    if (ctx === activeVisitDraftContext() && ctx.draftGeneration === generation) {
+      ctx.draftTouched = false;
+      draftState('已存於本機 · ' + dateText(draft.savedAt), 'saved');
+    }
     status();
-    draftState('已存於本機 · ' + dateText(draft.savedAt), 'saved');
   } catch (e) {
     $('save-state').textContent = '手機保存失敗：' + e.message;
     draftState('儲存失敗：' + e.message, 'error');
     throw e;
   }
 }
-function scheduleVisitDraftSave() {
-  const ctx = singleStoreContext || (editorContext?.type === 'visit' ? editorContext : null);
+function scheduleVisitDraftSave({ isComposing = false, type = '' } = {}) {
+  const ctx = activeVisitDraftContext();
   if (discardingDraft || !ctx) return;
-  ctx.draftTouched = true;
+  if (type !== 'compositionstart') ctx.draftTouched = true;
+  ctx.draftGeneration = (ctx.draftGeneration || 0) + 1;
+  clearTimeout(draftTimer); draftTimer = null;
+  if (!ctx.draftTouched) return;
   if (!singleStoreContext && $('discard-draft')) $('discard-draft').hidden = false;
-  draftState('儲存中…', 'saving'); clearTimeout(draftTimer);
+  draftState('儲存中…', 'saving');
+  if (isComposing || type === 'compositionstart') return;
+  const generation = ctx.draftGeneration;
   draftTimer = setTimeout(() => {
-    draftSaveChain = draftSaveChain.catch(() => {}).then(persistVisitDraftNow).catch(() => {});
+    draftTimer = null;
+    draftSaveChain = draftSaveChain.catch(() => {}).then(() => {
+      if (ctx.draftGeneration === generation) return persistVisitDraftNow(ctx);
+    }).catch(() => {});
   }, 350);
 }
 function flushVisitDraft() {
-  const ctx = singleStoreContext || (editorContext?.type === 'visit' ? editorContext : null);
+  const ctx = activeVisitDraftContext();
   if (discardingDraft || !ctx || !ctx.draftTouched) return draftSaveChain.catch(() => {});
   clearTimeout(draftTimer); draftTimer = null;
-  draftSaveChain = draftSaveChain.catch(() => {}).then(persistVisitDraftNow);
+  draftSaveChain = draftSaveChain.catch(() => {}).then(() => persistVisitDraftNow(ctx));
   return draftSaveChain;
 }
 function resumeVisitDraft() {
@@ -1292,6 +1307,12 @@ function renderDataSafetyEntry() {
   $('data-safety-title').textContent = summary.title;
   $('data-safety-detail').textContent = summary.detail;
 }
+// Formal writes replace the bundle; local-only drafts reuse the same bundle.
+const bundleSizes = new WeakMap();
+function bundleSizeMB(bundle) {
+  if (!bundleSizes.has(bundle)) bundleSizes.set(bundle, (new TextEncoder().encode(JSON.stringify(bundle)).length / 1048576).toFixed(2));
+  return bundleSizes.get(bundle);
+}
 function status() {
   if (!payload) return;
   const conflicts = records.filter(r => r.conflict).length;
@@ -1322,7 +1343,7 @@ function status() {
   $('pending-sync-detail').textContent = pendingSyncText(pending);
   $('sync-conflict-count').textContent = conflicts + ' 筆';
   renderHealthAudit(); renderDataSafetyEntry();
-  $('storage-detail').textContent = `離線介面：${offlineReady ? '已備妥' : '尚待確認，請先保持連線'}。持久儲存：${storagePersistent ? '已獲允許' : '瀏覽器尚未允許，請定期同步及備份'}。資料 ${(new TextEncoder().encode(JSON.stringify(payload.bundle)).length / 1048576).toFixed(2)} / 24 MB（包含歷史與附件）。`;
+  $('storage-detail').textContent = `離線介面：${offlineReady ? '已備妥' : '尚待確認，請先保持連線'}。持久儲存：${storagePersistent ? '已獲允許' : '瀏覽器尚未允許，請定期同步及備份'}。資料 ${bundleSizeMB(payload.bundle)} / 24 MB（包含歷史與附件）。`;
 }
 function switchView(view) {
   if(view!=='explore') document.body.classList.remove('supervisor-simple-page');
@@ -2607,8 +2628,11 @@ var monthlyAlertBadgeCache;
 function monthlyAlertBadgeContent(storeId) {
   const bundle = payload?.bundle, month = monthlyVisitMonth();
   if (!bundle) return '';
-  if (monthlyAlertBadgeCache?.bundle !== bundle || monthlyAlertBadgeCache.month !== month) monthlyAlertBadgeCache = { bundle, month, ids: monthlyAlertStoreIds(bundle, month) };
-  return monthlyAlertBadgeCache.ids.has(storeId) ? '<span class="monthly-alert-badge"><span aria-hidden="true">⚠</span> 本月警示店</span>' : '';
+  if (monthlyAlertBadgeCache?.bundle !== bundle || monthlyAlertBadgeCache.month !== month) {
+    monthlyAlertBadgeCache = { bundle, month, salesMonths: monthlyAlertSalesMonths(bundle, month) };
+  }
+  const salesMonth = monthlyAlertBadgeCache.salesMonths.get(storeId);
+  return salesMonth ? `<span class="monthly-alert-badge"><span aria-hidden="true">⚠</span> ${Number(salesMonth.slice(-2))}月警示店</span>` : '';
 }
 function monthlyAlertBadgeHTML(storeId) {
   return `<span class="monthly-alert-slot" data-monthly-alert-store="${esc(storeId)}">${monthlyAlertBadgeContent(storeId)}</span>`;
@@ -3291,7 +3315,9 @@ async function persistInlineTextDraft() {
   const visit = by('visit', ctx.id), element = inlineTextElement(ctx.id, ctx.briefStoreId || ''), state = element?.closest('[data-inline-shell]')?.querySelector('[data-inline-state]');
   if (!visit || visit.deleted || visit.conflict || JSON.stringify(quickTextParents(visit)) !== JSON.stringify(ctx.parents)) { if (state) state.textContent = '這筆紀錄已有新版本；目前文字未寫入，請取消後重新開始。'; return; }
   const draft = ctx.after === ctx.before ? null : { format: 'inline-text-draft-1', id: ctx.id, before: ctx.before, after: ctx.after, parents: [...ctx.parents], updatedAt: new Date().toISOString() };
+  const savedText = ctx.after;
   await persist({ ...payload, inlineTextDraft: draft });
+  if (ctx !== inlineTextContext || ctx.after !== savedText) return;
   if (state) state.textContent = draft ? '修改草稿已加密保存在這台裝置，尚未寫入正式紀錄。' : '文字沒有變更。';
   if (!draft) releaseIdleInlineEdit();
 }
@@ -3300,14 +3326,21 @@ function scheduleInlineTextDraft() {
   inlineDraftTimer = setTimeout(() => { inlineDraftSaveChain = inlineDraftSaveChain.then(() => ctx === inlineTextContext ? persistInlineTextDraft() : undefined).catch(error => { const state = document.querySelector(`[data-inline-state="${CSS.escape(ctx?.id || '')}"]`); if (state) state.textContent = '草稿儲存失敗：' + error.message; }); }, 250);
 }
 async function flushInlineTextDraft() { clearTimeout(inlineDraftTimer); inlineDraftTimer = null; inlineDraftSaveChain = inlineDraftSaveChain.then(persistInlineTextDraft); await inlineDraftSaveChain; }
-function updateInlineText(id, element) {
+function updateInlineText(id, element, { isComposing = false } = {}) {
   if (!beginInlineTextEdit(id, element)) { const visit = by('visit', id); if (visit) element.textContent = visit.text || ''; return; }
   const next = inlineTextValue(element), shell = element.closest('[data-inline-shell]'), state = shell?.querySelector('[data-inline-state]');
   if (next.length > 20000) { element.textContent = inlineTextContext.after; if (state) state.textContent = '文字超過長度上限，超出的輸入未保留。'; return; }
-  inlineTextContext.after = next; shell?.classList.toggle('editing', next !== inlineTextContext.before);
-  if (shell) shell.querySelector('.inline-edit-actions').hidden = next === inlineTextContext.before;
-  if (state) state.textContent = next.trim() ? '正在加密保存修改草稿…' : '整段空白不能儲存為正式版本；原文仍安全保留。';
-  scheduleInlineTextDraft();
+  const wasEdited = inlineTextContext.after !== inlineTextContext.before;
+  inlineTextContext.after = next;
+  const edited = next !== inlineTextContext.before;
+  shell?.classList.toggle('editing', edited);
+  const actions = shell?.querySelector('.inline-edit-actions');
+  if (actions && actions.hidden === edited) actions.hidden = !edited;
+  const message = next.trim() ? '正在加密保存修改草稿…' : '整段空白不能儲存為正式版本；原文仍安全保留。';
+  if (state && state.textContent !== message) state.textContent = message;
+  if (isComposing) clearTimeout(inlineDraftTimer);
+  else scheduleInlineTextDraft();
+  return wasEdited !== edited;
 }
 async function cancelInlineTextEdit(id, originStoreId = '') {
   if (inlineTextContext?.id !== id && payload?.inlineTextDraft?.id !== id) return;
@@ -4158,9 +4191,15 @@ document.addEventListener('invalid', showValidationWithoutKeyboard, true);
 document.addEventListener('focusin', event => { if (event.target.closest?.('#review [data-inline-edit-text]')) refreshBriefSearch(); });
 document.addEventListener('focusout', event => { if (event.target.closest?.('[data-inline-edit-text]')) queueMicrotask(() => { releaseIdleInlineEdit(); refreshBriefSearch(); }); });
 document.addEventListener('beforeinput', event => { if (event.target.closest?.('#review [data-inline-edit-text]')) { clearTimeout(briefSearchTimer); clearBriefSearchHighlights(); } });
-document.addEventListener('compositionstart', event => { if (event.target.closest?.('#review [data-inline-edit-text]')) clearBriefSearchHighlights(); });
+document.addEventListener('compositionstart', event => {
+  if (event.target.closest?.('[data-inline-edit-text]')) clearTimeout(inlineDraftTimer);
+  if (event.target.closest?.('#review [data-inline-edit-text]')) clearBriefSearchHighlights();
+});
+for (const type of ['input', 'compositionend']) document.addEventListener(type, event => {
+  const editor = event.target.closest?.('[data-inline-edit-text]');
+  if (editor && updateInlineText(editor.dataset.inlineEditText, editor, event)) refreshBriefSearch();
+});
 document.addEventListener('input', event => {
-  const editor = event.target.closest?.('[data-inline-edit-text]'); if (editor) { updateInlineText(editor.dataset.inlineEditText, editor); refreshBriefSearch(); }
   const custom = event.target.closest?.('[data-reminder-custom-input]'); if (custom) changeCustomReminderOption(custom.closest('[data-reminder-options-for]'));
   if (event.target.id) document.querySelectorAll(`[data-reminder-options-for="${CSS.escape(event.target.id)}"]`).forEach(syncReminderOptionGroup);
 });
@@ -4275,13 +4314,17 @@ for (const event of ['input', 'change']) $('store-reminder-form').addEventListen
 for (const type of ['input', 'change']) $('editor-fields').addEventListener(type, event => {
   if (editorContext?.reminderDraftContext && (['f-next-remember', 'f-every-time-must'].includes(event.target.id) || event.target.closest?.('[data-reminder-options-for], [data-reminder-convert]'))) scheduleReminderDraftSave();
 });
-$('editor-fields').addEventListener('input', event => {
-  if (event.target.id === 'f-store-search') { refreshVisitStoreOptions(event.target.value); return; }
-  if (editorContext?.type === 'visit' && event.target.id !== 'f-files') scheduleVisitDraftSave();
+for (const type of ['input', 'compositionstart', 'compositionend']) $('editor-fields').addEventListener(type, event => {
+  if (event.target.id === 'f-store-search') {
+    if (!event.isComposing && event.type !== 'compositionstart') refreshVisitStoreOptions(event.target.value);
+    return;
+  }
+  if (editorContext?.type === 'visit' && event.target.id !== 'f-files') scheduleVisitDraftSave(event);
 });
 $('editor-fields').addEventListener('change', event => { if (event.target.id === 'f-store') toggleQuickStoreFields(); if (editorContext?.type === 'visit' && !['f-files', 'f-store-search'].includes(event.target.id)) scheduleVisitDraftSave(); });
-$('review').addEventListener('input', event => { if (singleStoreContext && event.target.closest('#single-store-capture-form') && event.target.id !== 'single-store-files') scheduleVisitDraftSave(); });
-$('review').addEventListener('change', event => { if (singleStoreContext && event.target.closest('#single-store-capture-form') && event.target.id !== 'single-store-files') scheduleVisitDraftSave(); });
+for (const type of ['input', 'change', 'compositionstart', 'compositionend']) $('review').addEventListener(type, event => {
+  if (singleStoreContext && event.target.closest('#single-store-capture-form') && event.target.id !== 'single-store-files') scheduleVisitDraftSave(event);
+});
 $('quality-content').addEventListener('change', e => { if (e.target.id === 'quality-field') { qualityField = e.target.value; qualityPage = 0; renderQuality(); } });
 $('gate-restore').addEventListener('click', () => { if (!$('password').value) { $('gate-error').textContent = '請先在密碼欄填寫備份密碼。'; return; } $('backup-file').click(); });
 $('recovery-export-form').addEventListener('submit', event => { event.preventDefault(); void run(exportRecoveryBackup, 'recovery-export-error'); });
@@ -4309,7 +4352,15 @@ $('rebuild-dialog').addEventListener('cancel', event => { if (busy) event.preven
 for (const prefix of ['', 'customer-']) for (const [id, field] of [['search', 'query'], ['district', 'district'], ['channel', 'kind']]) $(prefix + id).addEventListener(id === 'search' ? 'input' : 'change', event => changeStoreFilter(field, event.target.value));
 $('regional-city').addEventListener('change', event => { regionalCity = event.target.value; regionalDistrict = ''; renderRegional(); });
 $('regional-district').addEventListener('change', event => { regionalDistrict = event.target.value; renderRegional(); });
-$('visit-search').addEventListener('input', renderVisits);
+let visitSearchTimer = null;
+for (const type of ['input', 'compositionstart', 'compositionend']) $('visit-search').addEventListener(type, event => {
+  clearTimeout(visitSearchTimer);
+  if (event.isComposing || event.type === 'compositionstart') return;
+  const session = key;
+  visitSearchTimer = setTimeout(() => {
+    if (key === session && payload && activeView === 'visits') renderVisits();
+  }, 120);
+});
 new ResizeObserver(drawGraph).observe($('graph-wrap'));
 if (!isSecureContext || !crypto.subtle) { $('gate-error').textContent = '需要受信任的 HTTPS 連線。請完成 Mac 與 iPhone 憑證設定，不要略過憑證警告。'; $('gate-submit').disabled = true; }
 else {

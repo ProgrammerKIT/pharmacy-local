@@ -32,13 +32,14 @@ test('You Chuan imports and feedback do not replace same-month Great Tree source
  assert.deepEqual(c.monthlyAnalysisSources(b).at(-1).supersedes,[]);
  b=await c.applyMonthlyFeedback(b,c.prepareMonthlyFeedback(b,youId,0,month),{visitDate:'',answers:['佑全自己的回答'],notes:''},'test',month);
  const revised=file('佑全','A123虛構甲','虛構佑全修訂');
- b=await c.applyMonthlyAnalysis(b,await c.prepareMonthlyAnalysis(b,[revised],sales,month),[['health']],'test',true);
+ b=await c.applyMonthlyAnalysis(b,await c.prepareMonthlyAnalysis(b,[revised],'2026-09',month),[['health']],'test',true);
  assert.deepEqual(c.monthlyAnalysisSources(b).at(-1).supersedes,[youId]);
  assert.deepEqual(c.exportMonthlyFeedback(b,'大樹',month,{at:'2026-11-08T00:00:00.000Z'}),treeReport);
  assert.deepEqual(b.ops.slice(0,before.ops.length),before.ops);
  assert.deepEqual(b.ops.filter(o=>o.type!=='source'),before.ops.filter(o=>o.type!=='source'));
  assert.equal(c.monthlyAnalysisForStore(b,'tree',month).filter(x=>x.current).length,1);
  assert.deepEqual([...c.monthlyAlertStoreIds(b,month)].sort(),['health','tree']);
+ assert.deepEqual(c.monthlyAlertSalesMonths(b,month),new Map([['tree','2026-10'],['health','2026-09']]));
  c.validateBundle(b);
 });
 test('Missing stores stay unassigned and their complete original row is retained without creating a store',async()=>{
