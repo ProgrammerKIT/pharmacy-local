@@ -41,7 +41,6 @@ test('foreground renewal refuses every changed data, identity, date, lock, or vi
     ['background', s => { s.document.hidden = true; }],
     ['pending lock', s => { s.pendingLock = true; }],
     ['program update', s => { s.updateHolding = true; }],
-    ['fetch in progress', s => { s.autoFetching = true; }],
     ['sync in progress', s => { s.syncInProgress = true; }],
     ['missing payload', s => { s.payload = null; }],
     ['another key', s => { s.key = { synthetic: 'other-key' }; }],
@@ -79,7 +78,6 @@ test('save guard rejects later changes after a successful foreground revalidatio
     ['background', s => { s.document.hidden = true; }],
     ['date', s => { s.currentDate = '2026-10-14'; }],
     ['selected day', s => { s.dayPlanSelectedDate = '2026-10-15'; }],
-    ['fetch', s => { s.autoFetching = true; }],
     ['sync', s => { s.syncInProgress = true; }],
   ];
   for (const [name, change] of cases) await t.test(name, () => {
@@ -97,4 +95,14 @@ test('no retained form or missing context is handled without inventing a session
   assert.equal(sandbox.dayPlanContext, null);
   assert.equal(ctx.epoch, 3);
   assert.throws(() => sandbox.assertDayPlanContext(null), /尚未寫入/);
+});
+
+
+test('a read-only version probe permits revalidating a retained picker but not snapshot exchange', () => {
+  const { sandbox, ctx } = session(); sandbox.autoFetching = true;
+  sandbox.resumeDayPlanContext();
+  assert.equal(ctx.epoch, sandbox.syncEpoch);
+  assert.doesNotThrow(() => sandbox.assertDayPlanContext(ctx));
+  sandbox.syncInProgress = true;
+  assert.throws(() => sandbox.assertDayPlanContext(ctx), /尚未寫入/);
 });

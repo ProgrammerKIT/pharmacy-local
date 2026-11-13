@@ -33,7 +33,7 @@ function fixture() {
     dayPlanContext: null, editorContext: null, reminderContext: null, singleStoreContext: null, inlineTextContext: null,
     key: {}, meta: {}, localRevision: 5, syncEpoch: 9, payload: { bundle, device: 'fictional-device', dirty: false }, records: project(bundle),
     document: { hidden: false, querySelector() { return node('monthly-visit-dialog').open ? node('monthly-visit-dialog') : null; } },
-    pendingLock: false, updateHolding: false, autoFetching: false, syncInProgress: false, busy: false,
+    releaseIdleInlineEdit() {}, pendingLock: false, updateHolding: false, autoFetching: false, syncInProgress: false, busy: false,
     $: node, structuredClone, project, monthlyVisitMonth, shiftMonthlyVisitMonth, monthlyVisitForStore, monthlyVisitOverview, monthlyVisitBasis, applyMonthlyVisitAction, attendanceTaipeiDate,
     by: (type, id) => project(sandbox.payload.bundle).find(row => row.type === type && row.id === id),
     retailChannel: store => ({ id: store?.id === 'a' ? 'great-tree' : store?.id === 'b' ? 'you-chuan' : 'independent' }),
@@ -138,7 +138,7 @@ test('stale retained picker, background and changed session identity block all w
   const cases = [
     ['epoch', s => s.syncEpoch++], ['revision', s => s.localRevision++], ['bundle', s => { s.payload.bundle = structuredClone(s.payload.bundle); }],
     ['month', s => { s.monthlyVisitSelectedMonth = shiftMonthlyVisitMonth(s.monthlyVisitSelectedMonth, 1); }], ['key', s => { s.key = {}; }], ['metadata', s => { s.meta = {}; }],
-    ['background', s => { s.document.hidden = true; }], ['pending lock', s => { s.pendingLock = true; }], ['fetch', s => { s.autoFetching = true; }], ['sync', s => { s.syncInProgress = true; }],
+    ['background', s => { s.document.hidden = true; }], ['pending lock', s => { s.pendingLock = true; }], ['sync', s => { s.syncInProgress = true; }],
   ];
   for (const [label, mutate] of cases) await t.test(label, async () => {
     const f = fixture(); f.open(); const ctx = f.sandbox.monthlyVisitContext; mutate(f.sandbox); await f.act('add');
