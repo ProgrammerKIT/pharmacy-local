@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import { mobileLocationDevice, validCoordinates, mapCoordinates, storeCoordinates, distanceMeters, nearestStores } from '../public/core.js';
+import { nearbyCoordinateEvidence, mobileLocationDevice, validCoordinates, mapCoordinates, storeCoordinates, distanceMeters, nearestStores } from '../public/core.js';
 const pin = (lat,lon) => `https://www.google.com/maps/search/?api=1&query=${lat},${lon}`;
 const store = (id,lat,lon) => ({id,name:'虛構門市 '+id,mapUrl:pin(lat,lon)});
 test('phone detection never enables GPS for desktop Mac, Windows or narrow desktop windows',()=>{
@@ -31,7 +31,7 @@ const app=fs.readFileSync(new URL('../public/app.js',import.meta.url),'utf8');
 function harness(mobile=true){
  const nodes=new Map(),$=id=>{if(!nodes.has(id))nodes.set(id,{textContent:'',innerHTML:'',hidden:false,disabled:false});return nodes.get(id);};
  let calls=0,success,failure,options,recentLimit=0;
- const c=vm.createContext({$,mobileLocationDevice,validCoordinates,nearestStores,storeCoordinates,Date,isSecureContext:true,NEARBY_STORE_LIMIT:4,
+ const c=vm.createContext({$,nearbyCoordinateEvidence,mobileLocationDevice,validCoordinates,nearestStores,storeCoordinates,Date,isSecureContext:true,NEARBY_STORE_LIMIT:4,
   navigator:{userAgent:mobile?'iPhone':'Macintosh',geolocation:{getCurrentPosition(s,f,o){calls++;success=s;failure=f;options=o;}}},
   document:{hidden:false},payload:{bundle:{ops:[],blobs:{}}},key:{},nearbyRequest:0,nearbyDenied:false,nearbyState:{status:'idle',position:null,message:''},
   all:()=>[store('a',25,121),store('b',25.001,121),store('c',25.002,121),store('d',25.003,121),store('e',25.004,121)],
@@ -66,4 +66,17 @@ test('missing store coordinates and stale GPS never claim to show nearest stores
  const h=harness();h.c.all=()=>[{id:'no',name:'無座標',mapUrl:'https://maps.google.com/?cid=1'}];h.c.requestNearbyPosition();
  h.success()({coords:{latitude:25,longitude:121,accuracy:20},timestamp:Date.now()});assert.match(h.$('nearby-status').textContent,/缺少可靠座標/);
  h.c.requestNearbyPosition(true);h.success()({coords:{latitude:25,longitude:121,accuracy:20},timestamp:Date.now()-120000});assert.equal(h.c.nearbyState.position,null);
+});
+
+test('coordinate-only search paths are pins; camera centers and ambiguous explicit points remain excluded',()=>{
+ for(const host of ['www.google.com','maps.google.com.tw'])assert.deepEqual(mapCoordinates(`https://${host}/maps/search/25.01%2C121.52/`),{latitude:25.01,longitude:121.52});
+ for(const tail of ['/maps/search/25,121?query=26,122','/maps/search/25,121/data=!3d26!4d122','/maps/search/store/@25,121,17z','/maps/search/91,121','/maps/search/25,121,17z'])assert.equal(mapCoordinates('https://www.google.com'+tail),null);
+ assert.equal(mapCoordinates('https://www.google.com/maps/data=!3d25!4d121?q=26,122'),null);
+});
+test('partial coverage is visible outside collapsed help and omitted stores are directly reachable',()=>{
+ const h=harness();h.c.all=()=>[store('located',25,121),{id:'missing',name:'虛構待補店',mapUrl:'https://maps.google.com/?cid=1'}];
+ h.c.requestNearbyPosition();h.success()({coords:{latitude:25,longitude:121,accuracy:20},timestamp:Date.now()});
+ assert.equal(h.$('nearby-feedback').hidden,false);assert.match(h.$('nearby-feedback').textContent,/1 間門市缺少可靠座標/);
+ assert.match(h.$('quick-visit-title').textContent,/已定位門市中最近 1 間/);assert.match(h.$('recent-store-list').innerHTML,/data-visit-brief="missing"/);
+ assert.match(h.$('recent-store-list').innerHTML,/查看未參與距離排序/);
 });

@@ -2,7 +2,7 @@ import { peopleBriefSourcePlan, validatePeopleBriefResult, currentPeopleReading,
 import { peopleRelationshipReviewState, peopleAliasGroups, peopleAliasReviewState } from './core.js';
 import { exportTypedFeedback, YQ_CORE_CHECKS, typedFeedbackState, prepareTypedFeedback, typedFeedbackAnswers, applyTypedVisit, parseMonthlyAnalysisDocument, analysisStoreCodeChoices, revokeAnalysisStoreCode, monthlyAlertSalesMonths, monthlyAnalysisSources, monthlyAnalysisForStore, prepareMonthlyAnalysis, applyMonthlyAnalysis, monthlyFeedbackState, prepareMonthlyFeedback, applyMonthlyFeedback, applyMonthlyFeedbackWithAttendance, rememberedMonthlyAnalysisChoice, exportMonthlyFeedback, monthlyAnalysisChangeSummary } from './core.js';
 import { supervisorRelationships, supervisorReviewHistory, reviewSupervisorRelationship, planStoreSupervision, applyStoreSupervision, supervisedStores } from './core.js';
-import { setupWeeklyRecovery, prepareWeeklyRecovery, createRecoveryBackup, newMeta, checkEnvelope, derive, seal, unseal, planBackupImport, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, planCoordinates, applyCoordinates, buildStoreEnrichmentRequest, planStoreEnrichment, applyStoreEnrichment, readonlyHealthAudit, dataSafetySummary, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, editReminderTasks, addReminderTasks, convertReminderTasks, completeReminderTask, reminderTaskHistory, searchStoreVisitText, scanInsightChanges, storeInsightDisplayForStore, storeInsightEvidenceForEntry, insightReviewForEntry, insightSharedReviewForEntry, storeInsightReviewHistory, planInsightReview, applyInsightReview, planStoreInsights, applyStoreInsights, planStoreInsightRelations, applyStoreInsightRelations, buildStoreInsightsSource, planStoreMerge, applyStoreMerge } from './core.js';
+import { setupWeeklyRecovery, prepareWeeklyRecovery, createRecoveryBackup, newMeta, checkEnvelope, derive, seal, unseal, planBackupImport, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, nearbyCoordinateEvidence, planNearbyCoordinates, applyNearbyCoordinates, buildStoreEnrichmentRequest, planStoreEnrichment, applyStoreEnrichment, readonlyHealthAudit, dataSafetySummary, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, editReminderTasks, addReminderTasks, convertReminderTasks, completeReminderTask, reminderTaskHistory, searchStoreVisitText, scanInsightChanges, storeInsightDisplayForStore, storeInsightEvidenceForEntry, insightReviewForEntry, insightSharedReviewForEntry, storeInsightReviewHistory, planInsightReview, applyInsightReview, planStoreInsights, applyStoreInsights, planStoreInsightRelations, applyStoreInsightRelations, buildStoreInsightsSource, planStoreMerge, applyStoreMerge } from './core.js';
 import { readWeeklyRecovery, writeWeeklyRecovery, readLocal, writeLocal, archiveAndReplaceLocal, listLocalArchives, readLocalArchive } from './db.js';
 import { dayPlanDate, shiftDayPlanDate, dayPlanForStore, dayPlanOverview, dayItineraryBasis, applyDayItineraryAction } from './core.js';
 import { monthlyVisitMonth, shiftMonthlyVisitMonth, monthlyVisitForStore, monthlyVisitOverview, monthlyVisitBasis, applyMonthlyVisitAction } from './core.js';
@@ -730,10 +730,12 @@ function renderQuickVisit() {
   if (!payload) return;
   const mobile = mobileLocationDevice(navigator), ready = mobile && nearbyState.status === 'ready';
   const available = all('store').filter(s => !s.conflict && !s.deleted);
-  const located = ready ? nearestStores(available, nearbyState.position, NEARBY_STORE_LIMIT) : [];
-  const coverage = available.filter(s => storeCoordinates(s)).length;
+  const coordinateEvidence = nearbyCoordinateEvidence(payload.bundle);
+  const located = ready ? nearestStores(available, nearbyState.position, NEARBY_STORE_LIMIT, coordinateEvidence) : [];
+  const missing = available.filter(s => !storeCoordinates(s, coordinateEvidence));
+  const coverage = available.length - missing.length;
   const title = $('quick-visit-title'), status = $('nearby-status'), retry = $('nearby-retry');
-  title.textContent = mobile ? `附近最近 ${NEARBY_STORE_LIMIT} 間門市` : '最近使用的門市';
+  title.textContent = mobile ? (ready && missing.length ? `已定位門市中最近 ${located.length} 間` : `附近最近 ${ready ? located.length : NEARBY_STORE_LIMIT} 間門市`) : '最近使用的門市';
   retry.hidden = !mobile; retry.disabled = nearbyState.status === 'locating';
   retry.textContent = nearbyState.status === 'locating' ? '定位中…' : '重新定位';
   let message = mobile ? nearbyState.message : '快速選擇門市開始拜訪；電腦不啟動定位。';
@@ -742,14 +744,15 @@ function renderQuickVisit() {
     : '已取得定位，但門市缺少可靠座標，尚無法計算附近門市。';
   status.textContent = message || '開啟後會請求定位；只在本機計算距離。';
   const feedback = $('nearby-feedback'), imprecise = ready && located.length > 0 && nearbyState.position.accuracy > 1000;
-  feedback.hidden = !mobile || (ready && located.length > 0 && !imprecise);
-  feedback.textContent = feedback.hidden ? '' : imprecise ? '定位誤差較大，請重新定位；詳細資訊可展開「定位說明」。' : status.textContent;
+  feedback.hidden = !mobile || (ready && located.length > 0 && !imprecise && !missing.length);
+  feedback.textContent = feedback.hidden ? '' : ready && missing.length ? `${missing.length} 間門市缺少可靠座標，未參與排序，可能有更近門市。${imprecise ? '定位誤差較大，請重新定位。' : ''}` : imprecise ? '定位誤差較大，請重新定位；詳細資訊可展開「定位說明」。' : status.textContent;
   const entries = located.length ? located : recentStores(3).map(store => ({ store }));
   const fallback = mobile && !located.length ? '<p class="nearby-fallback-label">先顯示最近使用的門市（不是距離排序）</p>' : '';
+  const missingHTML = mobile && ready && missing.length ? `<details class="nearby-missing"><summary>查看未參與距離排序的 ${missing.length} 間門市</summary><p class="muted">缺少可靠座標，不能猜測距離。可直接開啟門市，或在定位說明載入經核對的座標補查檔。</p>${missing.map(store => `<button type="button" class="text-button" ${storeIdentityPending(store) ? `data-quick-visit="${esc(store.id)}"` : `data-visit-brief="${esc(store.id)}"`}>${esc(store.name)}</button>`).join('')}</details>` : '';
   $('recent-store-list').innerHTML = fallback + entries.map(({ store, distance }) => {
     const range = Number.isFinite(distance) ? (distance < 1000 ? `約 ${Math.round(distance / 10) * 10} 公尺` : `約 ${(distance / 1000).toFixed(1)} 公里`) + ' · 直線距離' : store.district || '地區未提供';
     return `<button type="button" class="recent-store" ${storeIdentityPending(store) ? `data-quick-visit="${esc(store.id)}"` : `data-visit-brief="${esc(store.id)}"`}><strong>${esc(store.name)}${monthlyAlertBadgeHTML(store.id)}</strong><small>${esc(range)}</small>${storeIdentityPending(store) ? '<small>身分待確認 · 直接記錄拜訪</small>' : ''}</button>`;
-  }).join('') || '<p class="muted">目前沒有可用門市，可按「新增拜訪」開始記錄。</p>';
+  }).join('') + missingHTML || '<p class="muted">目前沒有可用門市，可按「新增拜訪」開始記錄。</p>';
 }
 function requestNearbyPosition(force = false) {
   if (!payload || document.hidden || !mobileLocationDevice(navigator) || nearbyState.status === 'locating') return;
@@ -780,21 +783,24 @@ async function previewCoordinateFile(file) {
   if (file.size > 2 * 1024 * 1024) throw new Error('座標檔案超過 2 MB，未載入。');
   const sessionKey = key, input = JSON.parse(await file.text());
   if (!payload || key !== sessionKey || pendingLock || document.hidden) return;
-  const plan = planCoordinates(payload.bundle, input);
+  const plan = planNearbyCoordinates(payload.bundle, input);
   coordinatePreview = { input, plan, sessionKey }; versionReview = null; resolutionPreview = null;
   $('review-title').textContent = '座標補查：正式套用前預覽';
-  $('review-body').innerHTML = `<p>對照目前資料：可更新 ${plan.changes.length} 間，略過 ${plan.skipped.length} 間。檔案中的歷史清單不代表目前全部門市。</p><p>確認後只新增門市地圖網址版本，讓附近排序讀取座標；舊網址保留在版本歷史。名稱、地址、拜訪文字、原 CSV 與 Source Snapshot 均保留。變更會隨加密同步傳到其他裝置。</p><p>取消或關閉不寫入任何資料。</p>` +
+  $('review-body').innerHTML = `<p>對照目前資料：可新增獨立位置來源 ${plan.changes.length} 間，略過 ${plan.skipped.length} 間。檔案中的歷史清單不代表目前全部門市。</p><p>確認後只新增獨立位置來源，讓附近排序讀取座標；不修改門市主檔或地圖網址。名稱、地址、拜訪文字、人物、原 CSV 與全部歷史均保留。獨立來源會隨既有加密同步傳到其他裝置。</p><p>取消或關閉不寫入任何資料。</p>` +
     plan.changes.map(c => `<article><h3>${esc(c.name)}</h3><p>座標：${esc(c.point.latitude)}, ${esc(c.point.longitude)}；補查時間：${esc(dateText(c.checkedAt))}</p><details><summary>原網址與新網址</summary><p class="coordinate-url">原：${esc(c.before || '未提供')}</p><p class="coordinate-url">新：${esc(c.after)}</p></details></article>`).join('') +
-    `<details><summary>略過 ${plan.skipped.length} 間及原因</summary>` + plan.skipped.map(c => `<p>${esc(c.name)}：${esc(c.reason)}</p>`).join('') + '</details><div class="dialog-footer"><button data-close="review">取消，不修改</button>' + (plan.changes.length ? `<button id="apply-coordinates" class="primary">確認更新這 ${plan.changes.length} 間的地圖網址</button>` : '') + '</div>';
+    `<details><summary>略過 ${plan.skipped.length} 間及原因</summary>` + plan.skipped.map(c => `<p>${esc(c.name)}：${esc(c.reason)}</p>`).join('') + '</details><div class="dialog-footer"><button data-close="review">取消，不修改</button>' + (plan.changes.length ? `<button id="apply-coordinates" class="primary">確認新增這 ${plan.changes.length} 間的獨立座標</button>` : '') + '</div>';
   openDialog($('review'));
 }
 async function commitCoordinates() {
   const preview = coordinatePreview;
   if (!preview || !payload || preview.sessionKey !== key || pendingLock || document.hidden || !$('review').open) throw new Error('預覽已失效，請重新載入檔案。');
-  const bundle = applyCoordinates(payload.bundle, preview.input, preview.plan, payload.device);
-  await persist({ ...payload, bundle, dirty: true });
+  const sessionKey = key, originalPayload = payload;
+  const bundle = await applyNearbyCoordinates(payload.bundle, preview.input, preview.plan, payload.device);
+  if (payload !== originalPayload || key !== sessionKey || pendingLock || document.hidden || !$('review').open) throw new Error('資料或工作階段已改變，請重新預覽。');
+  const guard = () => { if (coordinatePreview !== preview || payload !== originalPayload || key !== sessionKey || pendingLock || document.hidden || !$('review').open) throw new Error('資料或工作階段已改變，請重新預覽。'); };
+  await persist({ ...payload, bundle, dirty: true }, { guard });
   coordinatePreview = null; $('review').close(); render();
-  toast('座標已加密儲存；舊網址與原始來源保留。');
+  toast('獨立座標已加密儲存；門市主檔、原網址與全部筆記保持原樣。');
 }
 function exportStoreEnrichmentRequest() {
   const request = buildStoreEnrichmentRequest(payload.bundle);

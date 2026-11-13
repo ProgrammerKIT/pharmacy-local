@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {emptyBundle,revision,project,planCoordinates,applyCoordinates,validateCoordinateReview,coordinateFeature,newMeta,derive,seal,unseal,merge} from '../public/core.js';
+import {emptyBundle,revision,project,planNearbyCoordinates,applyNearbyCoordinates,planCoordinates,applyCoordinates,validateCoordinateReview,coordinateFeature,newMeta,derive,seal,unseal,merge} from '../public/core.js';
 const featureId='0x123:0x456';
 const url=(lat=25)=>`https://www.google.com/maps/place/fictional/data=!1s${featureId}!3d${lat}!4d121`;
 const input=()=>({format:'pharmacy-coordinate-review-1',items:[{featureId,resolvedUrl:url(),latitude:25,longitude:121,googleName:'虛構測試店',address:'人工地址',sourceNames:['虛構測試店'],checkedAt:'2026-09-25T00:00:00Z'}]});
@@ -46,7 +46,7 @@ test('UI preview/cancel do not persist; failed commit preserves payload and allo
  const app=fs.readFileSync(new URL('../public/app.js',import.meta.url),'utf8');
  const nodes=new Map(),$=id=>{if(!nodes.has(id))nodes.set(id,{open:false,showModal(){this.open=true;},close(){this.open=false;}});return nodes.get(id);};
  const payload={bundle:bundle(),device:'test',draft:{text:'keep'}};let writes=0;
- const c=vm.createContext({$,payload,key:{},coordinatePreview:null,versionReview:null,resolutionPreview:null,editorContext:null,csvImport:{hasPending:()=>false},pendingLock:false,document:{hidden:false},openDialog:dialog=>dialog.showModal(),planCoordinates,applyCoordinates,esc:String,dateText:String,render:()=>{},toast:()=>{},persist:async()=>{writes++;throw Error('disk failure');}});
+ const c=vm.createContext({$,payload,key:{},coordinatePreview:null,versionReview:null,resolutionPreview:null,editorContext:null,csvImport:{hasPending:()=>false},pendingLock:false,document:{hidden:false},openDialog:dialog=>dialog.showModal(),planNearbyCoordinates,applyNearbyCoordinates,esc:String,dateText:String,render:()=>{},toast:()=>{},persist:async()=>{writes++;throw Error('disk failure');}});
  vm.runInContext(app.slice(app.indexOf('async function previewCoordinateFile('),app.indexOf('function visitStoreSearchText(')),c);
  const file={size:100,text:async()=>JSON.stringify(input())};await c.previewCoordinateFile(file);assert.equal(writes,0);assert.ok($('review-body').innerHTML.includes('原：'));assert.ok($('review-body').innerHTML.includes('新：'));
  const before=JSON.stringify(payload);await assert.rejects(c.commitCoordinates(),/disk failure/);assert.equal(JSON.stringify(payload),before);assert.equal($('review').open,true);

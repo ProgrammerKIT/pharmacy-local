@@ -817,6 +817,7 @@ export function peopleAliasReviewState(bundle,readingId,personIndices) {
 }
 export function validData(type, d) {
   if (!plain(d)) return false;
+  if (d.nearbyCoordinate !== undefined && (type !== 'source' || !validNearbyCoordinate(d.nearbyCoordinate) || Object.keys(d).some(k => !['file','list','blob','batch','rows','headers','encoding','delimiter','nearbyCoordinate'].includes(k)))) return false;
   if (d.manualVisitAttendance !== undefined && !validManualVisitAttendance({ type, data: d, deleted: false, parents: [], at: d.manualVisitAttendance?.at })) return false;
   if(d.peopleAliasReview!==undefined&&(type!=='source'||!validPeopleAliasReview(d.peopleAliasReview)||['peopleReading','peopleRelationshipReview','monthlyAnalysis','monthlyFeedback','csvExclusionEvents','csvExclusionAuditOf'].some(k=>d[k]!==undefined)))return false;
   if (d.monthlyTypedFeedback !== undefined && (type!=='source' || !validMonthlyTypedFeedback(d.monthlyTypedFeedback) || ['analysisStoreCode','monthlyAnalysis','monthlyFeedback','peopleReading','peopleRelationshipReview','peopleAliasReview','manualVisitAttendance'].some(key=>d[key]!==undefined))) return false;
@@ -916,6 +917,7 @@ export function validateBundle(b) {
     if (s.sourceSnapshot !== undefined) { const snapshot = sourceEntities.get(s.sourceSnapshot); if (!snapshot || snapshot.data.blob !== s.blob) throw new Error('來源列與原始 CSV 快照連結不完整，停止合併。'); }
   }
   for (const o of b.ops) if (o.type === 'source' && !Object.hasOwn(b.blobs, o.data.blob)) throw new Error('原始 CSV 快照缺少檔案內容，停止合併。');
+  for (const o of b.ops) if (o.data.nearbyCoordinate && (!storeEntities.has(o.data.nearbyCoordinate.storeId) || dec.decode(unb64(b.blobs[o.data.blob])) !== JSON.stringify(o.data.nearbyCoordinate))) throw new Error('獨立座標門市或原件不符。');
   for (const o of b.ops) if (Object.hasOwn(o.data, 'manualVisitAttendance')) {
     if (!validManualVisitAttendance(o) || !storeEntities.has(o.data.manualVisitAttendance.store)) throw new Error('人工拜訪確認資料或門市不符。');
     if (dec.decode(unb64(b.blobs[o.data.blob])) !== JSON.stringify(o.data.manualVisitAttendance)) throw new Error('人工拜訪確認與原件不符。');
@@ -1274,8 +1276,11 @@ export function mapCoordinates(value) {
   let text; try { text = decodeURIComponent(url.pathname + url.search + url.hash); } catch { return null; }
   const points = [...text.matchAll(/!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)(?=[!&#/?]|$)/g)]
     .map(m => ({ latitude: Number(m[1]), longitude: Number(m[2]) }));
-  if (!points.length) {
-    // Only an explicit coordinate pin, never ll= or @ camera center.
+  // Coordinate-only /maps/search/lat,lng is an explicit pin, not a camera viewport.
+  const searchPin = decodeURIComponent(url.pathname).match(/^\/maps\/search\/(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)(?:\/data=|\/?$)/);
+  if (searchPin) points.push({ latitude: Number(searchPin[1]), longitude: Number(searchPin[2]) });
+  {
+    // Check every explicit pin; conflicting pins must not silently win by precedence.
     for (const field of ['query', 'q']) {
       const m = (url.searchParams.get(field) || '').trim().match(/^(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)$/);
       if (m) points.push({ latitude: Number(m[1]), longitude: Number(m[2]) });
@@ -1284,7 +1289,7 @@ export function mapCoordinates(value) {
   if (!points.length || points.some(p => !validCoordinates(p.latitude, p.longitude)) || points.some(p => distanceMeters(points[0], p) > 25)) return null;
   return points[0];
 }
-export function storeCoordinates(store) {
+function originalStoreCoordinates(store) {
   const direct = mapCoordinates(store.mapUrl || '');
   if (direct) return direct;
   const points = [];
@@ -1297,9 +1302,72 @@ export function storeCoordinates(store) {
   if (!points.length || points.some(p => distanceMeters(points[0], p) > 25)) return null;
   return points[0];
 }
-export function nearestStores(stores, position, limit = 3) {
+function validNearbyCoordinate(v) {
+  return plain(v) && Object.keys(v).length===8 && v.format==='pharmacy-nearby-coordinate-1' && str(v.storeId,100) && !!v.storeId && str(v.basis,2097152) && !!v.basis && str(v.googleName,500) && !!v.googleName.trim() && str(v.address,2000) && str(v.checkedAt,40) && Number.isFinite(Date.parse(v.checkedAt)) && str(v.mapUrl,2000) && !!mapCoordinates(v.mapUrl) && typeof v.featureId==='string' && !!v.featureId && coordinateFeature(v.mapUrl)===v.featureId;
+}
+// Independent, immutable map evidence; never writes back to store/note/person data.
+export function nearbyCoordinateBasis(store) {
+  return JSON.stringify({name:store.name || '',address:store.address || '',mapUrl:store.mapUrl || '',urls:nearbyStoreURLs(store)});
+}
+function nearbyStoreURLs(store) {
+  return [...new Set([store.mapUrl, ...(store.csvSources || []).flatMap(source => (source.headers || []).flatMap((h,i) => /^(網址|地圖網址|google\s*maps(?:\s*網址)?|url|map\s*url)$/i.test(h.trim()) ? [source.cells?.[i]] : []))].filter(Boolean))].sort();
+}
+function nearbyStoreFeature(store) {
+  const ids=[...new Set(nearbyStoreURLs(store).map(coordinateFeature).filter(Boolean))];
+  return ids.length===1 ? ids[0] : '';
+}
+export function nearbyCoordinateEvidence(bundle) {
+  return bundle.ops.filter(op=>op.type==='source' && !op.deleted && op.data.nearbyCoordinate?.format==='pharmacy-nearby-coordinate-1').flatMap(op=>{
+    const v=op.data.nearbyCoordinate;
+    try {
+      if(JSON.stringify(JSON.parse(dec.decode(unb64(bundle.blobs[op.data.blob]))))!==JSON.stringify(v))return [];
+      return [v];
+    } catch { return []; }
+  });
+}
+export function storeCoordinates(store, evidence=[]) {
+  if(store.deleted || store.conflict || store.mergedInto || store.csvIdentityPending)return null;
+  const points=evidence.filter(v=>v.storeId===store.id && v.basis===nearbyCoordinateBasis(store) && v.featureId===nearbyStoreFeature(store) && coordinateFeature(v.mapUrl)===v.featureId).map(v=>mapCoordinates(v.mapUrl)).filter(Boolean);
+  const original=originalStoreCoordinates(store);
+  if(original)points.unshift(original);
+  if(!points.length || points.some(p=>distanceMeters(points[0],p)>25))return null;
+  return points[0];
+}
+export function planNearbyCoordinates(bundle,input) {
+  validateBundle(bundle);
+  const items=validateCoordinateReview(input), stores=project(bundle).filter(s=>s.type==='store' && !s.deleted && !s.mergedInto);
+  const changes=[],skipped=[],evidence=nearbyCoordinateEvidence(bundle);
+  for(const item of items) {
+    const matches=stores.filter(s=>nearbyStoreFeature(s)===item.featureId);
+    if(matches.length!==1){skipped.push({name:item.googleName,reason:'地點識別未唯一對應門市，需核對'});continue;}
+    const store=matches[0];
+    const originalNames=[store.name,...(store.csvAliases || []),...(store.csvSources || []).flatMap(source=>(source.headers || []).flatMap((h,i)=>/^(標題|名稱|門市名稱|name|title)$/i.test(h.trim())?[source.cells?.[i]]:[]))].filter(Boolean).map(n=>n.trim());
+    let reason='';
+    if(store.conflict || store.csvIdentityPending)reason='版本衝突或身分待確認';
+    else if(!item.sourceNames.includes(store.name) || !originalNames.includes(item.googleName.trim()))reason='目前名稱或公開名稱缺少原始身分依據，需核對';
+    else if(store.address?.trim() && (splitTaiwanAddress(store.address)?.address || store.address.trim())!==(splitTaiwanAddress(item.address)?.address || item.address.trim()))reason='現有地址與公開地址不一致，需核對';
+    const old=storeCoordinates(store,evidence);
+    if(!reason && old)reason=distanceMeters(old,item.point)<=25?'已有可靠座標，不需新增':'現有座標與補查結果不一致';
+    if(!reason && nearbyStoreURLs(store).some(u=>mapCoordinates(u) && distanceMeters(mapCoordinates(u),item.point)>25))reason='原始來源座標不一致，需核對';
+    if(reason){skipped.push({name:store.name,reason});continue;}
+    changes.push({id:store.id,name:store.name,googleName:item.googleName,basis:nearbyCoordinateBasis(store),featureId:item.featureId,before:store.mapUrl || '',after:item.mapUrl,point:item.point,address:item.address,checkedAt:item.checkedAt});
+  }
+  return {vaultId:bundle.vaultId,changes,skipped};
+}
+export async function applyNearbyCoordinates(bundle,input,expected,device) {
+  const plan=planNearbyCoordinates(bundle,input);
+  if(JSON.stringify(plan)!==JSON.stringify(expected))throw new Error('資料或補查結果已改變，請重新預覽；尚未套用。');
+  const next=structuredClone(bundle);
+  for(const change of plan.changes){
+    const value={format:'pharmacy-nearby-coordinate-1',storeId:change.id,basis:change.basis,featureId:change.featureId,mapUrl:change.after,googleName:change.googleName,address:change.address,checkedAt:change.checkedAt};
+    const raw=enc.encode(JSON.stringify(value)),blob=await hashBytes(raw);next.blobs[blob]=b64(raw);
+    next.ops.push(revision('source',uuid(),{file:'門市位置補查.json',list:'門市位置補查',blob,batch:uuid(),rows:1,headers:[],encoding:'UTF-8',delimiter:'',nearbyCoordinate:value},[],device));
+  }
+  return validateBundle(next);
+}
+export function nearestStores(stores, position, limit = 3, evidence = []) {
   if (!validCoordinates(position?.latitude, position?.longitude)) return [];
-  return stores.filter(s => !s.deleted && !s.conflict).map(store => ({ store, point: storeCoordinates(store) }))
+  return stores.filter(s => !s.deleted && !s.conflict).map(store => ({ store, point: storeCoordinates(store, evidence) }))
     .filter(x => x.point).map(({ store, point }) => ({ store, distance: distanceMeters(position, point) }))
     .sort((a, b) => a.distance - b.distance || a.store.name.localeCompare(b.store.name, 'zh-Hant') || a.store.id.localeCompare(b.store.id))
     .slice(0, limit);
