@@ -250,7 +250,7 @@ test('mobile-first runtime files are valid JavaScript and expose the daily captu
   assert.match(app, /function lockDialogBackground\(/);
   assert.match(app, /function releaseDialogBackground\(/);
   assert.match(app, /function resetDialogScroll\(/);
-  assert.match(app, /document\.querySelectorAll\('dialog'\).*queueMicrotask\(\(\) => \{ releaseDialogBackground\(\); syncScheduler\.wake\(\);/);
+  assert.match(app, /document\.querySelectorAll\('dialog'\).*queueMicrotask\(\(\) => \{ releaseDialogBackground\(\); releaseIdleInlineEdit\(\); syncScheduler\.wake\(\);/);
   assert.match(style, /body\.dialog-scroll-locked\{position:fixed/);
   assert.match(style, /#review-body\{[^}]*overflow-y:auto[^}]*overscroll-behavior-y:contain/);
   assert.match(style, /#review\.visit-brief-dialog\{[^}]*height:100dvh/);
@@ -632,7 +632,7 @@ test('successful single-store inline save clears edit state and refreshes the sa
 
 test('SOP1 explicitly separates App daily notes from Google CSV imports and keeps retention undecided', () => {
   assert.equal(SOP1_VERSION, '1.2.19');
-  assert.match(sop, /流程版本：1\.2\.78/);
+  assert.match(sop, /流程版本：1\.2\.80/);
   assert.match(sop, /393 × 852 CSS 像素/);
   assert.match(sop, /固定手機畫布不等於鍵盤開啟時的可見高度/);
   assert.match(sop, /長原文末行游標也須可見/);

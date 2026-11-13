@@ -437,3 +437,25 @@ test('a tap with no text changes releases idle editing for sync, while real inpu
   assert.equal(h.c.releaseIdleInlineEdit(), true); assert.equal(h.c.inlineTextContext, null);
   assert.equal(h.c.canAutoSync(), true); assert.equal(JSON.stringify(h.c.payload), before); assert.equal(h.writes.length, 0);
 });
+
+
+test('opening an itinerary during a pending read-only probe defers its reply without snapshot exchange', async () => {
+  const h = await appHarness(), gate = latch();
+  h.c.document.querySelector = () => null;
+  Object.assign(h.c, { dayPlanSelectedDate: '2026-11-13', dayPlanViewBasis: 'synthetic',
+    dayPlanDate: () => '2026-11-13', releaseIdleInlineEdit() {} });
+  vm.runInContext(section('function assertDayPlanIdle(', 'function assertDayPlanContext('), h.c);
+  h.control.hook = () => gate.wait();
+  const task = h.c.autoSync(); await gate.started;
+  assert.equal(h.c.autoFetching, true);
+  let failure;
+  try { h.c.dayPlanContext = h.c.newDayPlanContext('selection'); }
+  catch (error) { failure = error; }
+  gate.release();
+  const result = await task;
+  if (failure) throw failure;
+  assert.equal(result, 'deferred');
+  assert.deepEqual(h.calls, [['/api/version', 'GET']]);
+  assert.equal(h.writes.length, 0);
+  assert.equal(h.c.payload.lastSync, OLD);
+});

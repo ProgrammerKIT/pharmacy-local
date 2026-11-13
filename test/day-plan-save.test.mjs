@@ -32,7 +32,7 @@ function fixture() {
     dayPlanContext: null, monthlyVisitContext: null, dayPlanSelectedDate: date, dayPlanViewBasis: '', dayPlanSorting: false, dayPlanNotice: '', dayPlanUndo: null,
     key, meta, localRevision: 4, syncEpoch: 8, payload: { bundle, device: 'synthetic', dirty: false }, records: project(bundle),
     document: { hidden: false, querySelector() { return node('day-plan-dialog').open ? node('day-plan-dialog') : null; } },
-    pendingLock: false, updateHolding: false, autoFetching: false, syncInProgress: false, busy: false,
+    releaseIdleInlineEdit() {}, pendingLock: false, updateHolding: false, autoFetching: false, syncInProgress: false, busy: false,
     editorContext: null, reminderContext: null, singleStoreContext: null, inlineTextContext: null,
     $: node, structuredClone, project, dayPlanDate, shiftDayPlanDate, dayPlanForStore, dayPlanOverview, dayItineraryBasis, applyDayItineraryAction,
     reviewHeads: row => row.heads.map(head => head.id).sort(), by: (type, id) => project(sandbox.payload.bundle).find(row => row.type === type && row.id === id),
@@ -119,7 +119,7 @@ test('failed direct add retains picker/search, shows no success, and can be retr
 test('stale data, active sync and selected-date changes refuse a retained picker before writing', async t => {
   const cases = [
     ['epoch', s => s.syncEpoch++], ['revision', s => s.localRevision++], ['bundle', s => { s.payload.bundle = structuredClone(s.payload.bundle); }],
-    ['date', s => { s.dayPlanSelectedDate = shiftDayPlanDate(s.dayPlanSelectedDate, 1); }], ['fetch', s => { s.autoFetching = true; }],
+    ['date', s => { s.dayPlanSelectedDate = shiftDayPlanDate(s.dayPlanSelectedDate, 1); }],
     ['sync', s => { s.syncInProgress = true; }], ['background', s => { s.document.hidden = true; }], ['lock', s => { s.pendingLock = true; }],
   ];
   for (const [name, mutate] of cases) await t.test(name, async () => {
@@ -197,4 +197,14 @@ test('locking clears private itinerary and note displays using only DOM IDs that
   assert.equal(c.payload, null); assert.equal(c.key, null); assert.equal(c.meta, null); assert.equal(c.records.length, 0);
   assert.equal(c.dayPlanUndo, null); assert.equal(c.dayPlanNotice, ''); assert.equal(c.dayPlanViewBasis, '');
   assert.equal(strictNode('workspace').hidden, true); assert.equal(strictNode('gate').hidden, false);
+});
+
+
+test('offline planning can add, reorder and cancel while a read-only Mac version probe is pending', async () => {
+  const f = fixture(); f.sandbox.autoFetching = true;
+  f.open(); await f.act('add'); await f.act('add', 'b'); f.close();
+  await f.act('up', 'b'); await f.act('cancel', 'a');
+  assert.deepEqual(f.order(), ['b']);
+  assert.equal(f.writes.length, 4);
+  assertPreserved(f);
 });
