@@ -439,3 +439,18 @@ button[data-csv-source-snapshot]{flex:none;min-height:44px}
 .typed-options label.check { border:1px solid var(--line, #d5e2e3); border-radius:9px; padding:12px; min-height:44px; cursor:pointer; }
 .typed-options label.check:has(input:checked) { background:#e4f3f0; border-color:#117b73; }
 .typed-feedback input[type=number] { min-height:44px; }
+
+/* Reading-first preview: details change presentation only, never saved answers. */
+.analysis-reading-section{margin:12px 0;min-width:0}
+.analysis-reading-card{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin:8px 0;overflow-wrap:anywhere}
+.analysis-reading-card>summary{display:list-item;cursor:pointer;min-height:44px;color:var(--teal);font-weight:600}
+.analysis-reading-card>summary strong{font-size:.95rem}
+.analysis-reading-card>summary span{display:block;font-size:.82rem;color:var(--muted);font-weight:400;margin-top:2px}
+.analysis-reading-card[open]>summary{margin-bottom:12px}
+.saved-feedback>summary,.analysis-management>summary{min-height:44px;padding:10px 0;cursor:pointer;font-weight:650}
+.analysis-previous{margin:10px 0}.analysis-previous>summary{min-height:44px;padding:10px 0}
+#brief-search-panel:has(#brief-search:placeholder-shown:not(:disabled)) .brief-search-navigation,
+#brief-search-panel:has(#brief-search:placeholder-shown:not(:disabled)) #brief-search-clear{display:none}
+#brief-search-panel:has(#brief-search:placeholder-shown:not(:disabled)) .brief-search-input-row{grid-template-columns:minmax(0,1fr)}
+
+.people-reading-tools{margin:8px 0}.people-reading-tools>summary{min-height:44px;padding:10px 0;color:var(--muted);font-size:.85rem}

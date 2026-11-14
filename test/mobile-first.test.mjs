@@ -262,7 +262,7 @@ test('mobile-first runtime files are valid JavaScript and expose the daily captu
   assert.ok(visitBriefLayout.indexOf('brief-followups') < visitBriefLayout.indexOf('brief-secondary'));
   assert.ok(visitBriefLayout.indexOf('brief-history') < visitBriefLayout.indexOf('brief-secondary'));
   assert.match(visitBriefSource, /inlineVisitTextHTML\(item\)/);
-  assert.match(visitBriefSource, /點一下既有拜訪原文即可直接輸入/);
+  assert.match(visitBriefSource, /點原文可修改/);
   assert.match(visitBriefSource, /brief-history.*preserved.*historyOpen.*'open'/s);
   assert.match(visitBriefSource, /review-persistent-actions/);
   assert.match(visitBriefSource, /reviewMode: 'visit-brief'/);
@@ -271,7 +271,7 @@ test('mobile-first runtime files are valid JavaScript and expose the daily captu
   assert.match(visitBriefSource, /相同內容/);
   assert.match(visitBriefSource, /點選每個候選可核對命中的原句、來源與原文狀態/);
   assert.match(visitBriefSource, /完整歷史永遠保留每一筆/);
-  assert.match(visitBriefSource, /這裡不去重，每筆原文、下次跟進與歷史都保留/);
+  assert.match(visitBriefSource, /全部原文與歷史保留/);
   assert.doesNotMatch(visitBriefSource, /persist\(|commitRevision\(|\brevision\(/);
   assert.doesNotMatch(visitBriefSource, /fetch\(|api\(/);
   assert.match(app, /class="advanced-fields"/);
@@ -632,7 +632,7 @@ test('successful single-store inline save clears edit state and refreshes the sa
 
 test('SOP1 explicitly separates App daily notes from Google CSV imports and keeps retention undecided', () => {
   assert.equal(SOP1_VERSION, '1.2.19');
-  assert.match(sop, /流程版本：1\.2\.82/);
+  assert.match(sop, /流程版本：1\.2\.83/);
   assert.match(sop, /393 × 852 CSS 像素/);
   assert.match(sop, /固定手機畫布不等於鍵盤開啟時的可見高度/);
   assert.match(sop, /長原文末行游標也須可見/);
