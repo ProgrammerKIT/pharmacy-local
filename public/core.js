@@ -1333,10 +1333,11 @@ export function storeCoordinates(store, evidence=[]) {
   if(!points.length || points.some(p=>distanceMeters(points[0],p)>25))return null;
   return points[0];
 }
-export function planNearbyCoordinates(bundle,input) {
+export function planNearbyCoordinates(bundle,input,nameConfirmations=[]) {
   validateBundle(bundle);
+  if(!Array.isArray(nameConfirmations) || nameConfirmations.some(key=>typeof key!=='string'))throw new Error('名稱核對狀態不正確，請重新預覽。');
   const items=validateCoordinateReview(input), stores=project(bundle).filter(s=>s.type==='store' && !s.deleted && !s.mergedInto);
-  const changes=[],skipped=[],evidence=nearbyCoordinateEvidence(bundle);
+  const changes=[],skipped=[],nameReviews=[],evidence=nearbyCoordinateEvidence(bundle);
   for(const item of items) {
     const matches=stores.filter(s=>nearbyStoreFeature(s)===item.featureId);
     if(matches.length!==1){skipped.push({name:item.googleName,reason:'地點識別未唯一對應門市，需核對'});continue;}
@@ -1344,24 +1345,32 @@ export function planNearbyCoordinates(bundle,input) {
     const originalNames=[store.name,...(store.csvAliases || []),...(store.csvSources || []).flatMap(source=>(source.headers || []).flatMap((h,i)=>/^(標題|名稱|門市名稱|name|title)$/i.test(h.trim())?[source.cells?.[i]]:[]))].filter(Boolean).map(n=>n.trim());
     let reason='';
     if(store.conflict || store.csvIdentityPending)reason='版本衝突或身分待確認';
-    else if(!item.sourceNames.includes(store.name) || !originalNames.includes(item.googleName.trim()))reason='目前名稱或公開名稱缺少原始身分依據，需核對';
+    else if(!item.sourceNames.includes(store.name))reason='目前名稱缺少核對依據，需重新準備檔案';
     else if(store.address?.trim() && (splitTaiwanAddress(store.address)?.address || store.address.trim())!==(splitTaiwanAddress(item.address)?.address || item.address.trim()))reason='現有地址與公開地址不一致，需核對';
     const old=storeCoordinates(store,evidence);
     if(!reason && old)reason=distanceMeters(old,item.point)<=25?'已有可靠座標，不需新增':'現有座標與補查結果不一致';
     if(!reason && nearbyStoreURLs(store).some(u=>mapCoordinates(u) && distanceMeters(mapCoordinates(u),item.point)>25))reason='原始來源座標不一致，需核對';
     if(reason){skipped.push({name:store.name,reason});continue;}
-    changes.push({id:store.id,name:store.name,googleName:item.googleName,basis:nearbyCoordinateBasis(store),featureId:item.featureId,before:store.mapUrl || '',after:item.mapUrl,point:item.point,address:item.address,checkedAt:item.checkedAt});
+    const basis=nearbyCoordinateBasis(store), reviewKey=JSON.stringify([store.id,basis,item.mapUrl,item.googleName,item.address,item.checkedAt]);
+    const manualNameConfirmation=!originalNames.includes(item.googleName.trim());
+    if(manualNameConfirmation && !item.address.trim()){skipped.push({name:store.name,reason:'公開名稱變動且未提供地址，不能人工放行'});continue;}
+    if(manualNameConfirmation){
+      const confirmed=nameConfirmations.includes(reviewKey);
+      nameReviews.push({id:store.id,name:store.name,googleName:item.googleName,address:item.address,featureId:item.featureId,mapUrl:item.mapUrl,reviewKey,confirmed});
+      if(!confirmed){skipped.push({name:store.name,reason:'公開名稱已變動，等待人工勾選同店確認'});continue;}
+    }
+    changes.push({id:store.id,name:store.name,googleName:item.googleName,basis,featureId:item.featureId,before:store.mapUrl || '',after:item.mapUrl,point:item.point,address:item.address,checkedAt:item.checkedAt,manualNameConfirmation});
   }
-  return {vaultId:bundle.vaultId,changes,skipped};
+  return {vaultId:bundle.vaultId,changes,skipped,nameReviews};
 }
-export async function applyNearbyCoordinates(bundle,input,expected,device) {
-  const plan=planNearbyCoordinates(bundle,input);
+export async function applyNearbyCoordinates(bundle,input,expected,device,nameConfirmations=[]) {
+  const plan=planNearbyCoordinates(bundle,input,nameConfirmations);
   if(JSON.stringify(plan)!==JSON.stringify(expected))throw new Error('資料或補查結果已改變，請重新預覽；尚未套用。');
   const next=structuredClone(bundle);
   for(const change of plan.changes){
     const value={format:'pharmacy-nearby-coordinate-1',storeId:change.id,basis:change.basis,featureId:change.featureId,mapUrl:change.after,googleName:change.googleName,address:change.address,checkedAt:change.checkedAt};
     const raw=enc.encode(JSON.stringify(value)),blob=await hashBytes(raw);next.blobs[blob]=b64(raw);
-    next.ops.push(revision('source',uuid(),{file:'門市位置補查.json',list:'門市位置補查',blob,batch:uuid(),rows:1,headers:[],encoding:'UTF-8',delimiter:'',nearbyCoordinate:value},[],device));
+    next.ops.push(revision('source',uuid(),{file:change.manualNameConfirmation?'人工確認改名門市位置.json':'門市位置補查.json',list:change.manualNameConfirmation?'人工確認改名門市位置':'門市位置補查',blob,batch:uuid(),rows:1,headers:change.manualNameConfirmation?['人工已核對公開名稱、地址及地圖識別為同一門市']:[],encoding:'UTF-8',delimiter:'',nearbyCoordinate:value},[],device));
   }
   return validateBundle(next);
 }

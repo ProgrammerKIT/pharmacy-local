@@ -784,18 +784,32 @@ async function previewCoordinateFile(file) {
   const sessionKey = key, input = JSON.parse(await file.text());
   if (!payload || key !== sessionKey || pendingLock || document.hidden) return;
   const plan = planNearbyCoordinates(payload.bundle, input);
-  coordinatePreview = { input, plan, sessionKey }; versionReview = null; resolutionPreview = null;
+  coordinatePreview = { input, plan, sessionKey, bundle:payload.bundle, nameConfirmations:[] }; versionReview = null; resolutionPreview = null;
+  renderCoordinatePreview();
+  openDialog($('review'));
+}
+function renderCoordinatePreview() {
+  const {plan}=coordinatePreview;
   $('review-title').textContent = '座標補查：正式套用前預覽';
   $('review-body').innerHTML = `<p>對照目前資料：可新增獨立位置來源 ${plan.changes.length} 間，略過 ${plan.skipped.length} 間。檔案中的歷史清單不代表目前全部門市。</p><p>確認後只新增獨立位置來源，讓附近排序讀取座標；不修改門市主檔或地圖網址。名稱、地址、拜訪文字、人物、原 CSV 與全部歷史均保留。獨立來源會隨既有加密同步傳到其他裝置。</p><p>取消或關閉不寫入任何資料。</p>` +
+    (plan.nameReviews?.length ? `<section><h3>公開名稱變動：請逐店核對</h3><p>勾選只確認位置對應，不修改店名、不合併門市或筆記。未勾選不套用；檔案不能替你勾選。</p>${plan.nameReviews.map(item=>`<article><h4>${esc(item.name)}</h4><p>Google 公開名稱：${esc(item.googleName)}</p><p>公開地址：${esc(item.address||'未提供')}</p><p>同一地圖識別：${esc(item.featureId)}</p><a href="${esc(item.mapUrl)}" target="_blank" rel="noopener noreferrer">查看公開地圖</a><label class="check"><input type="checkbox" data-coordinate-name-review="${esc(item.id)}" ${item.confirmed?'checked':''}>我已核對名稱、地址與地圖，確認是同一家門市（只確認位置）</label></article>`).join('')}</section>` : '') +
     plan.changes.map(c => `<article><h3>${esc(c.name)}</h3><p>座標：${esc(c.point.latitude)}, ${esc(c.point.longitude)}；補查時間：${esc(dateText(c.checkedAt))}</p><details><summary>原網址與新網址</summary><p class="coordinate-url">原：${esc(c.before || '未提供')}</p><p class="coordinate-url">新：${esc(c.after)}</p></details></article>`).join('') +
     `<details><summary>略過 ${plan.skipped.length} 間及原因</summary>` + plan.skipped.map(c => `<p>${esc(c.name)}：${esc(c.reason)}</p>`).join('') + '</details><div class="dialog-footer"><button data-close="review">取消，不修改</button>' + (plan.changes.length ? `<button id="apply-coordinates" class="primary">確認新增這 ${plan.changes.length} 間的獨立座標</button>` : '') + '</div>';
-  openDialog($('review'));
+}
+function reviewCoordinateName(input) {
+  const ctx=coordinatePreview;
+  if(!ctx || !payload || ctx.bundle!==payload.bundle || ctx.sessionKey!==key || pendingLock || document.hidden || !$('review').open)throw new Error('資料或預覽已變，請重新載入核對；未保存任何新判斷。');
+  const row=ctx.plan.nameReviews.find(row=>row.id===input.dataset.coordinateNameReview);
+  if(!row)throw new Error('核對項目已變，請重新預覽。');
+  const selected=new Set(ctx.nameConfirmations);
+  if(input.checked)selected.add(row.reviewKey);else selected.delete(row.reviewKey);
+  ctx.nameConfirmations=[...selected];ctx.plan=planNearbyCoordinates(payload.bundle,ctx.input,ctx.nameConfirmations);renderCoordinatePreview();
 }
 async function commitCoordinates() {
   const preview = coordinatePreview;
   if (!preview || !payload || preview.sessionKey !== key || pendingLock || document.hidden || !$('review').open) throw new Error('預覽已失效，請重新載入檔案。');
   const sessionKey = key, originalPayload = payload;
-  const bundle = await applyNearbyCoordinates(payload.bundle, preview.input, preview.plan, payload.device);
+  const bundle = await applyNearbyCoordinates(payload.bundle, preview.input, preview.plan, payload.device, preview.nameConfirmations);
   if (payload !== originalPayload || key !== sessionKey || pendingLock || document.hidden || !$('review').open) throw new Error('資料或工作階段已改變，請重新預覽。');
   const guard = () => { if (coordinatePreview !== preview || payload !== originalPayload || key !== sessionKey || pendingLock || document.hidden || !$('review').open) throw new Error('資料或工作階段已改變，請重新預覽。'); };
   await persist({ ...payload, bundle, dirty: true }, { guard });
@@ -4389,6 +4403,7 @@ $('review').addEventListener('cancel', event => {
   if (singleStoreContext) { event.preventDefault(); void run(closeSingleStoreReview, 'single-store-error'); }
 });
 
+$('review').addEventListener('change',event=>{if(event.target.matches('[data-coordinate-name-review]'))run(()=>reviewCoordinateName(event.target));});
 $('coordinate-file').addEventListener('change', () => { const file = $('coordinate-file').files[0]; $('coordinate-file').value = ''; if (file) run(() => previewCoordinateFile(file)); });
 $('store-enrichment-file').addEventListener('change', () => { const file = $('store-enrichment-file').files[0]; $('store-enrichment-file').value = ''; if (file) run(() => previewStoreEnrichmentFile(file)); });
 $('review').addEventListener('close', () => { coordinatePreview = null; });

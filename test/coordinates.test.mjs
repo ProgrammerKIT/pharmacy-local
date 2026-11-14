@@ -54,3 +54,15 @@ test('UI preview/cancel do not persist; failed commit preserves payload and allo
  await c.previewCoordinateFile(file);c.pendingLock=true;await assert.rejects(c.commitCoordinates(),/預覽已失效/);assert.equal(writes,1);
  c.pendingLock=false;c.persist=async next=>{writes++;c.payload=next;};await c.commitCoordinates();assert.equal(writes,2);assert.equal(c.payload.bundle.ops.length,2);assert.deepEqual(c.payload.draft,payload.draft);assert.equal(c.coordinatePreview,null);
 });
+
+test('manual name UI starts unchecked, updates preview only, and invalidates on bundle change',async()=>{
+ const vm=await import('node:vm'),fs=await import('node:fs'),app=fs.readFileSync(new URL('../public/app.js',import.meta.url),'utf8');
+ const nodes=new Map(),$=id=>{if(!nodes.has(id))nodes.set(id,{open:false,showModal(){this.open=true;},close(){this.open=false;}});return nodes.get(id);};
+ const c=vm.createContext({$,payload:{bundle:bundle(),device:'qa'},key:{},coordinatePreview:null,versionReview:null,resolutionPreview:null,editorContext:null,csvImport:{hasPending:()=>false},pendingLock:false,document:{hidden:false},openDialog:d=>d.showModal(),planNearbyCoordinates,applyNearbyCoordinates,esc:String,dateText:String});
+ vm.runInContext(app.slice(app.indexOf('async function previewCoordinateFile('),app.indexOf('function visitStoreSearchText(')),c);
+ const i=input();i.items[0].googleName='虛構公開新店名';const before=JSON.stringify(c.payload);await c.previewCoordinateFile({size:100,text:async()=>JSON.stringify(i)});
+ assert.equal(c.coordinatePreview.plan.changes.length,0);assert.match($('review-body').innerHTML,/公開名稱變動：請逐店核對/);assert.doesNotMatch($('review-body').innerHTML,/data-coordinate-name-review="s" checked/);
+ c.reviewCoordinateName({dataset:{coordinateNameReview:'s'},checked:true});assert.equal(c.coordinatePreview.plan.changes.length,1);assert.match($('review-body').innerHTML,/data-coordinate-name-review="s" checked/);assert.equal(JSON.stringify(c.payload),before);
+ c.reviewCoordinateName({dataset:{coordinateNameReview:'s'},checked:false});assert.equal(c.coordinatePreview.plan.changes.length,0);assert.equal(JSON.stringify(c.payload),before);
+ c.payload={...c.payload,bundle:structuredClone(c.payload.bundle)};assert.throws(()=>c.reviewCoordinateName({dataset:{coordinateNameReview:'s'},checked:true}),/資料或預覽已變/);
+});

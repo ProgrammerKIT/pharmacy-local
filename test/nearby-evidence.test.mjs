@@ -41,3 +41,24 @@ test('original CSV title permits a renamed store and source bytes remain unchang
  const old=structuredClone(b),p=planNearbyCoordinates(b,input());assert.equal(p.changes.length,1);
  const n=await applyNearbyCoordinates(b,input(),p,'qa');assert.deepEqual(n.ops.slice(0,b.ops.length),old.ops);assert.equal(n.blobs[blob],old.blobs[blob]);
 });
+
+test('changed public names require an exact local manual review, never a package flag',async()=>{
+ const b=fixture(),i=input();i.items[0].googleName='虛構公開新店名';i.items[0].address='虛構市測試路1號';
+ i.manualNameConfirmed=true;i.nameConfirmations=['s'];
+ const p=planNearbyCoordinates(b,i);assert.equal(p.changes.length,0);assert.equal(p.nameReviews.length,1);assert.equal(p.nameReviews[0].confirmed,false);
+ const keys=[p.nameReviews[0].reviewKey],reviewed=planNearbyCoordinates(b,i,keys);assert.equal(reviewed.changes.length,1);assert.equal(reviewed.nameReviews[0].confirmed,true);
+ await assert.rejects(applyNearbyCoordinates(b,i,reviewed,'qa'),/改變/);
+ const before=JSON.stringify(b),n=await applyNearbyCoordinates(b,i,reviewed,'qa',keys);assert.equal(JSON.stringify(b),before);assert.deepEqual(n.ops.slice(0,b.ops.length),b.ops);
+ assert.equal(Object.keys(n.ops.at(-1).data.nearbyCoordinate).length,8);assert.match(n.ops.at(-1).data.file,/人工確認/);assert.match(n.ops.at(-1).data.headers[0],/人工已核對/);
+ assert.equal(n.ops.at(-1).data.nearbyCoordinate.googleName,'虛構公開新店名');assert.equal(project(n).find(s=>s.type==='store').name,'虛構別稱店');
+ assert.equal(planNearbyCoordinates(n,i).changes.length,0);assert.deepEqual(storeCoordinates(project(n).find(s=>s.type==='store'),nearbyCoordinateEvidence(n)),{latitude:25,longitude:121});
+});
+test('manual name approval cannot bypass identity, address, geography or changed evidence',()=>{
+ const b=fixture(),i=input();i.items[0].googleName='虛構公開新店名';i.items[0].address='虛構市測試路1號';
+ const keys=[planNearbyCoordinates(b,i).nameReviews[0].reviewKey];
+ for(const edit of [v=>v.items[0].googleName='另一名稱',v=>v.items[0].address='另一地址',v=>v.items[0].checkedAt='2026-11-14T00:00:00Z']){const changed=structuredClone(i);edit(changed);assert.equal(planNearbyCoordinates(b,changed,keys).changes.length,0);}
+ const noAddress=structuredClone(i);noAddress.items[0].address='';assert.equal(planNearbyCoordinates(b,noAddress,keys).nameReviews.length,0);
+ for(const delta of [{csvIdentityPending:true},{address:'不同既有地址'},{mapUrl:fullURL.replace('!3d25','!3d26')}]){const changed=structuredClone(b);Object.assign(changed.ops[0].data,delta);assert.equal(planNearbyCoordinates(changed,i,keys).changes.length,0);}
+ const duplicate=structuredClone(b);duplicate.ops.push(revision('store','other',b.ops[0].data,[],'qa'));assert.equal(planNearbyCoordinates(duplicate,i,keys).changes.length,0);
+ const missingName=structuredClone(i);missingName.items[0].sourceNames=[];assert.throws(()=>planNearbyCoordinates(b,missingName,keys));
+});
