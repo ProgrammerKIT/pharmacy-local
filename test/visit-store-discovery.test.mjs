@@ -38,7 +38,7 @@ function fixture(records, payloadFields = {}) {
   const payload = freeze({ bundle, ...payloadFields });
   const rejectWrite = () => assert.fail('Searching or opening an existing store must not persist a revision');
   const ctx = vm.createContext({
-    records: freeze(records), payload, inlineTextContext: null, focus: { type: 'store', id: '' },
+    monthlyVisitOverview:()=>({completedCount:0,total:0,pending:[],recurringConflict:false}),monthlyPlanningState:()=>({conflict:false,document:null}), records: freeze(records), payload, inlineTextContext: null, focus: { type: 'store', id: '' },
     $: node, monthlyVisitMonth:()=> '2026-11',monthlyAlertSalesMonths:()=>new Map(),storeIdentityPending, originalStoreNames, reminderTaskHistory, dayPlanDate, shiftDayPlanDate, dayPlanForStore, activeView: 'visits',
     storeAttendance: id => visitAttendanceForStore(payload.bundle, id),
     dateText: value => value || '',

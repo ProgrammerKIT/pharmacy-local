@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import { uiNodeFixture } from './helpers/ui-node-fixture.mjs';
 import { emptyBundle, revision, project, validateBundle, makeVisitAttendance, visitAttendanceForStore, attendanceTaipeiDate,
-  monthlyVisitMonth, shiftMonthlyVisitMonth, monthlyVisitForStore, monthlyVisitOverview, monthlyVisitBasis, applyMonthlyVisitAction } from '../public/core.js';
+  monthlyPlanningState, monthlyPlanningBasis, applyMonthlyPlanning, monthlyVisitMonth, shiftMonthlyVisitMonth, monthlyVisitForStore, monthlyVisitOverview, monthlyVisitBasis, applyMonthlyVisitAction } from '../public/core.js';
 
 const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
@@ -14,7 +14,7 @@ function section(first, next) {
   return app.slice(start, end);
 }
 const implementation = section('async function run(', 'function programDetail(')
-  + section('function monthlyVisitLabel(', 'function dayPlanLabel(');
+  + section('function monthlyPlanningDirty(', 'function dayPlanLabel(');
 
 // Only synthetic records, DOM and disk. Core projection, monthly membership,
 // attendance and validation are the same functions used by the real App.
@@ -29,7 +29,7 @@ function fixture() {
   const original = structuredClone(bundle), elements = new Map(), writes = [];
   const { node } = uiNodeFixture();
   const sandbox = vm.createContext({ monthlyFeedbackContext:null,  monthlyAnalysisStoreHTML:()=>'', analysisOverviewHTML:()=>'',
-    monthlyVisitContext: null, monthlyVisitSelectedMonth: month, monthlyVisitViewBasis: '', monthlyVisitNotice: '',
+    monthlyChannelFilter:'all', monthlyPlanningState, monthlyPlanningBasis, applyMonthlyPlanning, monthlyVisitContext: null, monthlyVisitSelectedMonth: month, monthlyVisitViewBasis: '', monthlyVisitNotice: '',
     dayPlanContext: null, editorContext: null, reminderContext: null, singleStoreContext: null, inlineTextContext: null,
     key: {}, meta: {}, localRevision: 5, syncEpoch: 9, payload: { bundle, device: 'fictional-device', dirty: false }, records: project(bundle),
     document: { hidden: false, querySelector() { return node('monthly-visit-dialog').open ? node('monthly-visit-dialog') : null; } },
@@ -79,7 +79,7 @@ test('dedicated monthly page, roster rendering and picker stay read-only, escape
   assert.equal(f.sandbox.persistCalls, 0); assert.deepEqual(f.sandbox.payload.bundle, f.original);
   assert.match(html, /data-view="monthly"/); assert.match(html, /id="monthly-view"/);
   const visitsStart = html.indexOf('<section id="visits-view"'), visitsEnd = html.indexOf('<section id="monthly-view"', visitsStart);
-  assert.ok(visitsStart >= 0 && visitsEnd > visitsStart); assert.doesNotMatch(html.slice(visitsStart, visitsEnd), /monthly|每月拜訪/);
+  assert.ok(visitsStart >= 0 && visitsEnd > visitsStart); assert.match(html.slice(visitsStart, visitsEnd), /monthly-home-content/);
 });
 
 test('successful explicit add renews retained picker context and preserves existing confirmed attendance without generating one', async () => {
@@ -174,4 +174,32 @@ test('same-name stores display distinct existing addresses in both picker and ro
   f.sandbox.renderMonthlyVisitChoices('乙路二號'); assert.match(f.node('monthly-store-options').innerHTML, /data-monthly-add="c"/); assert.doesNotMatch(f.node('monthly-store-options').innerHTML, /data-monthly-add="b"/);
   await f.act('add', 'c'); f.close(); assert.match(f.node('monthly-visit-content').innerHTML, /虛構乙路二號/);
   assert.equal(f.sandbox.storeSelectionIdentity('b'), '虛構甲路一號');
+});
+
+test('monthly focus UI cancels with zero writes and explicitly protects unsaved text',()=>{
+ const f=fixture();f.sandbox.openMonthlyPlanning('focus',f.month);f.node('monthly-focus-input').value='尚未保存的測試文字';f.close();
+ assert.equal(f.sandbox.monthlyVisitContext.kind,'focus');assert.match(f.node('monthly-visit-error').innerHTML,/未儲存/);assert.equal(f.writes.length,0);
+ f.sandbox.closeMonthlyVisitSelection(true);assert.equal(f.sandbox.monthlyVisitContext,null);assert.deepEqual(f.sandbox.payload.bundle,f.original);
+});
+test('monthly focus actual save appends only an independent source, never note/store/attendance revisions',async()=>{
+ const f=fixture();f.sandbox.openMonthlyPlanning('focus',f.month);f.node('monthly-focus-input').value=' <img>測試文字 ';await f.sandbox.saveMonthlyPlanning();
+ assert.equal(f.writes.length,1);assert.equal(f.sandbox.monthlyVisitContext,null);const added=f.sandbox.payload.bundle.ops.slice(f.original.ops.length);
+ assert.equal(added.length,1);assert.equal(added[0].type,'source');assert.deepEqual(f.sandbox.payload.bundle.ops.slice(0,f.original.ops.length),f.original.ops);
+ assert.match(f.sandbox.monthlyFocusHTML(f.month),/&lt;img&gt;/);assert.doesNotMatch(f.sandbox.monthlyFocusHTML(f.month),/<img>/);
+});
+test('focus disk failure retains dialog, original input and original bundle',async()=>{
+ const f=fixture();f.sandbox.openMonthlyPlanning('focus',f.month);f.node('monthly-focus-input').value='不能丟掉';f.sandbox.persistFailure=true;
+ await f.sandbox.run(f.sandbox.saveMonthlyPlanning,'monthly-visit-error');assert.equal(f.node('monthly-visit-dialog').open,true);assert.equal(f.node('monthly-focus-input').value,'不能丟掉');assert.deepEqual(f.sandbox.payload.bundle,f.original);assert.match(f.node('monthly-visit-error').textContent,/disk failure/);
+});
+test('focus stale session rejects save before writing; opening does not acknowledge actual attendance',async()=>{
+ const f=fixture();f.sandbox.openMonthlyPlanning('focus',f.month);f.node('monthly-focus-input').value='版本檢查';f.sandbox.syncEpoch++;
+ await assert.rejects(f.sandbox.saveMonthlyPlanning(),/工作階段/);assert.equal(f.writes.length,0);assert.deepEqual(f.sandbox.payload.bundle,f.original);
+});
+test('recurring roster actual save preserves original ops, does not use visible checkboxes as attendance',async()=>{
+ const f=fixture();f.sandbox.openMonthlyPlanning('roster',f.month);f.sandbox.document.querySelectorAll=()=>[{dataset:{planningStore:'a'}},{dataset:{planningStore:'b'}}];await f.sandbox.saveMonthlyPlanning();
+ assert.equal(f.writes.length,1);assert.deepEqual(f.sandbox.payload.bundle.ops.slice(0,f.original.ops.length),f.original.ops);assert.equal(monthlyVisitOverview(f.sandbox.payload.bundle,f.month).completedCount,1);assert.equal(monthlyVisitOverview(f.sandbox.payload.bundle,f.nextMonth).completedCount,0);
+});
+test('changing data while encryption is pending does not overwrite newer state',async()=>{
+ const f=fixture();f.sandbox.openMonthlyPlanning('focus',f.month);f.node('monthly-focus-input').value='延遲保存';let release;f.sandbox.persistPause=new Promise(r=>release=r);
+ const pending=f.sandbox.saveMonthlyPlanning();await new Promise(r=>setTimeout(r,5));f.sandbox.syncEpoch++;release();await assert.rejects(pending,/工作階段/);assert.equal(f.writes.length,0);assert.deepEqual(f.sandbox.payload.bundle,f.original);
 });

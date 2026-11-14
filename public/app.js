@@ -1,3 +1,4 @@
+import { monthlyPlanningState, monthlyPlanningBasis, applyMonthlyPlanning } from './core.js';
 import { peopleBriefSourcePlan, validatePeopleBriefResult, currentPeopleReading, peopleReadingRequest, preparePeopleReading, applyPeopleReading, planPeopleRelationshipReview, applyPeopleRelationshipReview, peopleAliasLayout, peopleAliasReviewAvailability, peopleRelationshipReviewAvailability, planPeopleAliasReview, applyPeopleAliasReview } from './relations.js';
 import { peopleRelationshipReviewState, peopleAliasGroups, peopleAliasReviewState } from './core.js';
 import { exportTypedFeedback, YQ_CORE_CHECKS, typedFeedbackState, prepareTypedFeedback, typedFeedbackAnswers, applyTypedVisit, parseMonthlyAnalysisDocument, analysisStoreCodeChoices, revokeAnalysisStoreCode, monthlyAlertSalesMonths, monthlyAnalysisSources, monthlyAnalysisForStore, prepareMonthlyAnalysis, applyMonthlyAnalysis, monthlyFeedbackState, prepareMonthlyFeedback, applyMonthlyFeedback, applyMonthlyFeedbackWithAttendance, rememberedMonthlyAnalysisChoice, exportMonthlyFeedback, monthlyAnalysisChangeSummary } from './core.js';
@@ -125,7 +126,7 @@ document.addEventListener('submit',event=>{
   supervisorDraftGeneration++;editorContext=null;render();supervisorDraftStatus('已儲存；等待 Mac 同步確認。');
  },'supervisor-note-error');
 },true);
-window.addEventListener('beforeunload',event=>{if(editorContext?.type==='supervisor-inline'){event.preventDefault();event.returnValue='';}});
+window.addEventListener('beforeunload',event=>{if(editorContext?.type==='supervisor-inline'||monthlyPlanningDirty()){event.preventDefault();event.returnValue='';}});
 function renderSimpleSupervisor(person) {
   const stores=supervisedStores(records,person.id), areas=[...new Set(stores.map(s=>s.supervision.areaName))];
   const draft=supervisorNoteDraft(person.id);
@@ -478,6 +479,7 @@ let storeMergePreview = null, storeMergeSetup = null;
 let dayPlanSelectedDate = '', dayPlanContext = null, dayPlanSorting = false, dayPlanViewBasis = '', dayPlanNotice = '', dayPlanUndo = null;
 let analysisImport = null;
 let monthlyFeedbackContext = null;
+let monthlyChannelFilter = 'all', monthlyLastCurrentMonth = monthlyVisitMonth();
 let monthlyVisitSelectedMonth = '', monthlyVisitContext = null, monthlyVisitViewBasis = '', monthlyVisitNotice = '';
 let reminderDraftTimer = null, reminderDraftSaveChain = Promise.resolve();
 let attendancePrompt = null, attendanceCache = null;
@@ -1099,7 +1101,7 @@ async function openWorkspace() {
   document.body.classList.toggle('privacy-veil', pendingLock);
   try { storagePersistent = await navigator.storage?.persist?.() || false; } catch {}
   restoreTransientResumeState(); renderBackupResult(); await runPeriodicHealthAudit(); clearInterval(autoTimer);
-  autoTimer = setInterval(() => { void insightReviewTick(); void peopleReadingTick(); void peopleBatchTick(); supervisorRelationshipTick(); if (!document.hidden) { refreshMonthlyAlertBadges(); syncScheduler.request('poll'); setTimeout(() => void weeklyTick(), 1500); } }, 15000);
+  autoTimer = setInterval(() => { void insightReviewTick(); void peopleReadingTick(); void peopleBatchTick(); supervisorRelationshipTick(); if (!document.hidden) { monthlyPlanningTick(); refreshMonthlyAlertBadges(); syncScheduler.request('poll'); setTimeout(() => void weeklyTick(), 1500); } }, 15000);
   setTimeout(() => void weeklyTick(), 3000);
   syncScheduler.request('foreground');
   queueInsightScan(); requestNearbyPosition();
@@ -1226,7 +1228,7 @@ function lockNow(reopen = !document.hidden) {
   resetStoreFilters();
   for (const u of objectURLs) URL.revokeObjectURL(u); objectURLs = [];
   document.querySelectorAll('dialog').forEach(d => d.close());
-  for (const id of ['monthly-visit-content', 'monthly-visit-fields', 'monthly-visit-error', 'day-plan-content', 'day-plan-entry', 'day-plan-fields', 'quality-content', 'regional-content', 'focus-header', 'graph', 'graph-pager', 'focus-detail', 'evidence-list', 'store-list', 'visit-list', 'recent-store-list', 'draft-banner-text', 'reminder-draft-list', 'customer-list', 'entity-list', 'trash-list', 'review-body', 'editor-fields', 'conflict-list', 'connection-detail', 'program-detail', 'local-save-detail', 'mac-ack-detail', 'sync-success-detail', 'sync-failure-detail', 'connection-check', 'device-label', 'sync-result', 'storage-detail', 'sync-health-title', 'sync-health-body', 'pending-sync-detail', 'sync-conflict-count', 'health-audit-title', 'health-audit-time', 'health-audit-list', 'backup-result', 'data-safety-title', 'data-safety-detail']) $(id).replaceChildren();
+  for (const id of ['monthly-home-content', 'monthly-visit-content', 'monthly-visit-fields', 'monthly-visit-error', 'day-plan-content', 'day-plan-entry', 'day-plan-fields', 'quality-content', 'regional-content', 'focus-header', 'graph', 'graph-pager', 'focus-detail', 'evidence-list', 'store-list', 'visit-list', 'recent-store-list', 'draft-banner-text', 'reminder-draft-list', 'customer-list', 'entity-list', 'trash-list', 'review-body', 'editor-fields', 'conflict-list', 'connection-detail', 'program-detail', 'local-save-detail', 'mac-ack-detail', 'sync-success-detail', 'sync-failure-detail', 'connection-check', 'device-label', 'sync-result', 'storage-detail', 'sync-health-title', 'sync-health-body', 'pending-sync-detail', 'sync-conflict-count', 'health-audit-title', 'health-audit-time', 'health-audit-list', 'backup-result', 'data-safety-title', 'data-safety-detail']) $(id).replaceChildren();
   $('connection-check').hidden = true;
   $('store-reminder-form').reset(); resetReminderOptionGroup('store-reminder-next'); $('store-reminder-existing').replaceChildren(); $('store-reminder-title').textContent = '門市提醒'; $('store-reminder-draft-state').textContent = ''; $('store-reminder-error').textContent = ''; $('reminder-draft-banner').hidden = true; $('reminder-draft-count').textContent = '未完成門市提醒';
   $('editor-form').reset(); $('gate-form').reset(); $('rebuild-connect-form').reset(); $('password').value = ''; $('backup-file').value = '';
@@ -2750,6 +2752,55 @@ function renderVisitSearchGroup(group, query) {
 }
 // Day itinerary actions only change datePlans / datePlanOrder. They never call
 // task completion, attendance confirmation, or note editing.
+function monthlyPlanningDirty() {
+  const ctx=monthlyVisitContext;if(!ctx)return false;
+  return ctx.kind==='focus' ? $('monthly-focus-input')?.value!==ctx.initialText : ctx.kind==='roster' ? JSON.stringify([...document.querySelectorAll('[data-planning-store]:checked')].map(e=>e.dataset.planningStore).sort())!==JSON.stringify(ctx.initialStores) : false;
+}
+function monthlyFocusHTML(month) {
+  const state=monthlyPlanningState(payload.bundle,'focus',month),past=month<monthlyVisitMonth();
+  return `<section class="monthly-focus-card" aria-label="本月重點"><div class="section-row"><span class="monthly-focus-label">★ 優先記住 · ${Number(month.slice(5))}月重點</span>${past?'':`<button type="button" class="text-button" data-monthly-focus="${esc(month)}">${state.conflict?'核對重點分歧':'修改重點'}</button>`}</div>${state.conflict?'<p class="error">本月重點有同步分歧，請逐一核對後保存；歷史完整保留。</p>':`<p class="monthly-focus-copy${state.document?.text?'':' is-empty'}">${esc(state.document?.text || '這個月還沒有設定重點。')}</p>`}</section>`;
+}
+function renderMonthlyHome() {
+  const month=monthlyVisitMonth(),overview=monthlyVisitOverview(payload.bundle,month);
+  $('monthly-home-content').innerHTML=`${monthlyFocusHTML(month)}<button type="button" class="monthly-home-progress" data-view="monthly"><span><strong>每月必訪 ${overview.completedCount}／${overview.total}</strong><small>${month} · 還有 ${overview.pending.length} 間${overview.recurringConflict?' · 名單待核對':''}</small></span><span>查看分區 ›</span></button>`;
+}
+function monthlyPlanningTick() {
+  const current=monthlyVisitMonth();
+  if(current===monthlyLastCurrentMonth || !payload || busy || pendingLock || updateHolding || syncInProgress || monthlyVisitContext || inlineTextContext || editorContext || document.querySelector('dialog[open]')) return;
+  if(monthlyVisitSelectedMonth===monthlyLastCurrentMonth)monthlyVisitSelectedMonth=current;
+  monthlyLastCurrentMonth=current;
+  if(activeView==='visits')renderMonthlyHome();
+  if(activeView==='monthly')renderMonthlyVisits();
+}
+function openMonthlyPlanning(kind,month) {
+  assertMonthlyVisitIdle();monthlyVisitSelectedMonth=monthlyVisitMonth(month);
+  const ctx=newMonthlyVisitContext(kind),state=monthlyPlanningState(payload.bundle,kind,ctx.month);
+  ctx.initialText=state.document?.text||'';ctx.initialStores=[...state.storeIds].sort();ctx.planningBasis=monthlyPlanningBasis(payload.bundle,kind,ctx.month);monthlyVisitContext=ctx;
+  $('monthly-visit-title').textContent=kind==='roster'?`${monthlyVisitLabel(ctx.month)}起 · 固定必訪名單`:`${monthlyVisitLabel(ctx.month)}重點`;
+  $('monthly-visit-error').textContent='';$('monthly-visit-hint').hidden=true;
+  if(kind==='focus'){
+    $('monthly-visit-fields').innerHTML=`${state.conflict?state.heads.map(id=>{const op=payload.bundle.ops.find(o=>o.entity===id&&o.type==='source');return `<blockquote>${esc(op.data.monthlyPlanning.text)}</blockquote>`;}).join(''):''}<label for="monthly-focus-input">本月最需要聚焦的方向</label><textarea id="monthly-focus-input" maxlength="1000" rows="5">${esc(state.document?.text||'')}</textarea><p class="muted">每月獨立保存，舊月份保留；不改門市筆記。取消／關閉不儲存這次修改。</p>`;
+  }else{
+    const selected=new Set(state.storeIds);
+    const stores=records.filter(r=>r.type==='store'&&((!r.deleted&&!r.mergedInto)||selected.has(r.id))).sort((a,b)=>a.district.localeCompare(b.district,'zh-Hant')||a.name.localeCompare(b.name,'zh-Hant'));
+    $('monthly-visit-fields').innerHTML=`<p>從${esc(ctx.month)}起每月沿用；當月已訪只讀取你親自確認的實際拜訪日期，不需重勾。舊月份保留，當月另行移除仍有效。</p>${state.conflict?'<p class="error">固定名單有分歧；下面保留各分支門市，請核對整份選擇後保存。</p>':''}<div class="monthly-recurring-options">${stores.map(store=>`<label class="check"><input type="checkbox" data-planning-store="${esc(store.id)}" ${selected.has(store.id)?'checked':''} ${!selected.has(store.id)&&(store.conflict||storeIdentityPending(store))?'disabled':''}><span>${esc(store.name)}<small>${esc([store.city,store.district,store.address].filter(Boolean).join(' · '))}${store.deleted||store.mergedInto||store.conflict||storeIdentityPending(store)?' · 門市不可用，請先取消此店或處理身分':''}</small></span></label>`).join('')}</div>`;
+  }
+  $('monthly-visit-fields').innerHTML += '<div class="dialog-footer"><button type="button" data-planning-discard>取消，不儲存</button><button type="button" class="primary" data-planning-save>確認並儲存</button></div>';
+  openDialog($('monthly-visit-dialog'));
+}
+async function saveMonthlyPlanning() {
+  const ctx=monthlyVisitContext;if(!ctx||!['focus','roster'].includes(ctx.kind))throw new Error('請重新開啟每月規劃。');
+  assertMonthlyVisitContext(ctx);
+  const request={kind:ctx.kind,month:ctx.month,expectedBasis:ctx.planningBasis};
+  if(ctx.kind==='focus')request.text=$('monthly-focus-input').value;
+  else request.storeIds=[...document.querySelectorAll('[data-planning-store]:checked')].map(e=>e.dataset.planningStore);
+  const bundle=await applyMonthlyPlanning(payload.bundle,request,payload.device);
+  assertMonthlyVisitContext(ctx);
+  if(bundle!==payload.bundle)await persist({...payload,bundle,dirty:true},{guard:()=>assertMonthlyVisitContext(ctx)});
+  monthlyVisitContext=null;$('monthly-visit-dialog').close();$('monthly-visit-fields').replaceChildren();
+  monthlyVisitNotice=ctx.kind==='roster'?'固定名單已保存；已訪進度只依實際拜訪確認計算。':'本月重點已保存；舊月份與門市原文保留。';
+  render();dismissKeyboard();syncScheduler.wake();toast(monthlyVisitNotice);
+}
 function monthlyVisitLabel(month) { return `${month.slice(0, 4)} 年 ${Number(month.slice(5))} 月`; }
 function monthlyVisitGroup(storeId) {
   const group = retailChannel(by('store', storeId));
@@ -2765,7 +2816,7 @@ function storeSelectionIdentity(storeId) {
 }
 function monthlyVisitRowsHTML(rows, past, removed = false) {
   const groups = new Map();
-  for (const row of rows) { const district = row.district || '地區未填'; if (!groups.has(district)) groups.set(district, []); groups.get(district).push(row); }
+  for (const row of rows) { const district = [row.city,row.district].filter(Boolean).join(' · ') || '地區未填'; if (!groups.has(district)) groups.set(district, []); groups.get(district).push(row); }
   return [...groups].map(([district, list]) => `<section class="monthly-district"><h3>${esc(district)}</h3>${list.map(row => {
     const group = monthlyVisitGroup(row.storeId), canOpen = row.available, dates = row.dates || [], identity = storeSelectionIdentity(row.storeId);
     return `<div class="monthly-store-row"><button class="text-button monthly-store-open" ${canOpen ? `data-visit-brief="${esc(row.storeId)}"` : 'disabled'} aria-label="開啟${esc(row.name)}${row.completed ? '，本月已拜訪' : ''}"><span class="monthly-check ${row.completed ? 'is-complete' : ''}" aria-hidden="true">${row.completed ? '✓' : ''}</span><span class="monthly-store-copy"><span class="monthly-dot ${group.id}" aria-hidden="true"></span>${esc(row.name)}${identity ? `<small>${esc(identity)}</small>` : ''}${dates.length ? `<small>已拜訪 ${dates.map(date => esc(date.slice(5).replace('-', '/'))).join('、')}</small>` : ''}${!row.available ? `<small class="error">${esc(row.unavailableReason)}</small>` : ''}</span><span aria-hidden="true">›</span></button>${!past && row.available ? `<button class="text-button monthly-store-remove" ${removed ? `data-monthly-add-back="${esc(row.storeId)}"` : `data-monthly-remove="${esc(row.storeId)}"`} aria-label="${removed ? '重新加入' : '從' + esc(monthlyVisitLabel(monthlyVisitSelectedMonth)) + '移除'}${esc(row.name)}">${removed ? '重新加入' : '移除'}</button>` : ''}</div>`;
@@ -2774,19 +2825,20 @@ function monthlyVisitRowsHTML(rows, past, removed = false) {
 function renderMonthlyVisits() {
   if (!monthlyVisitSelectedMonth) monthlyVisitSelectedMonth = monthlyVisitMonth();
   const month = monthlyVisitSelectedMonth, current = monthlyVisitMonth(), past = month < current;
+  const selectedRows = rows => rows.filter(row=>monthlyChannelFilter==='all'||monthlyVisitGroup(row.storeId).id===monthlyChannelFilter);
   const overview = monthlyVisitOverview(payload.bundle, month), doneOpen = $('monthly-completed')?.open || false;
   monthlyVisitViewBasis = monthlyVisitBasis(records, month);
   const counts = ['tree', 'you', 'other'].map(id => ({ id, rows: overview.stores.filter(row => monthlyVisitGroup(row.storeId).id === id) })).filter(group => group.rows.length);
   const content = $('monthly-visit-content');
   // Native iPhone month/date pickers keep ownership of the same input node.
   // Refresh results independently, without removing or re-inserting its controls.
-  if (!content.querySelector('#monthly-visit-month')) content.innerHTML = `<div class="monthly-toolbar"><div class="monthly-month-controls"><button id="monthly-previous-month" type="button" data-monthly-shift="-1" aria-label="上一個月">‹</button><label class="sr-only" for="monthly-visit-month">查看與調整月份</label><input id="monthly-visit-month" type="month" min="0001-01" max="9999-12" aria-label="查看與調整月份"><button id="monthly-next-month" type="button" data-monthly-shift="1" aria-label="下一個月">›</button></div><span id="monthly-readonly-month" class="pill" hidden>歷史月份 · 唯讀</span><button id="monthly-add-store" type="button" class="primary" data-monthly-select>＋ 新增門市</button></div><div id="monthly-visit-results"></div>`;
+  if (!content.querySelector('#monthly-visit-month')) content.innerHTML = `<div class="monthly-toolbar"><div class="monthly-month-controls"><button id="monthly-previous-month" type="button" data-monthly-shift="-1" aria-label="上一個月">‹</button><label class="sr-only" for="monthly-visit-month">查看與調整月份</label><input id="monthly-visit-month" type="month" min="0001-01" max="9999-12" aria-label="查看與調整月份"><button id="monthly-next-month" type="button" data-monthly-shift="1" aria-label="下一個月">›</button></div><span id="monthly-readonly-month" class="pill" hidden>歷史月份 · 唯讀</span><button id="monthly-add-store" type="button" class="primary" data-monthly-select>＋ 新增門市</button><button type="button" data-monthly-roster>設定固定名單</button></div><div id="monthly-visit-results"></div>`;
   const monthInput = $('monthly-visit-month');
   if (monthInput.value !== month) monthInput.value = month;
   $('monthly-previous-month').disabled = month === '0001-01';
   $('monthly-next-month').disabled = month === '9999-12';
   $('monthly-readonly-month').hidden = !past; $('monthly-add-store').hidden = past;
-  $('monthly-visit-results').innerHTML = `<div class="monthly-heading"><h2>${esc(monthlyVisitLabel(month))}${month === current ? ' · 本月' : ''}</h2>${month !== current ? '<button type="button" class="text-button" data-monthly-current>回本月</button>' : ''}</div><section class="panel monthly-progress" aria-label="當月必訪進度"><div><strong>待訪 ${overview.pending.length} 間</strong><span role="status">已訪 ${overview.completedCount} / ${overview.total} 間</span></div><div class="monthly-legend">${counts.map(group => `<span><i class="monthly-dot ${group.id}" aria-hidden="true"></i>${{ tree: '大樹', you: '佑全／健康人生', other: '其他／未分群' }[group.id]} ${group.rows.filter(row => row.completed).length}/${group.rows.length}</span>`).join('')}</div></section><p id="monthly-visit-notice" class="muted" role="status" aria-live="polite" ${monthlyVisitNotice ? '' : 'hidden'}>${esc(monthlyVisitNotice)}</p><section class="panel monthly-list" aria-label="當月必訪名單">${overview.pending.length ? monthlyVisitRowsHTML(overview.pending, past) : overview.total ? '<p class="monthly-complete">✓ 本月必訪門市皆已完成</p>' : `<p class="empty">這個月尚未安排必訪門市。${past ? '' : '請按「新增門市」從既有門市選入。'}</p>`}${overview.completed.length ? `<details id="monthly-completed" ${doneOpen ? 'open' : ''}><summary>已拜訪 · ${overview.completed.length} 間</summary>${monthlyVisitRowsHTML(overview.completed, past)}</details>` : ''}</section>${overview.removedStores.length ? `<details class="monthly-removed"><summary>本月已移除 · ${overview.removedStores.length} 間</summary>${monthlyVisitRowsHTML(overview.removedStores, past, true)}</details>` : ''}${analysisOverviewHTML(month)}<details class="monthly-help"><summary>名單調整與完成依據</summary><p class="muted">各月份名單分別保存。新增或移除不會改動其他月份、門市原文或拜訪歷史；過去月份保留唯讀。只有你勾選實際拜訪日期並完成儲存，才依該日期自動計入對應月份。修改文字、安排行程及完成待辦都不算拜訪。同店同月計一次。</p></details>`;
+  $('monthly-visit-results').innerHTML = `${monthlyFocusHTML(month)}<div class="monthly-heading"><h2>${esc(monthlyVisitLabel(month))}${month === current ? ' · 本月' : ''}</h2>${month !== current ? '<button type="button" class="text-button" data-monthly-current>回本月</button>' : ''}</div><section class="panel monthly-progress" aria-label="當月必訪進度"><div><strong>待訪 ${overview.pending.length} 間</strong><span role="status">已訪 ${overview.completedCount} / ${overview.total} 間</span></div><div class="monthly-legend">${counts.map(group => `<span><i class="monthly-dot ${group.id}" aria-hidden="true"></i>${{ tree: '大樹', you: '佑全／健康人生', other: '其他／未分群' }[group.id]} ${group.rows.filter(row => row.completed).length}/${group.rows.length}</span>`).join('')}</div></section><div class="monthly-planning-filters" role="group" aria-label="必訪通路篩選">${[['all','全部'],['tree','大樹'],['you','佑全／健康人生']].map(([id,label])=>`<button type="button" data-monthly-channel="${id}" aria-pressed="${monthlyChannelFilter===id}">${label}</button>`).join('')}</div>${overview.recurringConflict?'<p class="error">固定名單有同步分歧，請按「設定固定名單」逐店核對後保存；暫不判定完成。</p>':''}<p id="monthly-visit-notice" class="muted" role="status" aria-live="polite" ${monthlyVisitNotice ? '' : 'hidden'}>${esc(monthlyVisitNotice)}</p><section class="panel monthly-list" aria-label="當月必訪名單">${overview.pending.length ? monthlyVisitRowsHTML(selectedRows(overview.pending), past) : overview.total ? '<p class="monthly-complete">✓ 本月必訪門市皆已完成</p>' : `<p class="empty">這個月尚未安排必訪門市。${past ? '' : '請按「新增門市」從既有門市選入。'}</p>`}${overview.completed.length ? `<details id="monthly-completed" ${doneOpen ? 'open' : ''}><summary>已拜訪 · ${overview.completed.length} 間</summary>${monthlyVisitRowsHTML(selectedRows(overview.completed), past)}</details>` : ''}</section>${overview.removedStores.length ? `<details class="monthly-removed"><summary>本月已移除 · ${overview.removedStores.length} 間</summary>${monthlyVisitRowsHTML(selectedRows(overview.removedStores), past, true)}</details>` : ''}${analysisOverviewHTML(month)}<details class="monthly-help"><summary>名單調整與完成依據</summary><p class="muted">固定名單從生效月份起每月沿用；當月另行新增或移除只影響該月。各月份名單分別保存。新增或移除不會改動其他月份、門市原文或拜訪歷史；過去月份保留唯讀。只有你勾選實際拜訪日期並完成儲存，才依該日期自動計入對應月份。修改文字、安排行程及完成待辦都不算拜訪。同店同月計一次。</p></details>`;
 }
 // A pending version probe is read-only. Opening a local planner invalidates
 // that probe's session before it can start any snapshot exchange.
@@ -2809,6 +2861,7 @@ function resumeMonthlyVisitContext() {
 }
 function openMonthlyVisitSelection() {
   const ctx = newMonthlyVisitContext('selection'); ctx.query = ''; monthlyVisitContext = ctx;
+  $('monthly-visit-hint').hidden = false;
   $('monthly-visit-title').textContent = `${monthlyVisitLabel(ctx.month)} · 新增必訪門市`;
   $('monthly-visit-error').textContent = '';
   $('monthly-visit-fields').innerHTML = '<label>搜尋既有門市<input id="monthly-store-search" type="search" placeholder="店名、地區、地址或來源名稱" autocomplete="off"></label><p id="monthly-selection-count" role="status"></p><div id="monthly-store-options"></div>';
@@ -2821,12 +2874,15 @@ function renderMonthlyVisitChoices(query) {
   const needle = String(query).trim().toLocaleLowerCase(), overview = monthlyVisitOverview(payload.bundle, ctx.month);
   $('monthly-selection-count').textContent = `${monthlyVisitLabel(ctx.month)}已加入 ${overview.total} 間`;
   $('monthly-store-options').innerHTML = stores.filter(store => [store.name, store.city, store.district, store.address, ...(store.csvAliases || [])].some(value => String(value || '').toLocaleLowerCase().includes(needle))).map(store => {
-    const active = monthlyVisitForStore(store, ctx.month)?.active, available = !store.conflict && !storeIdentityPending(store), group = monthlyVisitGroup(store.id);
+    const active = overview.stores.some(row=>row.storeId===store.id), available = !store.conflict && !storeIdentityPending(store), group = monthlyVisitGroup(store.id);
     return `<div class="monthly-store-choice"><span><strong><i class="monthly-dot ${group.id}" aria-hidden="true"></i>${esc(store.name)}</strong><small>${esc([store.city, store.district, storeSelectionIdentity(store.id)].filter(Boolean).join(' · '))}${!available ? ' · 門市狀態待確認' : ''}</small></span><button type="button" data-monthly-add="${esc(store.id)}" aria-label="加入${esc(store.name)}${storeSelectionIdentity(store.id) ? '，' + esc(storeSelectionIdentity(store.id)) : ''}" ${active || !available ? 'disabled' : ''}>${active ? '已加入' : '加入'}</button></div>`;
   }).join('') || '<p class="empty">沒有符合的門市。請先在「門市」建立門市資料。</p>';
 }
-function closeMonthlyVisitSelection() {
+function closeMonthlyVisitSelection(discard = false) {
   if (busy || !monthlyVisitContext) return;
+  const ctx=monthlyVisitContext;
+  const changed=monthlyPlanningDirty();
+  if(changed&&!discard){$('monthly-visit-error').innerHTML='還有未儲存的修改，輸入保持在此。請繼續編輯，或明確取消。 <button type="button" data-planning-discard>放棄這次修改</button>';return;}
   monthlyVisitContext = null; $('monthly-visit-dialog').close(); $('monthly-visit-fields').replaceChildren(); $('monthly-visit-error').textContent = ''; dismissKeyboard(); syncScheduler.wake();
 }
 async function performMonthlyVisitAction(action, storeId, fromPicker = false) {
@@ -2956,7 +3012,7 @@ async function restoreLastDayPlanCancellation() {
   await performDayItineraryAction('restore', undo.storeId);
 }
 function renderVisits() {
-  renderQuickVisit(); renderReminderDrafts(); renderDayPlanEntry();
+  renderMonthlyHome(); renderQuickVisit(); renderReminderDrafts(); renderDayPlanEntry();
   const visitDraft = payload?.draft?.format === 'visit-draft-1' ? payload.draft : null;
   const savedInlineDraft = payload?.inlineTextDraft?.format === 'inline-text-draft-1' ? payload.inlineTextDraft : null;
   const liveInlineDraft = inlineTextContext && inlineTextContext.after !== inlineTextContext.before ? inlineTextContext : null;
@@ -4095,10 +4151,15 @@ document.addEventListener('click', event => {
   if (b.dataset.supervisionSource) {const a=by('store',b.dataset.supervisionSource)?.supervision;if(a) download(unb64(payload.bundle.blobs[a.sourceDocument.blob]),a.sourceDocument.name.replace(/[\/\\]/g,'_'),a.sourceDocument.mime);return;}
   if (b.dataset.insightChanges) return run(() => openInsightChanges(b.dataset.insightChanges), 'insight-review-error');
   if (b.dataset.insightChangeRead) return run(() => readInsightChange(b.dataset.insightChangeRead), 'insight-changes-error');
+  if (b.hasAttribute('data-planning-discard')) return closeMonthlyVisitSelection(true);
   if (b.hasAttribute('data-monthly-close')) return closeMonthlyVisitSelection();
+  if (b.hasAttribute('data-planning-save')) return run(saveMonthlyPlanning,'monthly-visit-error');
   if (b.dataset.monthlyAdd) return run(() => performMonthlyVisitAction('add', b.dataset.monthlyAdd, true), 'monthly-visit-error');
   if (monthlyVisitContext && !b.closest('#monthly-visit-dialog')) return toast('請先關閉每月門市選擇，再操作其他內容。');
   if (b.hasAttribute('data-monthly-select')) return run(openMonthlyVisitSelection);
+  if (b.hasAttribute('data-monthly-roster')) return run(()=>openMonthlyPlanning('roster',monthlyVisitSelectedMonth||monthlyVisitMonth()));
+  if (b.dataset.monthlyFocus) return run(()=>openMonthlyPlanning('focus',b.dataset.monthlyFocus));
+  if (b.dataset.monthlyChannel) {monthlyChannelFilter=b.dataset.monthlyChannel;return renderMonthlyVisits();}
   if (b.dataset.monthlyRemove) return run(() => performMonthlyVisitAction('remove', b.dataset.monthlyRemove));
   if (b.dataset.monthlyAddBack) return run(() => performMonthlyVisitAction('add', b.dataset.monthlyAddBack));
   if (b.dataset.monthlyShift) { try { return changeMonthlyVisitMonth(shiftMonthlyVisitMonth(monthlyVisitSelectedMonth || monthlyVisitMonth(), Number(b.dataset.monthlyShift))); } catch (error) { return toast(error.message); } }
@@ -4259,7 +4320,7 @@ function handleAppVisibilityChange() {
 }
 document.addEventListener('visibilitychange', handleAppVisibilityChange);
 window.addEventListener('pagehide', () => { syncEpoch++; syncScheduler.pause(); finishAttendancePrompt(); dismissKeyboard(); clearNearbyPosition(); if(monthlyFeedbackContext)void flushMonthlyFeedbackDraft().catch(()=>{}); if (editorContext?.type === 'visit' || singleStoreContext) void flushVisitDraft(); if (inlineTextContext) void flushInlineTextDraft(); if (activeReminderDraftContext()) void flushReminderDraft().catch(() => {}); if (payload || busy || backupPreview) lockNow(false); });
-window.addEventListener('pageshow', () => { dismissKeyboard(); if (!payload && !document.hidden) { document.body.classList.remove('privacy-veil'); showGate(); } if (!document.hidden) { refreshMonthlyAlertBadges(); resumeDayPlanContext(); resumeMonthlyVisitContext(); syncScheduler.request('foreground'); queueInsightScan(); } });
+window.addEventListener('pageshow', () => { dismissKeyboard(); if (!payload && !document.hidden) { document.body.classList.remove('privacy-veil'); showGate(); } if (!document.hidden) { monthlyPlanningTick(); refreshMonthlyAlertBadges(); resumeDayPlanContext(); resumeMonthlyVisitContext(); syncScheduler.request('foreground'); queueInsightScan(); } });
 window.addEventListener('online', () => syncScheduler.request('online'));
 window.addEventListener('offline', () => syncScheduler.pause());
 $('visit-attendance-form').addEventListener('submit', event => {

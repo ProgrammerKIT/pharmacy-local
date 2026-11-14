@@ -232,6 +232,63 @@ export function shiftMonthlyVisitMonth(month, delta) {
 const validMonthlyVisitMonth = value => {
   try { return typeof value === 'string' && /^\d{4}-\d\d$/.test(value) && monthlyVisitMonth(value) === value; } catch { return false; }
 };
+// User-authored monthly planning is append-only and independent of stores/visits.
+function validMonthlyPlanning(d) {
+  return plain(d) && ['roster', 'focus'].includes(d.kind) && validMonthlyVisitMonth(d.month)
+    && d.format === 'pharmacy-monthly-planning-1' && ids(d.supersedes) && new Set(d.supersedes).size === d.supersedes.length
+    && Object.keys(d).sort().join(',') === (d.kind === 'roster' ? 'format,kind,month,storeIds,supersedes' : 'format,kind,month,supersedes,text')
+    && (d.kind === 'roster' ? ids(d.storeIds) && d.storeIds.length <= 1500 && new Set(d.storeIds).size === d.storeIds.length : str(d.text, 1000));
+}
+function monthlyPlanningEvents(bundle) { return bundle.ops.filter(o => o.type === 'source' && o.data.monthlyPlanning); }
+export function monthlyPlanningState(bundle, kind, month) {
+  month = monthlyVisitMonth(month);
+  const events = monthlyPlanningEvents(bundle).filter(o => o.data.monthlyPlanning.kind === kind && (kind === 'roster' ? o.data.monthlyPlanning.month <= month : o.data.monthlyPlanning.month === month));
+  const effectiveMonth = events.map(o => o.data.monthlyPlanning.month).sort().at(-1) || null;
+  const selected = events.filter(o => o.data.monthlyPlanning.month === effectiveMonth), replaced = new Set(selected.flatMap(o => o.data.monthlyPlanning.supersedes));
+  const heads = selected.filter(o => !replaced.has(o.entity)).sort((a,b) => a.entity.localeCompare(b.entity));
+  return { effectiveMonth, heads: heads.map(o => o.entity), conflict: heads.length > 1, document: heads.length === 1 ? structuredClone(heads[0].data.monthlyPlanning) : null,
+    storeIds: [...new Set(heads.flatMap(o => o.data.monthlyPlanning.storeIds || []))] };
+}
+export function monthlyPlanningBasis(bundle, kind, month) {
+  return JSON.stringify({ kind, month: monthlyVisitMonth(month), events: monthlyPlanningEvents(bundle).map(o => o.id).sort(), stores: monthlyVisitBasis(project(bundle), month) });
+}
+export async function applyMonthlyPlanning(bundle, request, device, at = new Date().toISOString()) {
+  validateBundle(bundle);
+  if (!plain(request) || !['roster','focus'].includes(request.kind) || !validMonthlyVisitMonth(request.month) || !attendanceInstant(at) || !str(device,100) || !device.trim()
+    || Object.keys(request).sort().join(',') !== (request.kind === 'roster' ? 'expectedBasis,kind,month,storeIds' : 'expectedBasis,kind,month,text')) throw new Error('每月規劃資料不完整，尚未寫入。');
+  if (request.month < monthlyVisitMonth(at)) throw new Error('過去月份保留歷史，不能改寫。');
+  if (request.expectedBasis !== monthlyPlanningBasis(bundle,request.kind,request.month)) throw new Error('名單、重點或門市已有新版本，請重新核對；尚未寫入。');
+  const state = monthlyPlanningState(bundle,request.kind,request.month), doc = {format:'pharmacy-monthly-planning-1',kind:request.kind,month:request.month,supersedes:state.effectiveMonth === request.month ? state.heads : []};
+  if (request.kind === 'roster') {
+    if (!ids(request.storeIds) || request.storeIds.length>1500 || new Set(request.storeIds).size!==request.storeIds.length) throw new Error('固定門市識別重複或格式不符。');
+    const stores = new Map(project(bundle).filter(r=>r.type==='store').map(r=>[r.id,r]));
+    for (const id of request.storeIds) if (!stores.has(id) || monthlyVisitUnavailable(stores.get(id))) throw new Error('固定名單含不存在、回收桶、整併、身分待核對或衝突門市；請重新核對。');
+    doc.storeIds = [...request.storeIds].sort();
+    if (!state.conflict && state.document && JSON.stringify([...state.document.storeIds].sort())===JSON.stringify(doc.storeIds)) return bundle;
+  } else {
+    if (!str(request.text,1000)) throw new Error('本月重點最多1000字，原輸入保留。');
+    doc.text = request.text.trim();
+    if (!state.conflict && state.document?.text === doc.text) return bundle;
+  }
+  const raw=enc.encode(JSON.stringify(doc)),blob=await hashBytes(raw),next=structuredClone(bundle);
+  next.blobs[blob]=b64(raw);
+  const op=revision('source',uuid(),{file:'user-monthly-planning.json',list:'人工每月規劃',blob,batch:uuid(),rows:doc.storeIds?.length||0,headers:[],encoding:'UTF-8',delimiter:'',monthlyPlanning:doc},[],device);
+  op.at=at;next.ops.push(op);validateBundle(next);
+  if(enc.encode(JSON.stringify(next)).length>MAX_BYTES)throw new Error('資料超過安全上限，尚未儲存；原資料保留。');
+  return next;
+}
+function validateMonthlyPlanningSources(bundle, sources, stores) {
+  const events=new Map([...sources].filter(([,o])=>o.data.monthlyPlanning)),degree=new Map(),children=new Map();
+  for(const [id,o] of events){const doc=o.data.monthlyPlanning;
+    if(dec.decode(unb64(bundle.blobs[o.data.blob]||''))!==JSON.stringify(doc))throw new Error('每月規劃原件不一致。');
+    if(doc.storeIds?.some(id=>!stores.has(id)))throw new Error('每月固定門市不存在。');
+    degree.set(id,doc.supersedes.length);
+    for(const prev of doc.supersedes){const before=events.get(prev)?.data.monthlyPlanning;if(!before||before.kind!==doc.kind||before.month!==doc.month||prev===id)throw new Error('每月規劃歷史鏈結不符。');if(!children.has(prev))children.set(prev,[]);children.get(prev).push(id);}
+  }
+  const queue=[...degree].filter(([,n])=>!n).map(([id])=>id);let count=0;
+  for(let i=0;i<queue.length;i++){count++;for(const id of children.get(queue[i])||[]){degree.set(id,degree.get(id)-1);if(!degree.get(id))queue.push(id);}}
+  if(count!==events.size)throw new Error('每月規劃歷史不可循環。');
+}
 function validMonthlyVisits(entries) {
   return Array.isArray(entries) && entries.length <= 1000 && new Set(entries.map(entry => entry?.month)).size === entries.length
     && entries.every(entry => plain(entry) && Object.keys(entry).sort().join(',') === 'active,month,updatedAt'
@@ -270,6 +327,7 @@ function historicalMonthlyVisit(store, month) {
 export function monthlyVisitOverview(bundle, month, now = Date.now()) {
   month = monthlyVisitMonth(month);
   const today = attendanceTaipeiDate(now), past = month < today.slice(0, 7), stores = [], removedStores = [];
+  const recurring=monthlyPlanningState(bundle,'roster',month);
   for (const store of project(bundle).filter(record => record.type === 'store')) {
     let entry = monthlyVisitForStore(store, month), historical = false, historicalConflict = false;
     // A restored older store version cannot erase the evidence of past rosters.
@@ -284,23 +342,24 @@ export function monthlyVisitOverview(bundle, month, now = Date.now()) {
       const active = store.heads.map(head => monthlyVisitForStore(head.data, month)).find(candidate => candidate?.active);
       if (active) { entry = active; historical = false; }
     }
+    if (!entry && recurring.storeIds.includes(store.id)) entry={month,active:true};
     if (!entry) continue;
-    const unavailableReason = monthlyVisitUnavailable(store) || (historicalConflict ? '保留的每月名單歷史不一致，請先核對版本' : ''), available = !unavailableReason;
+    const unavailableReason = (recurring.conflict && recurring.storeIds.includes(store.id) ? '固定名單有同步分歧，請先核對' : '') || monthlyVisitUnavailable(store) || (historicalConflict ? '保留的每月名單歷史不一致，請先核對版本' : ''), available = !unavailableReason;
     const dates = visitAttendanceForStore(bundle, store.id, now).history.map(item => item.date).filter(date => date.slice(0, 7) === month && date <= today);
-    const row = { storeId: store.id, name: store.name, district: store.district, channel: store.channel,
+    const row = { storeId: store.id, name: store.name, city:store.city, district: store.district, channel: store.channel,
       available, unavailableReason, active: entry.active, historical, dates, completed: available && dates.length > 0 };
     (entry.active ? stores : removedStores).push(row);
   }
-  const compare = (a, b) => a.district.localeCompare(b.district, 'zh-Hant') || a.name.localeCompare(b.name, 'zh-Hant') || a.storeId.localeCompare(b.storeId);
+  const compare = (a, b) => String(a.city||'').localeCompare(String(b.city||''),'zh-Hant') || a.district.localeCompare(b.district, 'zh-Hant') || a.name.localeCompare(b.name, 'zh-Hant') || a.storeId.localeCompare(b.storeId);
   stores.sort(compare); removedStores.sort(compare);
   const completed = stores.filter(row => row.completed), pending = stores.filter(row => !row.completed);
-  return { month, today, past, stores, removedStores, pending, completed, total: stores.length, completedCount: completed.length };
+  return { month, today, past, stores, removedStores, pending, completed, total: stores.length, completedCount: completed.length, recurringConflict:recurring.conflict, recurringMonth:recurring.effectiveMonth };
 }
 // Include all store heads: an open picker must not write over a newly changed
 // store, even if that store was not yet selected for this month.
 export function monthlyVisitBasis(records, month) {
   month = monthlyVisitMonth(month);
-  return JSON.stringify({ month, stores: records.filter(record => record.type === 'store').map(store => [store.id, store.heads.map(head => head.id).sort()]).sort((a, b) => a[0].localeCompare(b[0])) });
+  return JSON.stringify({ month, planning:records.filter(record=>record.type==='source'&&record.monthlyPlanning).map(r=>r.id).sort(), stores: records.filter(record => record.type === 'store').map(store => [store.id, store.heads.map(head => head.id).sort()]).sort((a, b) => a[0].localeCompare(b[0])) });
 }
 export function applyMonthlyVisitAction(bundle, request, device, at = new Date().toISOString()) {
   validateBundle(bundle);
@@ -313,7 +372,7 @@ export function applyMonthlyVisitAction(bundle, request, device, at = new Date()
   if (monthlyVisitBasis(records, month) !== expectedBasis) throw new Error('門市或每月名單已有新版本，請重新開啟名單；尚未寫入。');
   const store = records.find(record => record.type === 'store' && record.id === storeId);
   if (!store || monthlyVisitUnavailable(store)) throw new Error('每月名單門市不存在、已刪除、整併、身分待確認或有衝突；請先核對。');
-  const before = monthlyVisitForStore(store, month), active = action === 'add';
+  const before = monthlyVisitForStore(store, month) || (monthlyPlanningState(bundle,'roster',month).storeIds.includes(storeId) ? {active:true} : null), active = action === 'add';
   if (before?.active === active || !before && !active) return bundle;
   const data = structuredClone(store.heads[0].data);
   data.monthlyVisits = [...(data.monthlyVisits || []).filter(entry => entry.month !== month), { month, active, updatedAt: at }].sort((a, b) => a.month.localeCompare(b.month));
@@ -817,6 +876,7 @@ export function peopleAliasReviewState(bundle,readingId,personIndices) {
 }
 export function validData(type, d) {
   if (!plain(d)) return false;
+  if (d.monthlyPlanning !== undefined && (type !== 'source' || !validMonthlyPlanning(d.monthlyPlanning) || Object.keys(d).some(k=>!['file','list','blob','batch','rows','headers','encoding','delimiter','monthlyPlanning'].includes(k)))) return false;
   if (d.nearbyCoordinate !== undefined && (type !== 'source' || !validNearbyCoordinate(d.nearbyCoordinate) || Object.keys(d).some(k => !['file','list','blob','batch','rows','headers','encoding','delimiter','nearbyCoordinate'].includes(k)))) return false;
   if (d.manualVisitAttendance !== undefined && !validManualVisitAttendance({ type, data: d, deleted: false, parents: [], at: d.manualVisitAttendance?.at })) return false;
   if(d.peopleAliasReview!==undefined&&(type!=='source'||!validPeopleAliasReview(d.peopleAliasReview)||['peopleReading','peopleRelationshipReview','monthlyAnalysis','monthlyFeedback','csvExclusionEvents','csvExclusionAuditOf'].some(k=>d[k]!==undefined)))return false;
@@ -894,6 +954,7 @@ export function validateBundle(b) {
   const readingQueue=readingDocs.filter(o=>!o.data.peopleReading.replaces.length).map(o=>o.entity);let readingCount=0;
   for(let i=0;i<readingQueue.length;i++){readingCount++;for(const id of readingChildren.get(readingQueue[i])||[]){readingDegree.set(id,readingDegree.get(id)-1);if(!readingDegree.get(id))readingQueue.push(id);}}
   if(readingCount!==readingDocs.length)throw new Error('人物速覽歷史不可循環。');
+  validateMonthlyPlanningSources(b,sourceEntities,storeEntities);
   validatePeopleRelationshipReviews(sourceEntities, b);
   validatePeopleAliasReviews(sourceEntities,b);
   validateSupervisorReviews(b, seen);
