@@ -14,7 +14,7 @@ function fixture() {
   const { node, document } = uiNodeFixture(), handlers = new Map(), bundle = emptyBundle('fictional-calendar-lifecycle');
   document.addEventListener = (type, handler) => handlers.set('monthly-' + type, handler);
   node('day-plan-content').addEventListener = (type, handler) => handlers.set('daily-' + type, handler);
-  const sandbox = vm.createContext({ monthlyAnalysisStoreHTML:()=>'', analysisOverviewHTML:()=>'',
+  const sandbox = vm.createContext({ monthlyFocusHTML:()=>'', monthlyChannelFilter:'all', monthlyAnalysisStoreHTML:()=>'', analysisOverviewHTML:()=>'',
     $: node, document, payload: { bundle }, records: [], monthlyVisitSelectedMonth: monthlyVisitMonth(), monthlyVisitNotice: '', monthlyVisitViewBasis: '',
     monthlyVisitContext: null, dayPlanContext: null, dayPlanSelectedDate: dayPlanDate(), dayPlanViewBasis: '', dayPlanSorting: false, dayPlanNotice: '', dayPlanUndo: null, busy: false,
     monthlyVisitMonth, shiftMonthlyVisitMonth, monthlyVisitOverview, monthlyVisitBasis, dayPlanDate, shiftDayPlanDate, dayPlanOverview, dayItineraryBasis,
