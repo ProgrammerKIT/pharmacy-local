@@ -2060,7 +2060,7 @@ async function requestPeopleReadingRefresh(storeId) {
   if(!state.enabled)throw Error('既有批次整理尚未啟用，請在資料與安全檢查；未擅自啟用。');
   const job=state.entries.find(j=>j.storeId===storeId);
   if(!job||!['queued','running','ready'].includes(job.state)){
-    await api('/api/people-batch/stage',{method:'POST',body:{vaultId:payload.bundle.vaultId,snapshotVersion:payload.serverVersion,requests:[request],retry:true}});guard();
+    await api('/api/people-batch/stage',{method:'POST',body:{vaultId:payload.bundle.vaultId,snapshotVersion:payload.serverVersion,requests:[request],retry:true,...(state.round?{roundId:state.round.id}:{})}});guard();
   }
   peopleBatchStatus=await api('/api/people-batch/status',{method:'POST',body:{vaultId:payload.bundle.vaultId}});guard();
   loadPeopleReadingView(storeId);refreshPeopleReadingPanel(storeId);renderPeopleBatchStatus();
