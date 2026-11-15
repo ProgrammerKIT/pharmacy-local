@@ -104,3 +104,13 @@ test('browser prepares all unchanged stores in a new full round, beyond one page
  assert.equal(h.control.round.sealed,true);assert.equal(h.control.round.storeIds.length,12);
  assert.deepEqual(h.c.payload.bundle.ops.slice(0,h.bundle.ops.length),h.bundle.ops);
 });
+
+
+test('identical automatic result in a new round is acknowledged saved without duplicate history or stale failure',async()=>{
+ const h=harness();for(let i=0;i<4;i++){await h.c.peopleBatchTick(true);await h.advance(16000);}
+ const originalOps=h.c.payload.bundle.ops.length,saves=h.control.saves;
+ for(const j of h.jobs){j.basisHash=await core.hashBytes(new TextEncoder().encode(j.basis));j.roundId='second-round';}
+ h.control.round={id:'second-round',sealed:true,storeIds:h.jobs.map(j=>j.storeId)};h.jobs[0].state='ready';
+ await h.c.peopleBatchTick(true);
+ assert.equal(h.jobs[0].state,'saved');assert.equal(h.c.payload.bundle.ops.length,originalOps);assert.equal(h.control.saves,saves);
+});
