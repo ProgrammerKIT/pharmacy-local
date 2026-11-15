@@ -366,6 +366,7 @@ export function createService({ dataDir = defaultDataDir(), host = '0.0.0.0', po
         if (!req.headers['x-pharmacy-app']) activity.set(`legacy:${device.id}`, { at: Date.now(), busy: true, generation: null });
         if(['/api/people-batch/status','/api/people-batch/stage','/api/people-batch/ack'].includes(url.pathname)&&req.method==='POST'){
           const body=await json(req);if(!deviceActive(device))return send(401,{error:'配對工作階段已變更。'});if(generation)return send(503,{error:'更新中，稍後補做。'});
+          if(req.headers['x-pharmacy-app']==='1.5.109'&&peopleBatch.status(body).round)return send(409,{error:'全店重讀的保存判定已補正，請先更新App至v1.5.110或更新版本；原速覽與進度保留。'});
           return send(200,url.pathname.endsWith('/status')?peopleBatch.status(body):url.pathname.endsWith('/stage')?peopleBatch.stage(body):peopleBatch.acknowledge(body));
         }
         if (url.pathname === '/api/recovery-backup/status' && req.method === 'GET') return send(200, scheduledRecovery.status());
