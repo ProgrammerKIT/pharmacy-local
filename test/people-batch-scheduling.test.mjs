@@ -114,3 +114,18 @@ test('identical automatic result in a new round is acknowledged saved without du
  await h.c.peopleBatchTick(true);
  assert.equal(h.jobs[0].state,'saved');assert.equal(h.c.payload.bundle.ops.length,originalOps);assert.equal(h.control.saves,saves);
 });
+
+
+test('a changed automatic interpretation after manual approval is saved independently and never replaces the human panel',async()=>{
+ const h=harness(),j=h.jobs[0],b=h.c.payload.bundle;
+ h.c.payload.bundle=await relations.applyPeopleReading(b,j.input,relations.preparePeopleReading(b,j.input),'fictional');
+ const manualId=relations.currentPeopleReading(h.c.payload.bundle,'s0').current.id;
+ j.input.result.people[0].items[0].text='原文記載：分享產品介紹經驗。';
+ const original=structuredClone(h.c.payload.bundle.ops);
+ await h.c.peopleBatchTick(true);
+ assert.equal(j.state,'saved');
+ const p=relations.peopleReadingPresentation(h.c.payload.bundle,'s0');
+ assert.notEqual(p.current.id,manualId);assert.equal(p.current.peopleReading.mode,'automatic');
+ assert.ok(p.panels.some(s=>s.source.id===manualId&&s.wholeReading));
+ assert.deepEqual(h.c.payload.bundle.ops.slice(0,original.length),original);
+});
