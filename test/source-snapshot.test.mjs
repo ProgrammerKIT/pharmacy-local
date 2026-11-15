@@ -80,14 +80,14 @@ test('Source Snapshot panel refreshes after encrypted state becomes available', 
     saveBundle: async () => {},
     notify: () => {}
   });
-  assert.match(host.innerHTML, /已保存原始 CSV · 0 份/);
+  assert.match(host.innerHTML, /原始來源與歷史 · 0 份/);
 
   const b = emptyBundle('refresh-source'), f = await file();
   const first = buildCSVImport(await planCSV([f], b), b, 'mac').bundle;
   state = { bundle: first, device: 'mac' };
   ui.refresh();
 
-  assert.match(host.innerHTML, /已保存原始 CSV · 1 份/);
+  assert.match(host.innerHTML, /原始來源與歷史 · 1 份/);
   assert.match(host.innerHTML, /虛構清單\.csv/);
-  assert.match(host.innerHTML, new RegExp(f.blob.slice(0, 12)));
+  assert.match(host.innerHTML, /舊匯入原件/);
 });

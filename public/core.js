@@ -874,8 +874,25 @@ export function peopleAliasReviewState(bundle,readingId,personIndices) {
   const chosen=decisions.size===1?heads[0].data.peopleAliasReview:null;
   return {...target,history,heads,status:chosen?.status||null,primaryName:chosen?.primaryName||'',conflict:decisions.size>1};
 }
+function validExternalCSV(value) {
+  return plain(value) && Object.keys(value).sort().join(',')==='format,mappings,supersedes' && value.format==='pharmacy-external-csv-1' &&
+    ids(value.supersedes) && new Set(value.supersedes).size===value.supersedes.length && Array.isArray(value.mappings) && value.mappings.length<=1500 &&
+    new Set(value.mappings.map(m=>m?.rowIndex)).size===value.mappings.length && value.mappings.every(m=>plain(m)&&Object.keys(m).sort().join(',')==='line,rowIndex,storeHead,storeId'&&Number.isSafeInteger(m.rowIndex)&&m.rowIndex>=0&&Number.isSafeInteger(m.line)&&m.line>=1&&str(m.storeId,100)&&!!m.storeId&&str(m.storeHead,100)&&!!m.storeHead);
+}
+function validateExternalCSVSources(sources,seen) {
+  const docs=[...sources.values()].filter(s=>s.data.externalCSV),degree=new Map(),children=new Map();
+  for(const op of docs){
+    const doc=op.data.externalCSV;degree.set(op.entity,doc.supersedes.length);
+    for(const mapping of doc.mappings){const head=seen.get(mapping.storeHead);if(mapping.rowIndex>=op.data.rows||!head||head.type!=='store'||head.entity!==mapping.storeId||head.deleted)throw Error('外部CSV對應的門市版本不存在，原資料未改動。');}
+    for(const id of doc.supersedes){const old=sources.get(id);if(!old?.data.externalCSV||id===op.entity||old.data.list!==op.data.list)throw Error('外部CSV歷史鏈結不完整。');if(!children.has(id))children.set(id,[]);children.get(id).push(op.entity);}
+  }
+  const queue=docs.filter(s=>!s.data.externalCSV.supersedes.length).map(s=>s.entity);let count=0;
+  for(let i=0;i<queue.length;i++){count++;for(const id of children.get(queue[i])||[]){degree.set(id,degree.get(id)-1);if(!degree.get(id))queue.push(id);}}
+  if(count!==docs.length)throw Error('外部CSV來源歷史不可循環。');
+}
 export function validData(type, d) {
   if (!plain(d)) return false;
+  if (d.externalCSV !== undefined && (type !== 'source' || !validExternalCSV(d.externalCSV) || Object.keys(d).some(k=>!['file','list','batch','blob','rows','headers','encoding','delimiter','externalCSV'].includes(k)))) return false;
   if (d.monthlyPlanning !== undefined && (type !== 'source' || !validMonthlyPlanning(d.monthlyPlanning) || Object.keys(d).some(k=>!['file','list','blob','batch','rows','headers','encoding','delimiter','monthlyPlanning'].includes(k)))) return false;
   if (d.nearbyCoordinate !== undefined && (type !== 'source' || !validNearbyCoordinate(d.nearbyCoordinate) || Object.keys(d).some(k => !['file','list','blob','batch','rows','headers','encoding','delimiter','nearbyCoordinate'].includes(k)))) return false;
   if (d.manualVisitAttendance !== undefined && !validManualVisitAttendance({ type, data: d, deleted: false, parents: [], at: d.manualVisitAttendance?.at })) return false;
@@ -954,6 +971,7 @@ export function validateBundle(b) {
   const readingQueue=readingDocs.filter(o=>!o.data.peopleReading.replaces.length).map(o=>o.entity);let readingCount=0;
   for(let i=0;i<readingQueue.length;i++){readingCount++;for(const id of readingChildren.get(readingQueue[i])||[]){readingDegree.set(id,readingDegree.get(id)-1);if(!readingDegree.get(id))readingQueue.push(id);}}
   if(readingCount!==readingDocs.length)throw new Error('人物速覽歷史不可循環。');
+  validateExternalCSVSources(sourceEntities,seen);
   validateMonthlyPlanningSources(b,sourceEntities,storeEntities);
   validatePeopleRelationshipReviews(sourceEntities, b);
   validatePeopleAliasReviews(sourceEntities,b);
