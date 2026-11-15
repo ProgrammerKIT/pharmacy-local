@@ -473,6 +473,33 @@ export function currentPeopleReading(bundle,storeId) {
   const heads=history.filter(s=>!superseded.has(s.id));
   return {history,heads,current:heads.length===1?heads[0]:null,conflict:heads.length>1};
 }
+// Keep human decisions on their original statements. A new AI wording is not
+// permission to carry a decision to a different key, or to hide the old one.
+// This is a read-only projection: no migrations, synthetic reviews or rebasing.
+export function peopleReadingPresentation(bundle,storeId) {
+  const saved=currentPeopleReading(bundle,storeId),byId=new Map(saved.history.map(s=>[s.id,s]));
+  const cases=new Map();
+  for(const op of bundle.ops){
+    const a=op.data?.peopleAliasReview,r=op.data?.peopleRelationshipReview;
+    const event=a||r;if(!event||!byId.has(event.readingId))continue;
+    const state=a?peopleAliasReviewState(bundle,event.readingId,event.personIndices):peopleRelationshipReviewState(bundle,event.readingId,event.personIndex,event.itemIndex);
+    if(!state.conflict&&!['confirmed','rejected'].includes(state.status))continue;
+    const key=(a?'alias:':'relationship:')+state.key;
+    if(!cases.has(key))cases.set(key,{type:a?'alias':'relationship',key:state.key,readingId:event.readingId,indices:a?event.personIndices:[event.personIndex],status:state.status,conflict:state.conflict});
+  }
+  const manual=saved.history.filter(s=>s.peopleReading.mode!=='automatic');
+  const olderManual=new Set();
+  for(const s of manual){const todo=[...s.peopleReading.replaces],seen=new Set();while(todo.length){const id=todo.pop();if(seen.has(id))continue;seen.add(id);const before=byId.get(id);if(!before)continue;if(before.peopleReading.mode!=='automatic')olderManual.add(id);todo.push(...before.peopleReading.replaces);}}
+  for(const s of manual)if(!olderManual.has(s.id))cases.set('reading:'+s.id,{type:'reading',key:JSON.stringify(s.peopleReading.result),readingId:s.id,indices:s.peopleReading.result.people.map((_,i)=>i),status:'reviewed',conflict:false});
+  if(!cases.size)return {...saved,preserveHuman:false,protectedCases:[],panels:[],detached:[]};
+  const latest=saved.current,aliasKeys=new Set(),relationKeys=new Set();
+  if(latest){const doc=latest.peopleReading;for(const indices of peopleAliasGroups(doc.result))aliasKeys.add(peopleAliasReviewState(bundle,latest.id,indices).key);
+    for(const [personIndex,p] of doc.result.people.entries())for(const [itemIndex,item] of p.items.entries())if(item.category==='relationship')relationKeys.add(peopleRelationshipReviewState(bundle,latest.id,personIndex,itemIndex).key);}
+  const protectedCases=[...cases.values()],detached=protectedCases.filter(c=>!latest||(c.type==='reading'?JSON.stringify(latest.peopleReading.result)!==c.key:c.type==='alias'?!aliasKeys.has(c.key):!relationKeys.has(c.key)));
+  const panels=new Map();
+  if(detached.length)for(const c of protectedCases){let p=panels.get(c.readingId);if(!p){p={source:byId.get(c.readingId),personIndices:[],aliasGroups:[],wholeReading:false,cases:[]};panels.set(c.readingId,p);}p.cases.push(c);p.personIndices=[...new Set([...p.personIndices,...c.indices])].sort((a,b)=>a-b);if(c.type==='alias')p.aliasGroups.push(c.indices);if(c.type==='reading')p.wholeReading=true;}
+  return {...saved,preserveHuman:detached.length>0,protectedCases,panels:[...panels.values()],detached};
+}
 export function peopleAliasLayout(result,reviewFor=()=>null) {
   const ranks=['local','historical','mentioned','uncertain'],used=new Set(),units=[];
   const groups=peopleAliasGroups(result);
@@ -520,7 +547,8 @@ export async function applyPeopleReading(bundle,input,expected,device,approvedAt
 function peopleReviewScope(bundle,readingId,state,evidence) {
   const saved=currentPeopleReading(bundle,state.reading.storeId),records=project(bundle);
   const store=records.find(r=>r.type==='store'&&r.id===state.reading.storeId);
-  const active=!saved.conflict&&saved.current?.id===readingId&&safeRegionalStore(store)&&!store.mergedInto;
+  const preserved=peopleReadingPresentation(bundle,state.reading.storeId).panels.some(p=>p.source.id===readingId);
+  const active=(!saved.conflict&&saved.current?.id===readingId||preserved)&&safeRegionalStore(store)&&!store.mergedInto;
   let basis='',identity=false;
   try {
     basis=peopleReadingRequest(bundle,state.reading.storeId).plan.basis;
