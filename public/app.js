@@ -8,7 +8,7 @@ import { readWeeklyRecovery, writeWeeklyRecovery, readLocal, writeLocal, archive
 import { dayPlanDate, shiftDayPlanDate, dayPlanForStore, dayPlanOverview, dayItineraryBasis, applyDayItineraryAction } from './core.js';
 import { monthlyVisitMonth, shiftMonthlyVisitMonth, monthlyVisitForStore, monthlyVisitOverview, monthlyVisitBasis, applyMonthlyVisitAction } from './core.js';
 import { createCSVImport } from './csv-ui.js';
-import { PROFILE_FIELDS, FILL_FIELDS, scanQuality, setDistinctReview, sourceSuggestions, fillProfile, csvSourceSupplements, sourceListKey } from './csv.js';
+import { assertExternalCSVAppendOnly, externalCSVSourcesForStore, readExternalCSVSource, PROFILE_FIELDS, FILL_FIELDS, scanQuality, setDistinctReview, sourceSuggestions, fillProfile, csvSourceSupplements, sourceListKey } from './csv.js';
 import { entityRule, evidenceKind, sourceTags, groupCSVNotes, storeIdentityPending, relationVisitAllowed, retailChannel, originalStoreNames, filterStoreDirectory, candidateRelationsForStore, candidateOverview, candidateTrend, visitBriefForStore, regionalOptions, regionalInsights } from './relations.js';
 import { APP_VERSION } from './version.js';
 import { makeVisitAttendance, visitAttendanceEvidence, visitAttendanceForStore, attendanceTaipeiDate } from './core.js';
@@ -554,6 +554,7 @@ function assertCSVSaveContext(ctx) {
 async function saveCSVBundle(bundle, ctx) {
   const guard = () => assertCSVSaveContext(ctx);
   guard();
+  assertExternalCSVAppendOnly(ctx.payload.bundle, bundle);
   await persist({ ...ctx.payload, bundle, dirty: true }, { guard });
   if (!payload || key !== ctx.key || meta !== ctx.meta || payload.bundle !== bundle || localRevision !== ctx.revision + 1 || syncEpoch !== ctx.epoch || payload.token !== ctx.token || payload.device !== ctx.device || document.hidden || pendingLock || updateHolding || autoFetching || syncInProgress || gateOpening) throw new Error('CSV 本機保存已完成，但畫面或工作階段已改變；請重新開啟核對保存結果。');
   render();
@@ -2199,7 +2200,7 @@ function openVisitBrief(storeId, { capture = false, restoreDraft = null, preserv
   const explicit = explicitItems ? `<section class="visit-brief-section"><h3>已明確連結的人物與主題</h3><p class="muted">每項連結都保留建立它的拜訪原文。</p><div class="brief-linked-list">${explicitItems}</div></section>` : '';
   singleStoreContext = null; review.dataset.singleStoreId = storeId;
   $('review-title').textContent = '單店拜訪｜' + brief.store.name;
-  reviewBody.innerHTML = `<div class="visit-brief-head"><p>${esc(location)} · ${brief.visitCount} 筆正式拜訪紀錄</p>${storeAttendanceHTML(storeId, true)}</div>${reminders}${storeSupervisionHTML(brief.store)}${monthlyAnalysisStoreHTML(brief.store,'attention')}${storeOriginalTextHTML(brief.store)}${storeMergeOriginsHTML(brief.store)}${singleStoreCaptureHTML()}<section id="people-reading-panel" class="visit-brief-section">${peopleReadingHTML(storeId)}</section><details id="people-reading-formal-home"><summary>其他既有關係線索與審核歷史</summary>${storeInsightsHTML(storeId)}</details>${brief.followups.length ? `<section class="visit-brief-section brief-followups"><h3>明確填寫的下次跟進</h3>${followups}</section>` : ''}<details class="brief-history" ${preserved ? preserved.historyOpen ? 'open' : '' : 'open'}><summary>既有拜訪原文 · 全部 ${history.length} 筆（可直接修改）</summary><p class="muted">點原文可修改；核對後保存新版本，全部原文與歷史保留。</p>${historyHTML}</details>${monthlyAnalysisStoreHTML(brief.store,'saved')}<details class="brief-secondary" ${preserved?.secondaryOpen ? 'open' : ''}><summary>查看人物、主題、原文候選與最近拜訪原文</summary><div class="candidate-disclaimer"><strong>內容來源與限制</strong><p>只排列你已填寫的欄位、正式拜訪原文與可追溯候選；不生成或改寫正式拜訪內容。只把全半形、英文字母大小寫與空白差異視為相同內容，標點或用詞不同仍分開；完整歷史永遠保留每一筆。</p></div>${explicit}<section class="visit-brief-section"><h3>原文候選提示</h3><p class="muted">點選每個候選可核對命中的原句、來源與原文狀態。</p><div class="candidate-chip-list">${candidates}</div></section><section class="visit-brief-section"><h3>最近 ${recentCount} 筆拜訪原文${brief.recent.length < recentCount ? ` · 合併顯示 ${brief.recent.length} 組` : ''}</h3>${recent}</section></details>`;
+  reviewBody.innerHTML = `<div class="visit-brief-head"><p>${esc(location)} · ${brief.visitCount} 筆正式拜訪紀錄</p>${storeAttendanceHTML(storeId, true)}</div>${reminders}${storeSupervisionHTML(brief.store)}${monthlyAnalysisStoreHTML(brief.store,'attention')}${storeOriginalTextHTML(brief.store)}${storeMergeOriginsHTML(brief.store)}${singleStoreCaptureHTML()}<section id="people-reading-panel" class="visit-brief-section">${peopleReadingHTML(storeId)}</section><details id="people-reading-formal-home"><summary>其他既有關係線索與審核歷史</summary>${storeInsightsHTML(storeId)}</details>${brief.followups.length ? `<section class="visit-brief-section brief-followups"><h3>明確填寫的下次跟進</h3>${followups}</section>` : ''}<details class="brief-history" ${preserved ? preserved.historyOpen ? 'open' : '' : 'open'}><summary>既有拜訪原文 · 全部 ${history.length} 筆（可直接修改）</summary><p class="muted">點原文可修改；核對後保存新版本，全部原文與歷史保留。</p>${historyHTML}</details>${monthlyAnalysisStoreHTML(brief.store,'saved')}${externalCSVButton(storeId)}<details class="brief-secondary" ${preserved?.secondaryOpen ? 'open' : ''}><summary>查看人物、主題、原文候選與最近拜訪原文</summary><div class="candidate-disclaimer"><strong>內容來源與限制</strong><p>只排列你已填寫的欄位、正式拜訪原文與可追溯候選；不生成或改寫正式拜訪內容。只把全半形、英文字母大小寫與空白差異視為相同內容，標點或用詞不同仍分開；完整歷史永遠保留每一筆。</p></div>${explicit}<section class="visit-brief-section"><h3>原文候選提示</h3><p class="muted">點選每個候選可核對命中的原句、來源與原文狀態。</p><div class="candidate-chip-list">${candidates}</div></section><section class="visit-brief-section"><h3>最近 ${recentCount} 筆拜訪原文${brief.recent.length < recentCount ? ` · 合併顯示 ${brief.recent.length} 組` : ''}</h3>${recent}</section></details>`;
   $('review-persistent-actions').classList.remove('capture-active');
   $('review-persistent-actions').innerHTML = singleStoreIdleActions(storeId);
   $('review-persistent-actions').hidden = false;
@@ -3082,7 +3083,24 @@ function renderVisits() {
   const groups = [...grouped.values()].sort((a, b) => a.bestRank - b.bestRank || b.bestRankDate.localeCompare(a.bestRankDate) || name('store', a.storeId).localeCompare(name('store', b.storeId), 'zh-Hant'));
   $('visit-list').innerHTML = groups.map(group => group.emptyStore ? visitStoreCardHTML(group.emptyStore, query, group.unresolvedVisits) : group.storeTextMatch || group.matches.length > 1 ? renderVisitSearchGroup(group, query) : noteHTML(group.matches[0].v, query)).join('') || '<p class="empty">沒有符合的門市或拜訪紀錄。</p>';
 }
-function sourceButton(r) { return (r.csvSources?.length || r.versions?.some(v => v.data.csvSources?.length)) ? `<button class="text-button" data-csv-source="${r.type}:${esc(r.id)}">查看匯入來源與已選補充</button>` : ''; }
+function externalCSVButton(storeId) {
+  const sources=externalCSVSourcesForStore(payload.bundle,storeId);
+  return sources.length?`<details class="brief-secondary external-csv-entry"><summary>外部CSV資料 · ${sources.length}份（獨立來源）</summary><p>不屬於拜訪原文或人物分析依據。</p><button type="button" class="text-button" data-external-csv="${esc(storeId)}">查看外部原文與歷史</button></details>`:'';
+}
+async function openExternalCSV(storeId) {
+  const current=payload,sessionKey=key,store=by('store',storeId);
+  if(!store)return;
+  const sources=externalCSVSourcesForStore(current.bundle,storeId),views=[];
+  for(const source of sources){
+    const read=await readExternalCSVSource(current.bundle,source.id,storeId);
+    if(payload!==current||key!==sessionKey||document.hidden||pendingLock||updateHolding)throw Error('工作階段已變更，請重新開啟外部來源。');
+    views.push(`<details class="version"><summary>${source.conflict?'並行外部來源（待核對）':source.current?'目前外部來源':'歷史外部來源'} · ${esc(source.file)} · ${dateText(source.heads[0].at)}</summary><p>匯入時間不是拜訪日期；原始檔與歷史完整保留。</p>${read.rows.map(row=>`<article><h3>對應時門市：${esc(row.storeName)} · 第${row.line}行</h3>${row.columns.map(c=>`<strong>${esc(c.header||'無欄名')}</strong><pre>${esc(c.value)}</pre>`).join('')}</article>`).join('')}<button type="button" data-csv-download="${esc(source.blob)}" data-csv-filename="${esc(source.file)}">下載原始CSV（明文）</button></details>`);
+  }
+  $('review-title').textContent='外部CSV資料 · '+store.name;
+  $('review-body').innerHTML='<p>以下只供獨立查閱，不修改原筆記、人物、關係或待辦，也不作為人物整理依據。</p>'+views.join('');
+  openDialog($('review'));
+}
+function sourceButton(r) { return (r.type === 'store' ? externalCSVButton(r.id) : '') + ((r.csvSources?.length || r.versions?.some(v => v.data.csvSources?.length)) ? `<button class="text-button" data-csv-source="${r.type}:${esc(r.id)}">查看匯入來源與已選補充</button>` : ''); }
 function openSources(type, id) {
   const r = by(type, id); if (!r) return;
   const allSources = [...(r.csvSources || []), ...r.versions.flatMap(v => v.data.csvSources || [])];
@@ -4225,6 +4243,7 @@ document.addEventListener('click', event => {
   if (b.dataset.fillSuggestion) { const field = b.dataset.fillSuggestion, suggestion = editorContext?.suggestions?.[field]?.[Number(b.dataset.suggestionIndex)]; if (suggestion && editorContext.fillFields.includes(field)) $('fill-' + field).value = suggestion.value; return; }
   if (b.dataset.edit) return openEditor(...b.dataset.edit.split(':'));
   if (b.dataset.review) return openReview(...b.dataset.review.split(':'), true);
+  if (b.dataset.externalCsv) return run(() => openExternalCSV(b.dataset.externalCsv));
   if (b.dataset.csvSource) return openSources(...b.dataset.csvSource.split(':'));
   if (b.dataset.csvDownload) { if (confirm('原始 CSV 是明文檔案。請確認下載到自己的本機資料夾，避開 iCloud Drive。')) download(unb64(payload.bundle.blobs[b.dataset.csvDownload]), b.dataset.csvFilename.replace(/[\/\\]/g, '_'), 'application/octet-stream'); return; }
   if (b.dataset.history) return openReview(...b.dataset.history.split(':'), false);

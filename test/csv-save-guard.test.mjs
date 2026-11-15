@@ -1,3 +1,4 @@
+import {assertExternalCSVAppendOnly,prepareCSV,planExternalCSV,buildExternalCSVImport} from '../public/csv.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -20,7 +21,7 @@ async function harness() {
   const fixture = await seed;
   const state = { writes: [], renders: 0, requests: [], sealHook: null, writeHook: null, diskRevision: 7, failWrite: false };
   const payload = { schema: 1, device: 'fictional-device', token: 'fictional-pair-token', bundle: structuredClone(fixture.bundle), dirty: false, serverVersion: 3, lastSync: '2026-10-25T00:00:00Z', reminderDrafts: [] };
-  const c = vm.createContext({ ...core, payload, key: fixture.key, meta: structuredClone(fixture.meta), localRevision: 7, syncEpoch: 4, slot: null, localSaveState: 'saved',
+  const c = vm.createContext({ ...core, assertExternalCSVAppendOnly, payload, key: fixture.key, meta: structuredClone(fixture.meta), localRevision: 7, syncEpoch: 4, slot: null, localSaveState: 'saved',
     document: { hidden: false }, pendingLock: false, updateHolding: false, autoFetching: false, syncInProgress: false, gateOpening: false, busy: true,
     $: () => ({ textContent: '' }), renderDataSafetyEntry() {}, render: () => state.renders++, syncScheduler: { request: reason => state.requests.push(reason) },
     seal: async (...args) => { await state.sealHook?.(); return core.seal(...args); },
@@ -30,8 +31,9 @@ async function harness() {
     }
   });
   vm.runInContext(section('// Bind CSV confirmation', 'const all =') + section('async function persist(', 'function pendingSyncSummary('), c);
-  const next = structuredClone(payload.bundle), old = core.project(next)[0];
-  next.ops.push(core.revision('store', old.id, { ...old.heads[0].data, contact: '虛構已選補值' }, old.heads.map(head => head.id), 'fictional'));
+  const f=await prepareCSV('虛構.csv',new TextEncoder().encode('Title,Note\n虛構CSV保護店,只存外部來源'));
+  const p=await planExternalCSV([f],payload.bundle);p.rows[0].storeId='fictional-store';p.rows[0].confirmed=true;
+  const next=(await buildExternalCSVImport(p,payload.bundle,payload.device)).bundle;
   return { c, state, next, fixture };
 }
 
@@ -93,3 +95,5 @@ test('CSV late visibility loss after disk commit reports completed storage for r
   await assert.rejects(h.c.saveCSVBundle(h.next, ctx), /本機保存已完成.*重新開啟核對/);
   assert.equal(h.state.writes.length, 1); assert.equal(h.c.payload.bundle, h.next); assert.equal(h.state.renders, 0);
 });
+
+test('actual app save callback refuses legacy mutations before encryption or disk writes',async()=>{const h=await harness(),ctx=h.c.captureCSVSaveContext(),next=structuredClone(h.c.payload.bundle),old=core.project(next)[0];next.ops.push(core.revision('store',old.id,{...old.heads[0].data,contact:'外部越界'},old.heads.map(h=>h.id),'fictional'));await assert.rejects(h.c.saveCSVBundle(next,ctx),/只允許/);assert.equal(h.state.writes.length,0);assert.equal(h.state.renders,0);});

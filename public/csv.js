@@ -1,3 +1,4 @@
+import { retailChannel } from './relations.js';
 import { b64, unb64, hashBytes, uuid, revision, project, validateBundle, csvExclusionIdentity, MAX_BYTES } from './core.js';
 const utf8 = new TextEncoder();
 export const CSV_LIMIT = 2 * 1024 * 1024;
@@ -1046,4 +1047,93 @@ export function exportCSVPreview(plan, bundle) {
       const old = records.filter(r => r.type === 'visit' && !r.deleted && plannedVisitStream(plan, r) === csvStream(storeId, file.list));
       return { key: row.key, file: file.file, line: row.line, name: row.data.name, target, pending: !!row.review?.pending, newStoreOnly: report.rows.find(r => r.key === row.key)?.newStoreOnly, action: report.rows.find(r => r.key === row.key)?.kind || 'blocked', incomingText: row.note, fillFields: [...row.fillFields], supplementColumns: [...(row.supplementColumns || [])], supplements: csvSupplementChoices(plan, row, records).map(field => ({ ...field, selected: (row.supplementColumns || []).includes(field.column) })), existing: old.map(v => ({ text: v.text, sourceText: v.googleText, date: v.date, conflict: v.conflict })) };
     }) };
+}
+
+// Current app import boundary. The historical builders above remain readable for
+// compatibility/audit replay; their store/visit output is never accepted by saveCSVBundle.
+export const EXTERNAL_CSV_FORMAT = 'pharmacy-external-csv-1';
+export function externalCSVStores(bundle) {
+  return project(bundle).filter(r=>r.type==='store'&&!r.deleted&&!r.conflict&&!r.mergedInto&&!r.csvIdentityPending);
+}
+const externalRowsBasis = rows => JSON.stringify(rows.map(({key,fileIndex,rowIndex,line,data,note,date,errors})=>({key,fileIndex,rowIndex,line,data,note,date,errors})));
+export function externalCSVHistory(bundle) {
+  const sources=project(bundle).filter(r=>r.type==='source'&&r.externalCSV);
+  const superseded=new Set(sources.flatMap(s=>s.externalCSV.supersedes));
+  const currentCounts=new Map();for(const s of sources)if(!superseded.has(s.id))currentCounts.set(sourceListKey(s.list),(currentCounts.get(sourceListKey(s.list))||0)+1);
+  return sources.map(s=>({...s,current:!superseded.has(s.id),conflict:!superseded.has(s.id)&&currentCounts.get(sourceListKey(s.list))>1}));
+}
+export async function planExternalCSV(files,bundle) {
+  if(!Array.isArray(files)||!files.length||files.length>10)throw Error('請選取1至10份CSV原檔。');
+  if(files.reduce((n,f)=>n+(f.bytes?.length||0),0)>5*1024*1024)throw Error('本批原檔超過5 MB。');
+  if(new Set(files.map(f=>sourceListKey(f.list))).size!==files.length)throw Error('同批來源清單名稱重複，請分別命名後重新預覽。');
+  for(const f of files){
+    if(!(f.bytes instanceof Uint8Array)||f.bytes.length>CSV_LIMIT||await hashBytes(f.bytes)!==f.blob)throw Error('原始CSV內容或雜湊已改變，請重新選檔。');
+    const parsed=await prepareCSV(f.file,f.bytes,f.encoding,f.delimiter);
+    if(JSON.stringify(parsed.headers)!==JSON.stringify(f.headers)||JSON.stringify(parsed.rows)!==JSON.stringify(f.rows))throw Error('CSV原件與解析列不符，請重新選檔。');
+  }
+  const legacy=await planCSV(files,bundle,{mode:'standard'});
+  if(legacy.rows.length>1500)throw Error('本批CSV超過1,500列。');
+  return {mode:'external-only',vaultId:bundle.vaultId,baseRevision:bundleRevision(bundle),baseHash:await hashBytes(utf8.encode(JSON.stringify(bundle))),files,rows:legacy.rows.map(row=>({...row,choice:'skip',fillFields:[],supplementColumns:[],storeId:'',confirmed:false}))};
+}
+export function assertExternalCSVAppendOnly(before,after) {
+  if(!before||!after||before.vaultId!==after.vaultId||before.schema!==after.schema||JSON.stringify(Object.keys(before).sort())!==JSON.stringify(Object.keys(after).sort()))throw Error('外部CSV不能切換資料庫或修改資料格式。');
+  if(JSON.stringify(after.ops.slice(0,before.ops.length))!==JSON.stringify(before.ops)||Object.entries(before.blobs).some(([id,value])=>after.blobs[id]!==value))throw Error('外部CSV不能修改、移除或重排既有內容與歷史。');
+  for(const key of Object.keys(before))if(!['ops','blobs'].includes(key)&&JSON.stringify(before[key])!==JSON.stringify(after[key]))throw Error('外部CSV不能修改既有資料庫欄位。');
+  const additions=after.ops.slice(before.ops.length);
+  const allowed=new Set(['file','list','batch','blob','rows','headers','encoding','delimiter','externalCSV']);
+  if(!additions.length||additions.some(op=>op.type!=='source'||op.deleted||op.parents.length||!op.data.externalCSV||Object.keys(op.data).some(k=>!allowed.has(k))||Object.keys(op).some(k=>!['id','type','entity','parents','device','at','deleted','data'].includes(k))))throw Error('CSV只允許新增獨立外部來源；門市、拜訪、人物、關係及待辦更新已阻擋。');
+  const blobs=new Set(additions.map(op=>op.data.blob));
+  if(Object.keys(after.blobs).some(id=>!Object.hasOwn(before.blobs,id)&&!blobs.has(id)))throw Error('CSV含有未連結來源的新增附件。');
+  validateBundle(after);return after;
+}
+export async function buildExternalCSVImport(plan,bundle,device) {
+  if(!plan||plan.mode!=='external-only'||plan.vaultId!==bundle.vaultId||plan.baseRevision!==bundleRevision(bundle)||typeof device!=='string'||!device)throw Error('外部來源或資料基準已變，請重新預覽。');
+  if(plan.baseHash!==await hashBytes(utf8.encode(JSON.stringify(bundle))))throw Error('目前資料內容已變更，請重新預覽。');
+  const fresh=await planExternalCSV(plan.files,bundle);
+  if(externalRowsBasis(plan.rows)!==externalRowsBasis(fresh.rows))throw Error('預覽內容與原始CSV不符，請重新選檔。');
+  const stores=new Map(externalCSVStores(bundle).map(s=>[s.id,s]));
+  const next=structuredClone(bundle),batch=uuid(),history=externalCSVHistory(bundle);
+  const summary={sourceSnapshots:plan.files.length,linked:0,unmapped:0,stores:0,notes:0,updatedNotes:0,filledFields:0,mergedStores:0};
+  for(const [i,file]of plan.files.entries()){
+    const mappings=[];
+    for(const row of plan.rows.filter(row=>row.fileIndex===i)){
+      if(row.choice!=='skip'||row.fillFields?.length||row.supplementColumns?.length||row.review||row.reviewExcluded)throw Error('外部來源不能套用舊新增、補欄或整併選擇。');
+      if(typeof row.storeId!=='string'||typeof row.confirmed!=='boolean')throw Error('門市對應選擇格式不符。');
+      if(!row.storeId){if(row.confirmed)throw Error('未對應列不能帶有門市確認。');summary.unmapped++;continue;}
+      const store=stores.get(row.storeId);
+      if(!store||row.errors.length||row.confirmed!==true)throw Error('請逐列核對既有門市的名稱、地址、通路與身分。');
+      // A known contradictory public identity cannot be overridden by a checked box.
+      const incomingMap=mapKey(row.data.mapUrl||''),storedMap=mapKey(store.mapUrl||'');
+      if(incomingMap&&storedMap&&!incomingMap.startsWith('short:')&&!storedMap.startsWith('short:')&&incomingMap!==storedMap)throw Error('原檔與門市地點識別矛盾，請先核對，不會強制配對。');
+      const incomingChannel=retailChannel(row.data),storeChannel=retailChannel(store);
+      const known=id=>!['ungrouped','pending'].includes(id);
+      if(known(incomingChannel.id)&&known(storeChannel.id)&&incomingChannel.id!==storeChannel.id)throw Error('原檔與既有門市通路不同，不能跨通路配對。');
+      mappings.push({rowIndex:row.rowIndex,line:row.line,storeId:store.id,storeHead:store.heads[0].id});summary.linked++;
+    }
+    const blob=b64(file.bytes);
+    if(Object.hasOwn(next.blobs,file.blob)&&next.blobs[file.blob]!==blob)throw Error('來源雜湊碰撞，停止保存。');
+    next.blobs[file.blob]=blob;
+    const supersedes=history.filter(s=>s.current&&sourceListKey(s.list)===sourceListKey(file.list)).map(s=>s.id).sort();
+    next.ops.push(revision('source',uuid(),{file:file.file,list:sourceListKey(file.list),batch,blob:file.blob,rows:file.rows.length,headers:[...file.headers],encoding:file.encoding||'auto',delimiter:file.delimiter||'auto',externalCSV:{format:EXTERNAL_CSV_FORMAT,mappings,supersedes}},[],device));
+  }
+  assertExternalCSVAppendOnly(bundle,next);
+  if(utf8.encode(JSON.stringify(next)).length>MAX_BYTES-65536)throw Error('保存後超過24 MB安全上限；本次未寫入，全部原資料保留。');
+  return {bundle:next,summary,batch};
+}
+export function externalCSVSourcesForStore(bundle,storeId) {
+  return externalCSVHistory(bundle).filter(s=>s.externalCSV.mappings.some(m=>m.storeId===storeId)).sort((a,b)=>b.heads[0].at.localeCompare(a.heads[0].at)||a.id.localeCompare(b.id));
+}
+export async function readExternalCSVSource(bundle,sourceId,storeId) {
+  const source=externalCSVSourcesForStore(bundle,storeId).find(s=>s.id===sourceId);
+  if(!source)throw Error('找不到本店對應的獨立CSV來源。');
+  const bytes=unb64(bundle.blobs[source.blob]);
+  if(await hashBytes(bytes)!==source.blob)throw Error('外部CSV原件雜湊不符；未改動任何資料。');
+  const parsed=await prepareCSV(source.file,bytes,source.encoding,source.delimiter);
+  if(JSON.stringify(parsed.headers)!==JSON.stringify(source.headers)||parsed.rows.length!==source.rows)throw Error('來源原件與已保存欄位不符。');
+  const rows=source.externalCSV.mappings.filter(m=>m.storeId===storeId).map(m=>{
+    const raw=parsed.rows[m.rowIndex];if(!raw||raw.line!==m.line)throw Error('來源行號與原件不符。');
+    const head=bundle.ops.find(o=>o.id===m.storeHead&&o.type==='store'&&o.entity===storeId);
+    return {line:m.line,storeName:head.data.name,columns:parsed.headers.map((header,i)=>({header,value:raw.cells[i]}))};
+  });
+  return {source,rows};
 }
