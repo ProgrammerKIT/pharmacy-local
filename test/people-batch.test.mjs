@@ -27,3 +27,23 @@ test('explicit retry requeues only failed/stale same-basis jobs and cannot reset
  claim=x.api.claim();x.api.submit(x.output(claim));x.api.acknowledge({...x.body,id:claim.id,basis:x.q.plan.basis,outcome:'saved'});x.api.stage({...x.body,retry:true});assert.equal(x.api.status(x.body).entries[0].state,'saved');
  assert.throws(()=>x.api.stage({...x.body,retry:'yes'}));
 });
+
+test('four-day full rounds requeue unchanged sources once, require complete preparation and preserve active progress',t=>{
+ const x=fixture(t);x.api.configure(true,x.b.vaultId);x.api.stage(x.body);let claim=x.api.claim();x.api.submit(x.output(claim));x.api.acknowledge({...x.body,id:claim.id,basis:x.q.plan.basis,outcome:'saved'});
+ const round=x.api.beginRound();assert.equal(x.api.beginRound().id,round.id);assert.equal(x.api.claim(),null);
+ assert.throws(()=>x.api.stage({...x.body,requests:[],roundId:'wrong',completeStoreIds:['s']}));
+ assert.throws(()=>x.api.stage({...x.body,requests:[],roundId:round.id,completeStoreIds:['s']}));
+ const body={...x.body,roundId:round.id};x.api.stage(body);assert.equal(x.api.status(x.body).entries[0].state,'queued');
+ x.api.stage(body);assert.equal(x.api.claim(),null,'do not analyse before all current sources are prepared');
+ x.api.stage({...body,requests:[],completeStoreIds:['s']});claim=x.api.claim();assert.ok(claim);x.api.stage(body);assert.equal(x.api.status(x.body).entries[0].state,'running');
+ x.advance(5*24*60*60*1000);assert.equal(x.api.beginRound().id,round.id,'unfinished rounds resume, never erase progress');
+ claim=x.api.claim();x.api.submit(x.output(claim));assert.throws(()=>x.api.acknowledge({...x.body,id:claim.id,basis:x.q.plan.basis,outcome:'saved'}));x.api.acknowledge({...x.body,id:claim.id,basis:x.q.plan.basis,roundId:round.id,outcome:'saved'});
+ const next=x.api.beginRound();assert.notEqual(next.id,round.id);x.api.stage({...body,roundId:next.id});assert.equal(x.api.status(x.body).entries[0].state,'queued');
+});
+
+test('full-round manifest excludes removed stores and rejects incomplete or duplicate lists',t=>{
+ const x=fixture(t);x.api.configure(true,x.b.vaultId);x.api.stage(x.body);const round=x.api.beginRound();
+ assert.throws(()=>x.api.stage({...x.body,requests:[],roundId:round.id,completeStoreIds:['s','s']}));
+ assert.throws(()=>x.api.stage({...x.body,requests:[],roundId:round.id,completeStoreIds:['missing']}));
+ x.api.stage({...x.body,requests:[],roundId:round.id,completeStoreIds:[]});assert.equal(x.api.claim(),null,'old queued notes must not revive a removed store');
+});

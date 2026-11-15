@@ -33,8 +33,9 @@ function harness() {
     Date: class extends Date { static now() { return now; } },
     setTimeout(fn, ms) { const id = ++timerId; timers.set(id, { fn, at: now + ms }); return id; }, clearTimeout: id => timers.delete(id),
     api: async (route, options) => {
-      if (route.endsWith('/status')) { if (control.statusGate) await control.statusGate.promise; return { enabled: true, entries: structuredClone(jobs), ready: structuredClone(jobs.filter(j => j.state === 'ready').slice(0, 5)) }; }
+      if (route.endsWith('/status')) { if (control.statusGate) await control.statusGate.promise; return { enabled: true, round:control.round||null, entries: structuredClone(jobs), ready: structuredClone(jobs.filter(j => j.state === 'ready').slice(0, 5)) }; }
       if (route.endsWith('/ack')) { control.acks.push(options.body); jobs.find(j => j.id === options.body.id).state = options.body.outcome; return {}; }
+      if(route.endsWith('/stage')) { const body=options.body;for(const request of body.requests){const prior=jobs.find(j=>j.storeId===request.store.id);Object.assign(prior,{basisHash:await core.hashBytes(new TextEncoder().encode(request.plan.basis)),roundId:body.roundId,state:'queued'});}if(body.completeStoreIds){control.round={...control.round,sealed:true,storeIds:body.completeStoreIds};}return {}; }
       throw Error(`Unexpected route ${route}`);
     },
     persist: async (next, options) => { control.saveEntered.resolve(); if (control.saveGate) await control.saveGate.promise; options.guard(); if (control.failSave) throw Error('fictional disk failure'); c.payload = next; control.saves++; c.syncScheduler.request('saved'); },
@@ -90,4 +91,16 @@ test('editing or locking during handoff cancels saving and acknowledgement', asy
     assert.equal(h.control.saves, 0); assert.equal(h.control.acks.length, 0);
     assert.equal(h.jobs.filter(j => j.state === 'ready').length, 12);
   }
+});
+
+
+test('browser prepares all unchanged stores in a new full round, beyond one page, including stores with saved readings',async()=>{
+ const h=harness();for(let i=0;i<4;i++){await h.c.peopleBatchTick(true);await h.advance(16000);}
+ assert.equal(h.jobs.filter(j=>j.state==='saved').length,12);
+ for(const j of h.jobs)j.basisHash=await core.hashBytes(new TextEncoder().encode(j.basis));
+ h.control.round={id:'fictional-round',sealed:false};
+ for(let i=0;i<4;i++){await h.c.peopleBatchTick(true);await h.advance(16000);}
+ assert.equal(h.jobs.filter(j=>j.state==='queued'&&j.roundId==='fictional-round').length,12);
+ assert.equal(h.control.round.sealed,true);assert.equal(h.control.round.storeIds.length,12);
+ assert.deepEqual(h.c.payload.bundle.ops.slice(0,h.bundle.ops.length),h.bundle.ops);
 });
