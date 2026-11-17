@@ -49,6 +49,12 @@ test('existing store link requires explicit target ID; missing-address new store
 test('nameless metadata remains in raw file; supplied row/mapping cannot alter parsed profile',async()=>{
   const f=await file(raw+'\n,,,清單標籤');f.rows[0].cells[0]='篡改門市';const r=await prepareChatBatch([f]);assert.equal(r.batch.rows.length,1);assert.equal(r.batch.rows[0].profile.name,'虛構青禾藥局');assert.equal(Buffer.from(r.batch.files[0].content,'base64').toString(),new TextDecoder().decode(f.bytes));
 });
+test('Takeout missing-address approval keeps original CSV intact and stores explicit confirmed address separately',async()=>{
+  const {batch}=await prepareChatBatch([await file(raw.replace('虛構路1號',''))]);const before=structuredClone(batch),profile={...batch.rows[0].profile,address:'虛構市核對路2號'};
+  const l=await decideChatBatch(batch,emptyChatLedger(),[{...decision('0:0','approve-new'),approvedProfile:profile}],'Kit：核准青禾，補查地址核對路2號正確。');assert.deepEqual(batch,before);assert.equal(l.events[0].profile.address,'');assert.equal(l.events[0].approvedProfile.address,'虛構市核對路2號');assert.deepEqual((await chatApplicationChecklist(batch,l)).rows[0].approvedProfile,profile);
+  await assert.rejects(()=>decideChatBatch(batch,emptyChatLedger(),[{...decision('0:0','approve-new'),approvedProfile:{...profile,name:'不同門市'}}],'Kit'),/同一原始門市/);
+  await assert.rejects(()=>decideChatBatch(batch,emptyChatLedger(),[{...decision('0:0','reject'),approvedProfile:profile}],'Kit'),/同一原始門市/);
+});
 test('CLI saves only private worksheet with 0600, refuses overwrite and repository symlink destinations',async t=>{
   const d=await fs.mkdtemp(path.join(os.tmpdir(),'fictional-csv-chat-'));t.after(()=>fs.rm(d,{recursive:true,force:true}));
   const src=path.join(d,'虛構.csv'),out=path.join(d,'review.json'),script=new URL('../scripts/csv-chat-review.mjs',import.meta.url).pathname;

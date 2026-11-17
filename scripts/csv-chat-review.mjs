@@ -24,7 +24,8 @@ export async function validateChatLedger(ledger) {
   if (!exactKeys(ledger, ['format', 'events']) || ledger.format !== FORMAT || !Array.isArray(ledger.events) || ledger.events.length > 100000) throw Error('私人裁定紀錄格式不符。');
   let previous = ''; const ids = new Set();
   for (const event of ledger.events) {
-    if (!exactKeys(event, ['id','previous','identity','profile','action','at','confirmation','batchId','targetStoreId']) || event.previous !== previous || ids.has(event.id) || !profileOK(event.profile) || !['approve-new','approve-link','reject','pending'].includes(event.action) || !text(event.at, 40) || !Number.isFinite(Date.parse(event.at)) || !text(event.confirmation, 20000) || !event.confirmation.trim() || !text(event.batchId, 64) || !/^[a-f0-9]{64}$/.test(event.batchId) || !text(event.targetStoreId, 100)) throw Error('私人裁定事件或歷史鏈不完整。');
+    if (!exactKeys(event, ['id','previous','identity','profile','action','at','confirmation','batchId','targetStoreId',...(Object.hasOwn(event,'approvedProfile')?['approvedProfile']:[])]) || event.previous !== previous || ids.has(event.id) || !profileOK(event.profile) || !['approve-new','approve-link','reject','pending'].includes(event.action) || !text(event.at, 40) || !Number.isFinite(Date.parse(event.at)) || !text(event.confirmation, 20000) || !event.confirmation.trim() || !text(event.batchId, 64) || !/^[a-f0-9]{64}$/.test(event.batchId) || !text(event.targetStoreId, 100)) throw Error('私人裁定事件或歷史鏈不完整。');
+    if(Object.hasOwn(event,'approvedProfile')&&(event.action!=='approve-new'||!profileOK(event.approvedProfile)||!event.approvedProfile.address.trim()||event.approvedProfile.name!==event.profile.name||event.approvedProfile.mapUrl!==event.profile.mapUrl))throw Error('核准的補查地址必須獨立記錄並綁定同一原始門市。');
     if ((event.action === 'approve-link') !== !!event.targetStoreId) throw Error('僅明確對應既有門市的裁定可帶門市ID。');
     const { id, ...body } = event;
     if (await chatIdentity(event.profile) !== event.identity || await digest(body) !== id) throw Error('私人裁定內容與雜湊不符。');
@@ -79,15 +80,15 @@ export async function decideChatBatch(batch, ledger, decisions, confirmation, at
   if (!Array.isArray(decisions) || decisions.length > batch.rows.length || !text(confirmation,20000) || !confirmation.trim() || !Number.isFinite(Date.parse(at))) throw Error('須保存Kit明確裁定的原話／對話依據，不從未回答推定拒絕。');
   const next = structuredClone(ledger), seen = new Set(), byKey = new Map(batch.rows.map(r => [r.key,r]));
   for (const decision of decisions) {
-    if (!exactKeys(decision,['key','action','targetStoreId']) || !byKey.has(decision.key) || !['approve-new','approve-link','reject','pending'].includes(decision.action) || !text(decision.targetStoreId,100)) throw Error('裁定必須明列本批來源列、動作及對應門市。');
+    if (!exactKeys(decision,['key','action','targetStoreId',...(Object.hasOwn(decision,'approvedProfile')?['approvedProfile']:[])]) || !byKey.has(decision.key) || !['approve-new','approve-link','reject','pending'].includes(decision.action) || !text(decision.targetStoreId,100)) throw Error('裁定必須明列本批來源列、動作及對應門市。');
     const row = byKey.get(decision.key);
     if (seen.has(row.identity)) throw Error('同一門市身分有重複裁定，須先統一決定。');
     seen.add(row.identity);
-    if (decision.action === 'approve-new' && !row.profile.address.trim()) throw Error('新增門市的地址未提供，先向Kit核對。');
+    if (decision.action === 'approve-new' && !(decision.approvedProfile||row.profile).address?.trim()) throw Error('新增門市的地址未提供，先向Kit核對。');
     if ((decision.action === 'approve-link') !== !!decision.targetStoreId) throw Error('既有門市對應須明列門市ID；其他動作不得帶ID。');
     const prior = latestByIdentity(next).get(row.identity);
-    if (prior?.action === decision.action && prior.targetStoreId === decision.targetStoreId) continue;
-    const body = {previous:next.events.at(-1)?.id || '',identity:row.identity,profile:structuredClone(row.profile),action:decision.action,at,confirmation,batchId:batch.id,targetStoreId:decision.targetStoreId};
+    if (prior?.action === decision.action && prior.targetStoreId === decision.targetStoreId && JSON.stringify(prior.approvedProfile)===JSON.stringify(decision.approvedProfile)) continue;
+    const body = {previous:next.events.at(-1)?.id || '',identity:row.identity,profile:structuredClone(row.profile),action:decision.action,at,confirmation,batchId:batch.id,targetStoreId:decision.targetStoreId,...(Object.hasOwn(decision,'approvedProfile')?{approvedProfile:structuredClone(decision.approvedProfile)}:{})};
     next.events.push({id:await digest(body),...body});
   }
   // Omitted rows remain pending, unless an earlier explicit decision exists.
@@ -96,7 +97,7 @@ export async function decideChatBatch(batch, ledger, decisions, confirmation, at
 export async function chatApplicationChecklist(batch, ledger) {
   await validateChatBatch(batch); await validateChatLedger(ledger); const latest = latestByIdentity(ledger);
   const unique = new Map();for(const row of batch.rows){if(!unique.has(row.identity))unique.set(row.identity,{...row,sourceRows:[]});unique.get(row.identity).sourceRows.push(row.key);}
-  return {batchId:batch.id,imported:false,requiresLiveAppCheck:true,rows:[...unique.values()].map(row=>{const d=latest.get(row.identity);return{...row,decisionId:d?.id||null,action:d?.action||'pending',targetStoreId:d?.targetStoreId||'',instruction:d?.action==='approve-new'?'核對正式App無重複／回收桶衝突後，經既有人工新增門市表單獨立建立；不寫入CSV筆記。':d?.action==='approve-link'?'唯讀核對已指定門市仍一致；只對應獨立外部CSV來源，不補欄或改名。':d?.action==='reject'?'明確拒絕，同一身分不再詢問、不匯入；完整原檔及裁定留存。':'尚未回答或明確待確認：不匯入，不當作拒絕。'};})};
+  return {batchId:batch.id,imported:false,requiresLiveAppCheck:true,rows:[...unique.values()].map(row=>{const d=latest.get(row.identity);return{...row,decisionId:d?.id||null,action:d?.action||'pending',targetStoreId:d?.targetStoreId||'',approvedProfile:d?.approvedProfile||null,instruction:d?.action==='approve-new'?'核對正式App無重複／回收桶衝突後，經既有人工新增門市表單獨立建立；不寫入CSV筆記。':d?.action==='approve-link'?'唯讀核對已指定門市仍一致；只對應獨立外部CSV來源，不補欄或改名。':d?.action==='reject'?'明確拒絕，同一身分不再詢問、不匯入；完整原檔及裁定留存。':'尚未回答或明確待確認：不匯入，不當作拒絕。'};})};
 }
 
 // Minimal CLI for generating private worksheets. Decision recording is an
