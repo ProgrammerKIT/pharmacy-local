@@ -13,7 +13,7 @@ test('real TLS handoff requires existing device auth and cannot modify the forma
  atomic(path.join(dir,'config.json'),{hostname:'fictional-people.local',port:8443,adminToken:'fictional-admin',devices:[{id:'device',hash:createHash('sha256').update(token).digest('hex'),label:'虛構',created:'2026-01-01'}]});atomic(path.join(dir,'snapshot.json'),{version:7,envelope:await c.seal(x.b,key,meta)});
  const queueDir=path.join(x.dir,'api-queue');createPeopleBatch({directory:queueDir}).configure(true,meta.vaultId);const service=createService({dataDir:dir,host:'127.0.0.1',port:0,peopleDirectory:queueDir});const address=await service.listen();t.after(()=>{service.server.closeAllConnections();service.server.close();});const before=['snapshot.json','config.json'].map(n=>fs.readFileSync(path.join(dir,n),'utf8'));
  const request=(endpoint,body,authorized,version='1.5.90')=>new Promise((resolve,reject)=>{const r=https.default.request({host:'127.0.0.1',servername:'localhost',port:address.port,path:endpoint,method:'POST',ca:fs.readFileSync(path.join(dir,'tls/ca.crt')),headers:{Host:'localhost:'+address.port,Origin:'https://localhost:'+address.port,'Content-Type':'application/json','X-Pharmacy-Client':'1','X-Pharmacy-App':version,...(authorized?{Authorization:'Bearer '+token}:{})}},res=>{const p=[];res.on('data',b=>p.push(b));res.on('end',()=>resolve({status:res.statusCode,body:JSON.parse(Buffer.concat(p))}));});r.on('error',reject);r.end(JSON.stringify(body));});
- assert.equal((await request('/api/people-batch/status',{vaultId:meta.vaultId},false)).status,401);const q=peopleReadingRequest(x.b,'s');assert.equal((await request('/api/people-batch/stage',{vaultId:meta.vaultId,snapshotVersion:7,requests:[q]},true)).status,200);const status=await request('/api/people-batch/status',{vaultId:meta.vaultId},true);assert.equal(status.body.entries.length,1);createPeopleBatch({directory:queueDir}).beginRound();assert.equal((await request('/api/people-batch/status',{vaultId:meta.vaultId},true,'1.5.109')).status,409);assert.equal((await request('/api/people-batch/status',{vaultId:meta.vaultId},true,'1.5.110')).status,409);assert.equal((await request('/api/people-batch/status',{vaultId:meta.vaultId},true,'1.5.111')).status,200);assert.deepEqual(['snapshot.json','config.json'].map(n=>fs.readFileSync(path.join(dir,n),'utf8')),before);
+ assert.equal((await request('/api/people-batch/status',{vaultId:meta.vaultId},false)).status,401);const q=peopleReadingRequest(x.b,'s');assert.equal((await request('/api/people-batch/stage',{vaultId:meta.vaultId,snapshotVersion:7,requests:[q]},true)).status,200);const status=await request('/api/people-batch/status',{vaultId:meta.vaultId},true);assert.equal(status.body.entries.length,1);createPeopleBatch({directory:queueDir}).beginRound();assert.equal((await request('/api/people-batch/status',{vaultId:meta.vaultId},true,'1.5.109')).status,409);assert.equal((await request('/api/people-batch/status',{vaultId:meta.vaultId},true,'1.5.110')).status,409);assert.equal((await request('/api/people-batch/status',{vaultId:meta.vaultId},true,'1.5.111')).status,409);assert.equal((await request('/api/people-batch/status',{vaultId:meta.vaultId},true,'1.5.112')).status,200);assert.deepEqual(['snapshot.json','config.json'].map(n=>fs.readFileSync(path.join(dir,n),'utf8')),before);
 });
 
 test('queue uses existing application data rather than protected Documents',async()=>{const {peopleAutomationDirectory,defaultDataDir}=await import('../server.mjs');assert.equal(peopleAutomationDirectory(),path.join(defaultDataDir(),'people-automation'));assert.ok(!peopleAutomationDirectory().includes('/Documents/'));});
@@ -28,14 +28,14 @@ test('explicit retry requeues only failed/stale same-basis jobs and cannot reset
  assert.throws(()=>x.api.stage({...x.body,retry:'yes'}));
 });
 
-test('four-day full rounds requeue unchanged sources once, require complete preparation and preserve active progress',t=>{
+test('four-day rounds enforce complete manifests, retain active work and preserve exact-version acknowledgements',t=>{
  const x=fixture(t);x.api.configure(true,x.b.vaultId);x.api.stage(x.body);let claim=x.api.claim();x.api.submit(x.output(claim));x.api.acknowledge({...x.body,id:claim.id,basis:x.q.plan.basis,outcome:'saved'});
  const round=x.api.beginRound();assert.equal(x.api.beginRound().id,round.id);assert.equal(x.api.claim(),null);
- assert.throws(()=>x.api.stage({...x.body,requests:[],roundId:'wrong',completeStoreIds:['s']}));
- assert.throws(()=>x.api.stage({...x.body,requests:[],roundId:round.id,completeStoreIds:['s']}));
+ assert.throws(()=>x.api.stage({...x.body,requests:[],roundId:'wrong',completeStoreIds:['s'],checkedStoreIds:['s'],skippedStoreIds:[]}));
+ assert.throws(()=>x.api.stage({...x.body,requests:[],roundId:round.id,completeStoreIds:['s'],checkedStoreIds:['s'],skippedStoreIds:[]}));
  const body={...x.body,roundId:round.id};x.api.stage(body);assert.equal(x.api.status(x.body).entries[0].state,'queued');
  x.api.stage(body);assert.equal(x.api.claim(),null,'do not analyse before all current sources are prepared');
- x.api.stage({...body,requests:[],completeStoreIds:['s']});claim=x.api.claim();assert.ok(claim);x.api.stage(body);assert.equal(x.api.status(x.body).entries[0].state,'running');
+ x.api.stage({...body,requests:[],completeStoreIds:['s'],checkedStoreIds:['s'],skippedStoreIds:[]});claim=x.api.claim();assert.ok(claim);x.api.stage(body);assert.equal(x.api.status(x.body).entries[0].state,'running');
  x.advance(5*24*60*60*1000);assert.equal(x.api.beginRound().id,round.id,'unfinished rounds resume, never erase progress');
  claim=x.api.claim();x.api.submit(x.output(claim));assert.throws(()=>x.api.acknowledge({...x.body,id:claim.id,basis:x.q.plan.basis,outcome:'saved'}));x.api.acknowledge({...x.body,id:claim.id,basis:x.q.plan.basis,roundId:round.id,outcome:'saved'});
  const next=x.api.beginRound();assert.notEqual(next.id,round.id);x.api.stage({...body,roundId:next.id});assert.equal(x.api.status(x.body).entries[0].state,'queued');
@@ -45,5 +45,5 @@ test('full-round manifest excludes removed stores and rejects incomplete or dupl
  const x=fixture(t);x.api.configure(true,x.b.vaultId);x.api.stage(x.body);const round=x.api.beginRound();
  assert.throws(()=>x.api.stage({...x.body,requests:[],roundId:round.id,completeStoreIds:['s','s']}));
  assert.throws(()=>x.api.stage({...x.body,requests:[],roundId:round.id,completeStoreIds:['missing']}));
- x.api.stage({...x.body,requests:[],roundId:round.id,completeStoreIds:[]});assert.equal(x.api.claim(),null,'old queued notes must not revive a removed store');
+ x.api.stage({...x.body,requests:[],roundId:round.id,completeStoreIds:[],checkedStoreIds:[],skippedStoreIds:[]});assert.equal(x.api.claim(),null,'old queued notes must not revive a removed store');
 });
