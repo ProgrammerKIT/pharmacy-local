@@ -187,6 +187,7 @@ async function scenario(width, probe = false) {
     if (probe) {
       for (let n = 0; n < 40 && !probeStarted; n++) await page.waitForTimeout(50);
       assert.equal(probeStarted, true, 'Hold a real requestLocal preflight while planning');
+      await page.locator('nav [data-view="monthly"]').click();
       await page.locator('#day-plan-entry [data-view="itinerary"]').click();
       await page.locator('[data-day-select]').click();
       await page.locator('#day-plan-dialog').waitFor({
@@ -207,6 +208,7 @@ async function scenario(width, probe = false) {
         passed: true
       });
     } else {
+      await page.locator('nav [data-view="monthly"]').click();
       await page.locator('#day-plan-entry [data-view="itinerary"]').click();
       await select('a');
       for (let n = 0; n < 3; n++) {

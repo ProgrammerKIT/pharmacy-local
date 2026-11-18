@@ -2781,8 +2781,7 @@ function monthlyFocusHTML(month) {
   return `<section class="monthly-focus-card" aria-label="本月重點"><div class="section-row"><span class="monthly-focus-label">★ 優先記住 · ${Number(month.slice(5))}月重點</span>${past?'':`<button type="button" class="text-button" data-monthly-focus="${esc(month)}">${state.conflict?'核對重點分歧':'修改重點'}</button>`}</div>${state.conflict?'<p class="error">本月重點有同步分歧，請逐一核對後保存；歷史完整保留。</p>':`<p class="monthly-focus-copy${state.document?.text?'':' is-empty'}">${esc(state.document?.text || '這個月還沒有設定重點。')}</p>`}</section>`;
 }
 function renderMonthlyHome() {
-  const month=monthlyVisitMonth(),overview=monthlyVisitOverview(payload.bundle,month);
-  $('monthly-home-content').innerHTML=`${monthlyFocusHTML(month)}<button type="button" class="monthly-home-progress" data-view="monthly"><span><strong>每月必訪 ${overview.completedCount}／${overview.total}</strong><small>${month} · 還有 ${overview.pending.length} 間${overview.recurringConflict?' · 名單待核對':''}</small></span><span>查看分區 ›</span></button>`;
+  $('monthly-home-content').innerHTML = monthlyFocusHTML(monthlyVisitMonth());
 }
 function monthlyPlanningTick() {
   const current=monthlyVisitMonth();
@@ -2843,6 +2842,7 @@ function monthlyVisitRowsHTML(rows, past, removed = false) {
   }).join('')}</section>`).join('');
 }
 function renderMonthlyVisits() {
+  renderDayPlanEntry();
   if (!monthlyVisitSelectedMonth) monthlyVisitSelectedMonth = monthlyVisitMonth();
   const month = monthlyVisitSelectedMonth, current = monthlyVisitMonth(), past = month < current;
   const selectedRows = rows => rows.filter(row=>monthlyChannelFilter==='all'||monthlyVisitGroup(row.storeId).id===monthlyChannelFilter);
@@ -3032,7 +3032,7 @@ async function restoreLastDayPlanCancellation() {
   await performDayItineraryAction('restore', undo.storeId);
 }
 function renderVisits() {
-  renderMonthlyHome(); renderQuickVisit(); renderReminderDrafts(); renderDayPlanEntry();
+  renderMonthlyHome(); renderQuickVisit(); renderReminderDrafts();
   const visitDraft = payload?.draft?.format === 'visit-draft-1' ? payload.draft : null;
   const savedInlineDraft = payload?.inlineTextDraft?.format === 'inline-text-draft-1' ? payload.inlineTextDraft : null;
   const liveInlineDraft = inlineTextContext && inlineTextContext.after !== inlineTextContext.before ? inlineTextContext : null;
