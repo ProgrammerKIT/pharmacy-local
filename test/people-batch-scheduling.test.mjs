@@ -35,7 +35,7 @@ function harness() {
     api: async (route, options) => {
       if (route.endsWith('/status')) { if (control.statusGate) await control.statusGate.promise; return { enabled: true, round:control.round||null, entries: structuredClone(jobs), ready: structuredClone(jobs.filter(j => j.state === 'ready').slice(0, 5)) }; }
       if (route.endsWith('/ack')) { control.acks.push(options.body); jobs.find(j => j.id === options.body.id).state = options.body.outcome; return {}; }
-      if(route.endsWith('/stage')) { const body=options.body;for(const request of body.requests){const prior=jobs.find(j=>j.storeId===request.store.id);Object.assign(prior,{basisHash:await core.hashBytes(new TextEncoder().encode(request.plan.basis)),roundId:body.roundId,state:'queued'});}if(body.completeStoreIds){control.round={...control.round,sealed:true,storeIds:body.completeStoreIds};}return {}; }
+      if(route.endsWith('/stage')) { const body=options.body;for(const request of body.requests){const prior=jobs.find(j=>j.storeId===request.store.id);Object.assign(prior,{basisHash:await core.hashBytes(new TextEncoder().encode(request.plan.basis)),roundId:body.roundId,state:'queued'});}if(body.completeStoreIds){control.round={...control.round,sealed:true,storeIds:body.completeStoreIds,checkedStoreIds:body.checkedStoreIds,skippedStoreIds:body.skippedStoreIds};}return {}; }
       throw Error(`Unexpected route ${route}`);
     },
     persist: async (next, options) => { control.saveEntered.resolve(); if (control.saveGate) await control.saveGate.promise; options.guard(); if (control.failSave) throw Error('fictional disk failure'); c.payload = next; control.saves++; c.syncScheduler.request('saved'); },
@@ -128,4 +128,39 @@ test('a changed automatic interpretation after manual approval is saved independ
  assert.notEqual(p.current.id,manualId);assert.equal(p.current.peopleReading.mode,'automatic');
  assert.ok(p.panels.some(s=>s.source.id===manualId&&s.wholeReading));
  assert.deepEqual(h.c.payload.bundle.ops.slice(0,original.length),original);
+});
+
+
+test('incremental round skips unchanged formal notes after metadata edits and keeps completed round counts',async()=>{
+ const h=harness();for(let i=0;i<4;i++){await h.c.peopleBatchTick(true);await h.advance(16000);}
+ const before=h.c.payload.bundle.ops.slice();
+ const store=core.project(h.c.payload.bundle).find(r=>r.type==='store'&&r.id==='s0');
+ h.c.payload.bundle.ops.push(core.revision('store','s0',{...store.heads[0].data,name:'虛構新名稱'},store.heads.map(o=>o.id),'fictional'));
+ h.control.round={id:'incremental',mode:'changed-formal-notes',sealed:false,storeIds:[]};
+ for(let i=0;i<3;i++){await h.c.peopleBatchTick(true);await h.advance(16000);}
+ assert.equal(h.jobs.filter(j=>j.roundId==='incremental'&&j.state==='queued').length,0);
+ assert.deepEqual(Array.from(h.control.round.storeIds),[]);assert.equal(h.control.round.skippedStoreIds.length,12);
+ assert.deepEqual(h.c.payload.bundle.ops.slice(0,before.length),before);
+});
+
+test('incremental round prepares changed visit only and never requeues it after successful save',async()=>{
+ const h=harness();for(let i=0;i<4;i++){await h.c.peopleBatchTick(true);await h.advance(16000);}
+ const visit=core.project(h.c.payload.bundle).find(r=>r.type==='visit'&&r.id==='v0');
+ h.c.payload.bundle.ops.push(core.revision('visit','v0',{...visit.heads[0].data,text:'小雨分享新的介紹經驗。'},visit.heads.map(o=>o.id),'fictional'));
+ h.control.round={id:'incremental',mode:'changed-formal-notes',sealed:false,storeIds:[]};
+ for(let i=0;i<3;i++){await h.c.peopleBatchTick(true);await h.advance(16000);}
+ assert.deepEqual(Array.from(h.control.round.storeIds),['s0']);assert.equal(h.control.round.skippedStoreIds.length,11);
+ assert.equal(h.jobs.filter(j=>j.roundId==='incremental').length,1);
+ // Simulate the explicit Codex result for the updated source, no model in App.
+ const j=h.jobs[0],q=relations.peopleReadingRequest(h.c.payload.bundle,'s0');j.input={format:'pharmacy-people-review-1',vaultId:h.c.payload.bundle.vaultId,result:{format:q.plan.format,storeId:'s0',basis:q.plan.basis,coveredRevisions:q.plan.sources.map(s=>s.revisionId),people:[]}};j.basis=q.plan.basis;j.state='ready';
+ for(let i=0;i<3;i++){await h.c.peopleBatchTick(true);await h.advance(16000);}
+ assert.equal(j.state,'saved');assert.deepEqual(Array.from(h.control.round.storeIds),['s0']);assert.equal(h.control.round.skippedStoreIds.length,11);
+});
+
+test('an unreadable saved baseline becomes an exception without poisoning the complete manifest',async()=>{
+ const h=harness();for(let i=0;i<4;i++){await h.c.peopleBatchTick(true);await h.advance(16000);}
+ const source=h.c.payload.bundle.ops.find(o=>o.type==='source'&&o.data.peopleReading?.storeId==='s0');source.data.peopleReading.basis='invalid-baseline';
+ h.control.round={id:'incremental',mode:'changed-formal-notes',sealed:false,storeIds:[]};
+ await h.c.peopleBatchTick(true);
+ assert.equal(h.control.round.checkedStoreIds.length,11);assert.equal(h.control.round.skippedStoreIds.length,11);assert.equal(h.control.round.storeIds.length,0);
 });

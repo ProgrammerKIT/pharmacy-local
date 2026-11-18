@@ -438,6 +438,22 @@ export function peopleBriefSourcePlan(storeId, visits, stores) {
   const basis=JSON.stringify([PEOPLE_BRIEF_FORMAT,store.id,(store.heads||[]).map(h=>h.id).sort(),sources,PEOPLE_ALIAS_POLICY]);
   return {format:PEOPLE_BRIEF_FORMAT,storeId,basis,sources};
 }
+// Scheduling compares formal visit source versions only. Store metadata and
+// human reviews still remain part of the stricter result-acceptance basis.
+export function peopleReadingRefreshDecision(bundle, storeId, request = peopleReadingRequest(bundle, storeId)) {
+  const saved = currentPeopleReading(bundle, storeId);
+  if (saved.conflict) throw new Error('人物速覽有版本分歧，先核對再排程。');
+  const doc = saved.current?.peopleReading;
+  if (!doc) return {needed:true, reason:'尚無成功保存基準'};
+  let basis;
+  try { basis = JSON.parse(doc.basis); } catch { throw new Error('既有速覽來源基準不完整，保留並待核對。'); }
+  if (!Array.isArray(basis) || basis[0] !== request.plan.format || basis[1] !== storeId || !Array.isArray(basis[3]) || !Array.isArray(doc.result?.coveredRevisions)) throw new Error('既有速覽來源基準不完整，保留並待核對。');
+  const previous = basis[3];
+  if (previous.some(s=>!s || typeof s.visitId!=='string' || typeof s.revisionId!=='string' || typeof s.text!=='string' || typeof s.date!=='string' || typeof s.source!=='string') || new Set(previous.map(s=>s.visitId)).size !== previous.length || JSON.stringify(previous.map(s=>s.revisionId).sort())!==JSON.stringify(doc.result.coveredRevisions.slice().sort())) throw new Error('既有速覽涵蓋版本不完整，保留並待核對。');
+  const exact = sources => JSON.stringify(sources.map(s=>[s.visitId,s.revisionId,s.text,s.source,s.date]).sort((a,b)=>a[0].localeCompare(b[0])));
+  const needed = exact(previous)!==exact(request.plan.sources);
+  return {needed,reason:needed?'正式筆記來源版本有變動':'正式筆記無變動，略過分析'};
+}
 export function validatePeopleBriefResult(plan, result) {
   if (!result || result.format!==PEOPLE_BRIEF_FORMAT || result.storeId!==plan.storeId || result.basis!==plan.basis || !Array.isArray(result.coveredRevisions) || JSON.stringify(result.coveredRevisions.slice().sort())!==JSON.stringify(plan.sources.map(s=>s.revisionId).sort()) || !Array.isArray(result.people)) throw new Error('人物速覽未完整涵蓋這次來源版本。');
   if(new Set(result.people.map(p=>p?.name)).size!==result.people.length)throw new Error('人物稱呼重複，未完成整理。');

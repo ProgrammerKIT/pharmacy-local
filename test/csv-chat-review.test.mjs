@@ -63,3 +63,8 @@ test('CLI saves only private worksheet with 0600, refuses overwrite and reposito
   assert.throws(()=>execFileSync(process.execPath,[script,'prepare','--output',out,'--csv',src],{stdio:'pipe'}),/EEXIST/);
   const link=path.join(d,'repo');await fs.symlink(new URL('..',import.meta.url).pathname,link,'dir');assert.throws(()=>execFileSync(process.execPath,[script,'prepare','--output',path.join(link,'never-write-private.json'),'--csv',src],{stdio:'pipe'}),/不得輸出/);
 });
+test('owner may explicitly name an unnamed source without rewriting its original identity',async()=>{
+  const {batch}=await prepareChatBatch([await file('虛構市某巷,虛構市某巷,,')]),profile={...batch.rows[0].profile,name:'虛構中盤'};const d={...decision('0:0','approve-new'),approvedProfile:profile,nameRuling:{from:'虛構市某巷',to:'虛構中盤',confirmation:'Kit：這筆指定為虛構中盤並新增。'}};
+  const ledger=await decideChatBatch(batch,emptyChatLedger(),[d],d.nameRuling.confirmation);assert.equal(ledger.events[0].profile.name,'虛構市某巷');assert.equal(ledger.events[0].approvedProfile.name,'虛構中盤');assert.equal((await prepareChatBatch([await file('虛構市某巷,虛構市某巷,,')],ledger)).review[0].status,'approved-awaiting-app-check');
+  await assert.rejects(()=>decideChatBatch(batch,emptyChatLedger(),[{...d,nameRuling:{...d.nameRuling,from:'其他地方'}}],'Kit'),/同一原始門市/);
+});
