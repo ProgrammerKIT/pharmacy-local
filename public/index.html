@@ -29,14 +29,13 @@
     </section>
     <section id="visits-view" class="page-section">
       <div id="monthly-home-content"></div>
-      <div id="day-plan-entry" class="day-plan-entry"></div>
       <details id="reminder-draft-banner" class="panel" hidden><summary id="reminder-draft-count">未完成門市提醒</summary><p class="muted">只保存在這台裝置，尚未寫入正式紀錄；不會傳到另一台裝置或放入備份。</p><div id="reminder-draft-list"></div></details>
       <div id="draft-banner" class="panel draft-banner" hidden><div><strong>未完成草稿</strong><p id="draft-banner-text" class="muted"></p></div><div class="draft-banner-actions"><button id="discard-draft-banner" class="danger">捨棄草稿</button><button id="resume-draft" class="primary">繼續草稿</button></div></div>
       <div class="panel quick-visit-panel"><div class="section-row"><div><p class="eyebrow">QUICK VISIT</p><h2 id="quick-visit-title">最近使用的門市</h2></div><button data-add="visit" class="primary">＋ 新增拜訪</button></div><div class="nearby-tools"><button type="button" id="nearby-retry" class="text-button" hidden>重新定位</button><details id="nearby-details"><summary>定位說明</summary><p id="nearby-status" class="muted"></p><button type="button" id="import-coordinates" class="text-button">載入座標補查檔案</button></details></div><p id="nearby-feedback" class="muted" role="status" aria-live="polite" hidden></p><div id="recent-store-list" class="recent-store-list"></div></div>
       <div class="section-row"><h2>拜訪與匯入備註</h2><input id="visit-search" placeholder="搜尋文字、門市、人物、主題" aria-label="搜尋拜訪紀錄"></div><div id="visit-list" class="card-grid"></div>
     </section>
-    <section id="monthly-view" class="page-section" hidden><div id="monthly-visit-content"></div></section>
-    <section id="itinerary-view" class="page-section" hidden><div class="day-plan-return"><button class="text-button" data-view="visits">← 返回拜訪筆記</button></div><div id="day-plan-content"></div></section>
+    <section id="monthly-view" class="page-section" hidden><div id="day-plan-entry" class="day-plan-entry"></div><div id="monthly-visit-content"></div></section>
+    <section id="itinerary-view" class="page-section" hidden><div class="day-plan-return"><button class="text-button" data-view="monthly">← 返回每月拜訪</button></div><div id="day-plan-content"></div></section>
     <section id="stores-view" class="page-section" hidden><div class="section-row"><h2>客戶門市</h2><div><button data-view="regional" class="secondary">區域觀察</button> <button data-view="csv" class="secondary">匯入 CSV</button> <button data-add="store" class="primary">＋ 新增門市</button></div></div>
       <div class="customer-filters panel"><div class="customer-search-row"><div><label class="sr-only" for="customer-search">搜尋客戶門市與拜訪原文</label><input id="customer-search" type="search" placeholder="搜尋門市、客群、拜訪原文"></div><div class="filter-row"><select id="customer-district" aria-label="客戶門市地區"><option value="">所有地區</option></select><select id="customer-channel" aria-label="客戶門市型態"><option value="">所有門市型態</option></select></div></div>
         <div class="retail-filter"><h3 id="customer-retail-heading">通路分群</h3><p class="muted">依 Google Maps 原始店名分群；可複選通路，再搭配文字、地區與門市型態篩選。手動新增門市依目前名稱分群。</p><div id="customer-retail-options" class="retail-options" role="group" aria-labelledby="customer-retail-heading"></div></div>

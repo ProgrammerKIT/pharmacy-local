@@ -29,7 +29,7 @@ function fixture() {
   const original = structuredClone(bundle), elements = new Map(), writes = [];
   const { node } = uiNodeFixture();
   const sandbox = vm.createContext({ monthlyFeedbackContext:null,  monthlyAnalysisStoreHTML:()=>'', analysisOverviewHTML:()=>'',
-    monthlyChannelFilter:'all', monthlyPlanningState, monthlyPlanningBasis, applyMonthlyPlanning, monthlyVisitContext: null, monthlyVisitSelectedMonth: month, monthlyVisitViewBasis: '', monthlyVisitNotice: '',
+    renderDayPlanEntry() {}, monthlyChannelFilter:'all', monthlyPlanningState, monthlyPlanningBasis, applyMonthlyPlanning, monthlyVisitContext: null, monthlyVisitSelectedMonth: month, monthlyVisitViewBasis: '', monthlyVisitNotice: '',
     dayPlanContext: null, editorContext: null, reminderContext: null, singleStoreContext: null, inlineTextContext: null,
     key: {}, meta: {}, localRevision: 5, syncEpoch: 9, payload: { bundle, device: 'fictional-device', dirty: false }, records: project(bundle),
     document: { hidden: false, querySelector() { return node('monthly-visit-dialog').open ? node('monthly-visit-dialog') : null; } },
@@ -80,6 +80,11 @@ test('dedicated monthly page, roster rendering and picker stay read-only, escape
   assert.match(html, /data-view="monthly"/); assert.match(html, /id="monthly-view"/);
   const visitsStart = html.indexOf('<section id="visits-view"'), visitsEnd = html.indexOf('<section id="monthly-view"', visitsStart);
   assert.ok(visitsStart >= 0 && visitsEnd > visitsStart); assert.match(html.slice(visitsStart, visitsEnd), /monthly-home-content/);
+  assert.doesNotMatch(html.slice(visitsStart, visitsEnd), /id="day-plan-entry"/);
+  assert.match(html.slice(visitsEnd, html.indexOf('<section id="itinerary-view"')), /id="day-plan-entry"/);
+  assert.match(html, /data-view="monthly">← 返回每月拜訪/);
+  const homeRenderer = app.slice(app.indexOf('function renderMonthlyHome()'), app.indexOf('function monthlyPlanningTick()'));
+  assert.doesNotMatch(homeRenderer, /monthly-home-progress|每月必訪/);
 });
 
 test('successful explicit add renews retained picker context and preserves existing confirmed attendance without generating one', async () => {
