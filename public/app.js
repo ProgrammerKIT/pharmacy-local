@@ -75,6 +75,26 @@ function renderSupervisorDraftBanner() {
   banner.hidden=!draft || draft.vaultId!==payload?.bundle.vaultId;
   if(!banner.hidden) banner.innerHTML=`督導筆記有未完成的本機加密草稿。<button type="button" data-supervisor-resume="${esc(draft.id)}">繼續輸入</button>`;
 }
+// A pending Mac version probe is read-only and must not reject a local save.
+// Real snapshot exchange, changed source versions and changed drafts still stop it.
+function captureSupervisorSaveContext() {
+  const ctx = { payload, key, meta, revision: localRevision, epoch: syncEpoch, generation: supervisorDraftGeneration };
+  assertSupervisorSaveContext(ctx); return ctx;
+}
+function assertSupervisorSaveContext(ctx) {
+  if (!ctx || !payload || !key || !meta || payload !== ctx.payload || key !== ctx.key || meta !== ctx.meta || localRevision !== ctx.revision || syncEpoch !== ctx.epoch || supervisorDraftGeneration !== ctx.generation || document.hidden || pendingLock || updateHolding || syncInProgress || gateOpening) throw new Error('人物筆記或工作階段已變更；目前輸入與草稿保留，請重新核對後儲存。');
+}
+async function saveSupervisorNote(form) {
+  await flushSupervisorDraft();
+  const person=project(payload.bundle).find(r=>r.type==='person'&&r.id===form.dataset.person),draft=supervisorNoteDraft(form.dataset.person);
+  if(!person || person.deleted || person.conflict || person.sameAs || person.heads.length!==1 || person.heads[0].id!==(draft?.head||form.dataset.head))throw new Error('人物已有新版本，原草稿保留；請先複製文字，再核對歷史。');
+  const desc=$('supervisor-personal-note').value,relationshipNotes=$('supervisor-relationship-note').value;
+  const ctx=captureSupervisorSaveContext(),bundle=structuredClone(payload.bundle);
+  if(desc!==person.desc || relationshipNotes!==(person.relationshipNotes||''))bundle.ops.push(revision('person',person.id,{...person.heads[0].data,desc,relationshipNotes},[person.heads[0].id],payload.device));
+  validateBundle(bundle);
+  await persist({...payload,bundle,dirty:payload.dirty||bundle.ops.length!==payload.bundle.ops.length,supervisorDraft:null},{guard:()=>assertSupervisorSaveContext(ctx)});
+  supervisorDraftGeneration++;editorContext=null;render();supervisorDraftStatus('已儲存於本機；Mac 確認狀態請見資料與安全。');
+}
 async function flushSupervisorDraft() {
   clearTimeout(supervisorDraftTimer);supervisorDraftTimer=null;
   const d=editorContext?.type==='supervisor-inline'?structuredClone(editorContext):null, generation=supervisorDraftGeneration, sessionKey=key;
@@ -103,28 +123,18 @@ document.addEventListener('click',event=>{
  event.preventDefault();event.stopImmediatePropagation();
  if(editorContext || payload?.supervisorDraft)return toast('先儲存目前筆記，再審視關係。');
  void run(async()=>{
-   const ctx=captureCSVSaveContext(),entry=supervisorRelationEntries(b.dataset.reviewPerson).find(e=>e.id===b.dataset.reviewEntry);
+   const ctx=captureSupervisorSaveContext(),entry=supervisorRelationEntries(b.dataset.reviewPerson).find(e=>e.id===b.dataset.reviewEntry);
    const person=by('person',b.dataset.reviewPerson);
    if(!entry || person?.heads?.[0]?.id!==b.dataset.reviewHead || entry.basis!==b.dataset.reviewBasis || JSON.stringify(entry.evidence.map(s=>s.revisionId))!==b.dataset.reviewRevisions) throw new Error('畫面中的來源或人物已有變更，請重新查看依據再審視。');
    const bundle=reviewSupervisorRelationship(payload.bundle,b.dataset.reviewPerson,entry,b.dataset.supervisorReview,payload.device);
    if(bundle===payload.bundle)return;
-   await persist({...payload,bundle,dirty:true},{guard:()=>assertCSVSaveContext(ctx)});render();toast('已記錄「'+supervisorReviewLabels[b.dataset.supervisorReview]+'」，原筆記與歷史保留。');
+   await persist({...payload,bundle,dirty:true},{guard:()=>assertSupervisorSaveContext(ctx)});render();toast('已記錄「'+supervisorReviewLabels[b.dataset.supervisorReview]+'」，原筆記與歷史保留。');
  },'supervisor-relation-error');
 },true);
 document.addEventListener('submit',event=>{
  if(event.target.id!=='supervisor-note-form')return;
  event.preventDefault();event.stopImmediatePropagation();
- void run(async()=>{
-  await flushSupervisorDraft();
-  const form=event.target,person=project(payload.bundle).find(r=>r.type==='person'&&r.id===form.dataset.person),draft=supervisorNoteDraft(form.dataset.person);
-  if(!person || person.deleted || person.conflict || person.sameAs || person.heads.length!==1 || person.heads[0].id!==(draft?.head||form.dataset.head))throw new Error('人物已有新版本，原草稿保留；請先複製文字，再核對歷史。');
-  const desc=$('supervisor-personal-note').value,relationshipNotes=$('supervisor-relationship-note').value;
-  const ctx=captureCSVSaveContext(),bundle=structuredClone(payload.bundle);
-  if(desc!==person.desc || relationshipNotes!==(person.relationshipNotes||''))bundle.ops.push(revision('person',person.id,{...person.heads[0].data,desc,relationshipNotes},[person.heads[0].id],payload.device));
-  validateBundle(bundle);
-  await persist({...payload,bundle,dirty:payload.dirty||bundle.ops.length!==payload.bundle.ops.length,supervisorDraft:null},{guard:()=>assertCSVSaveContext(ctx)});
-  supervisorDraftGeneration++;editorContext=null;render();supervisorDraftStatus('已儲存；等待 Mac 同步確認。');
- },'supervisor-note-error');
+ void run(()=>saveSupervisorNote(event.target),'supervisor-note-error');
 },true);
 window.addEventListener('beforeunload',event=>{if(editorContext?.type==='supervisor-inline'||monthlyPlanningDirty()){event.preventDefault();event.returnValue='';}});
 function renderSimpleSupervisor(person) {
@@ -3443,7 +3453,7 @@ function scheduleInlineTextDraft() {
   clearTimeout(inlineDraftTimer); const ctx = inlineTextContext;
   inlineDraftTimer = setTimeout(() => { inlineDraftSaveChain = inlineDraftSaveChain.then(() => ctx === inlineTextContext ? persistInlineTextDraft() : undefined).catch(error => { const state = document.querySelector(`[data-inline-state="${CSS.escape(ctx?.id || '')}"]`); if (state) state.textContent = '草稿儲存失敗：' + error.message; }); }, 250);
 }
-async function flushInlineTextDraft() { clearTimeout(inlineDraftTimer); inlineDraftTimer = null; inlineDraftSaveChain = inlineDraftSaveChain.then(persistInlineTextDraft); await inlineDraftSaveChain; }
+async function flushInlineTextDraft() { clearTimeout(inlineDraftTimer); inlineDraftTimer = null; inlineDraftSaveChain = inlineDraftSaveChain.catch(() => {}).then(persistInlineTextDraft); await inlineDraftSaveChain; }
 function updateInlineText(id, element, { isComposing = false } = {}) {
   if (!beginInlineTextEdit(id, element)) { const visit = by('visit', id); if (visit) element.textContent = visit.text || ''; return; }
   const next = inlineTextValue(element), shell = element.closest('[data-inline-shell]'), state = shell?.querySelector('[data-inline-state]');

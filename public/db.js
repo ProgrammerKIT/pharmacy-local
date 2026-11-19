@@ -1,19 +1,53 @@
-let connection;
+let connection, currentDatabase;
+function invalidate(db) {
+  if (currentDatabase === db) { currentDatabase = null; connection = null; }
+  try { db.close(); } catch {}
+}
 function open() {
   if (connection) return connection;
-  connection = new Promise((resolve, reject) => {
+  let pending;
+  pending = new Promise((resolve, reject) => {
     const request = indexedDB.open('pharmacy-local-v1', 1);
     request.onupgradeneeded = () => request.result.createObjectStore('vault');
-    request.onerror = () => reject(request.error);
-    request.onsuccess = () => resolve(request.result);
-  }); return connection;
+    request.onerror = () => { if (connection === pending) connection = null; reject(request.error); };
+    request.onsuccess = () => {
+      const db = request.result; currentDatabase = db;
+      db.onversionchange = () => invalidate(db);
+      db.onclose = () => invalidate(db);
+      resolve(db);
+    };
+  });
+  connection = pending;
+  pending.catch(() => { if (connection === pending) connection = null; });
+  return pending;
+}
+// Safari can close an IDB connection while the PWA is suspended. Reopen only
+// when transaction CREATION failed: no request has run and nothing can replay.
+// Never retry an aborted transaction, a quota error, or a completed write.
+async function transact(mode, work) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const db = await open(); let tx;
+    try { tx = db.transaction('vault', mode); }
+    catch (error) {
+      if (error?.name !== 'InvalidStateError') throw error;
+      invalidate(db);
+      if (!attempt) continue;
+      throw new Error('本機資料庫連線暫時無法恢復；目前輸入仍保留，請保持畫面並再試一次。', { cause: error });
+    }
+    return new Promise((resolve, reject) => {
+      tx.onabort = tx.onerror = () => reject(tx.error || new Error('本機資料操作中斷，尚未確認保存；請保留輸入並重試。'));
+      work(tx, resolve, reject);
+    });
+  }
 }
 export async function readLocal() {
-  const db = await open(); return new Promise((resolve, reject) => { const r = db.transaction('vault').objectStore('vault').get('main'); r.onsuccess = () => resolve(r.result || null); r.onerror = () => reject(r.error); });
+  return transact('readonly', (tx, resolve, reject) => {
+    const r = tx.objectStore('vault').get('main'); r.onsuccess = () => resolve(r.result || null); r.onerror = () => reject(r.error);
+  });
 }
 export async function writeLocal(envelope, expected, unlockKey) {
-  const db = await open(); return new Promise((resolve, reject) => {
-    const tx = db.transaction('vault', 'readwrite'), store = tx.objectStore('vault'), r = store.get('main'); let mismatch = false;
+  return transact('readwrite', (tx, resolve, reject) => {
+    const store = tx.objectStore('vault'), r = store.get('main'); let mismatch = false;
     r.onsuccess = () => {
       if ((r.result?.revision || 0) !== expected) { mismatch = true; tx.abort(); return; }
       store.put({ envelope, revision: expected + 1, unlockKey: unlockKey || r.result?.unlockKey }, 'main');
@@ -23,9 +57,8 @@ export async function writeLocal(envelope, expected, unlockKey) {
   });
 }
 export async function archiveAndReplaceLocal(envelope, expected, unlockKey) {
-  const db = await open();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction('vault', 'readwrite'), store = tx.objectStore('vault'), r = store.get('main'); let mismatch = false;
+  return transact('readwrite', (tx, resolve, reject) => {
+    const store = tx.objectStore('vault'), r = store.get('main'); let mismatch = false;
     r.onsuccess = () => {
       const old = r.result;
       if ((old?.revision || 0) !== expected) { mismatch = true; tx.abort(); return; }
@@ -38,17 +71,17 @@ export async function archiveAndReplaceLocal(envelope, expected, unlockKey) {
   });
 }
 export async function listLocalArchives() {
-  const db = await open();
-  return new Promise((resolve, reject) => {
-    const result = [], r = db.transaction('vault').objectStore('vault').openCursor();
+  return transact('readonly', (tx, resolve, reject) => {
+    const result = [], r = tx.objectStore('vault').openCursor();
     r.onerror = () => reject(r.error);
     r.onsuccess = () => { const c = r.result; if (!c) { resolve(result); return; } if (String(c.key).startsWith('archive:')) result.push({ id: c.key, at: c.value.archivedAt }); c.continue(); };
   });
 }
 export async function readLocalArchive(id) {
   if (typeof id !== 'string' || !/^archive:[a-f0-9-]{36}$/.test(id)) throw new Error('備份識別不正確。');
-  const db = await open();
-  return new Promise((resolve, reject) => { const r = db.transaction('vault').objectStore('vault').get(id); r.onsuccess = () => resolve(r.result || null); r.onerror = () => reject(r.error); });
+  return transact('readonly', (tx, resolve, reject) => {
+    const r = tx.objectStore('vault').get(id); r.onsuccess = () => resolve(r.result || null); r.onerror = () => reject(r.error);
+  });
 }
 
 function weeklyRecoveryId(id) {
@@ -64,17 +97,16 @@ function weeklyRecoveryRecord(value) {
   return { key, meta: { vaultId: meta.vaultId, salt: meta.salt, iterations: meta.iterations }, sourceVaultId: value.sourceVaultId, proofSha256: value.proofSha256 };
 }
 export async function readWeeklyRecovery(id) {
-  const recordId = weeklyRecoveryId(id), db = await open();
-  return new Promise((resolve, reject) => {
-    const r = db.transaction('vault').objectStore('vault').get(recordId);
+  const recordId = weeklyRecoveryId(id);
+  return transact('readonly', (tx, resolve, reject) => {
+    const r = tx.objectStore('vault').get(recordId);
     r.onsuccess = () => { try { resolve(r.result == null ? null : weeklyRecoveryRecord(r.result)); } catch (error) { reject(error); } };
     r.onerror = () => reject(r.error);
   });
 }
 export async function writeWeeklyRecovery(id, value) {
-  const recordId = weeklyRecoveryId(id), record = weeklyRecoveryRecord(value), db = await open();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction('vault', 'readwrite');
+  const recordId = weeklyRecoveryId(id), record = weeklyRecoveryRecord(value);
+  return transact('readwrite', (tx, resolve, reject) => {
     // Configuration IDs are immutable: changing configuration preserves old keys
     // and never replaces the live vault/main record or its unlock key.
     tx.objectStore('vault').add(record, recordId);
