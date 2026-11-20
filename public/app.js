@@ -1,3 +1,4 @@
+import { visitTrashState, applyVisitTrashAction, expiredVisitTrash, purgeExpiredVisitNotes } from './core.js';
 import { monthlyPlanningState, monthlyPlanningBasis, applyMonthlyPlanning } from './core.js';
 import { peopleBriefSourcePlan, peopleReadingRefreshDecision, validatePeopleBriefResult, currentPeopleReading, peopleReadingPresentation, peopleReadingRequest, preparePeopleReading, applyPeopleReading, planPeopleRelationshipReview, applyPeopleRelationshipReview, peopleAliasLayout, peopleAliasReviewAvailability, peopleRelationshipReviewAvailability, planPeopleAliasReview, applyPeopleAliasReview } from './relations.js';
 import { peopleRelationshipReviewState, peopleAliasGroups, peopleAliasReviewState } from './core.js';
@@ -494,12 +495,13 @@ let monthlyVisitSelectedMonth = '', monthlyVisitContext = null, monthlyVisitView
 let reminderDraftTimer = null, reminderDraftSaveChain = Promise.resolve();
 let attendancePrompt = null, attendanceCache = null;
 let localSaveState = 'unknown', syncInProgress = false, syncEpoch = 0;
+let notePurgeRunning=false, notePurgeRetryAt=0;
 const syncScheduler = createSyncScheduler({ ready: canAutoSync, attempt: autoSync, onChange: renderDataSafetyEntry });
 function storeAttendance(storeId) {
   const today = attendanceTaipeiDate(Date.now());
   if (attendanceCache?.bundle !== payload.bundle || attendanceCache.today !== today) {
     const grouped = new Map();
-    for (const op of payload.bundle.ops) {
+    for (const op of [...payload.bundle.ops,...(payload.bundle.purgedNotes||[]).flatMap(r=>r.attendance)]) {
       const attendance = visitAttendanceEvidence(op); if (!attendance) continue;
       const id = attendance.store;
       if (!grouped.has(id)) grouped.set(id, []);
@@ -688,7 +690,7 @@ async function persist(next, { guard = null } = {}) {
 function hasNewFormalChanges(previous, next) {
   if (!previous || !next?.dirty || previous.bundle === next.bundle || previous.bundle?.vaultId !== next.bundle?.vaultId) return false;
   const before = new Set(previous.bundle.ops.map(op => op.id));
-  return next.bundle.ops.some(op => !before.has(op.id));
+  return next.bundle.ops.some(op => !before.has(op.id)) || JSON.stringify(previous.bundle.purgedNotes || []) !== JSON.stringify(next.bundle.purgedNotes || []);
 }
 function withPendingSync(previous, next) {
   if (!next.dirty) return { ...next, pendingSync: { entities: [], unknown: false } };
@@ -696,6 +698,8 @@ function withPendingSync(previous, next) {
   if (previous?.bundle !== next.bundle) {
     const before = new Set((previous?.bundle?.ops || []).map(op => op.id));
     for (const op of next.bundle?.ops || []) if (!before.has(op.id)) entities.add(op.type + ':' + op.entity);
+    const previousPurges=new Set((previous?.bundle?.purgedNotes || []).map(r=>r.id));
+    for(const receipt of next.bundle.purgedNotes || [])if(!previousPurges.has(receipt.id))entities.add('visit:'+receipt.id);
   }
   const legacyUnknown = previous?.dirty === true && !previous.pendingSync;
   return { ...next, pendingSync: { entities: [...entities].sort(), unknown: legacyUnknown && !entities.size } };
@@ -1112,7 +1116,7 @@ async function openWorkspace() {
   document.body.classList.toggle('privacy-veil', pendingLock);
   try { storagePersistent = await navigator.storage?.persist?.() || false; } catch {}
   restoreTransientResumeState(); renderBackupResult(); await runPeriodicHealthAudit(); clearInterval(autoTimer);
-  autoTimer = setInterval(() => { void insightReviewTick(); void peopleReadingTick(); void peopleBatchTick(); supervisorRelationshipTick(); if (!document.hidden) { monthlyPlanningTick(); refreshMonthlyAlertBadges(); syncScheduler.request('poll'); setTimeout(() => void weeklyTick(), 1500); } }, 15000);
+  autoTimer = setInterval(() => { void insightReviewTick(); void peopleReadingTick(); void peopleBatchTick(); supervisorRelationshipTick(); if (!document.hidden) { monthlyPlanningTick(); refreshMonthlyAlertBadges(); syncScheduler.request('poll'); setTimeout(() => void weeklyTick(), 1500); setTimeout(() => void notePurgeTick(), 3000); } }, 15000);
   setTimeout(() => void weeklyTick(), 3000);
   syncScheduler.request('foreground');
   queueInsightScan(); requestNearbyPosition();
@@ -1184,7 +1188,7 @@ function createSyncScheduler({ ready, attempt, now = Date.now, setTimer = setTim
   };
 }
 function canAutoSync(ignoreFetching = false) {
-  return !!(key && payload?.token) && navigator.onLine !== false && !document.hidden && !pendingLock && !updateHolding && !busy && !gateOpening &&
+  return !(typeof notePurgeRunning!=='undefined' && notePurgeRunning) && !!(key && payload?.token) && navigator.onLine !== false && !document.hidden && !pendingLock && !updateHolding && !busy && !gateOpening &&
     (ignoreFetching || !autoFetching) && !syncInProgress && !peopleBatchRunning && !monthlyFeedbackContext && !recoveryExportContext && !weeklyContext && !weeklyRunning && !backupPreview && !editorContext && !singleStoreContext && !inlineTextContext && !reminderContext && !dayPlanContext && !monthlyVisitContext && !attendancePrompt && !payload.monthlyFeedbackDraft && !payload.inlineTextDraft && !payload.supervisorDraft &&
     !['review', 'editor', 'quick-text-dialog', 'store-reminder-dialog', 'rebuild-dialog', 'backup-review', 'visit-attendance-dialog', 'day-plan-dialog', 'monthly-visit-dialog', 'monthly-analysis-dialog', 'insight-changes-dialog'].some(id => $(id)?.open) && !csvImport.hasPending();
 }
@@ -1301,13 +1305,13 @@ async function synchronize({ fromAuto = false } = {}) {
       // Received revisions remain encrypted locally even if the following upload is interrupted.
       await persist({ ...payload, bundle: combined, dirty: true });
       assertSyncSession(session, combined);
-      const same = other && combined.ops.length === other.ops.length;
+      const same = other && combined.schema===other.schema && combined.ops.length === other.ops.length && Object.keys(combined.blobs).length===Object.keys(other.blobs).length && JSON.stringify(combined.purgedNotes || [])===JSON.stringify(other.purgedNotes || []);
       let version = remote.version, backupOK = true;
       if (!same) {
         const envelope = await seal(combined, session.key, session.meta);
         assertSyncSession(session, combined);
         try {
-          const result = await api('/api/snapshot', { method: 'PUT', body: { expectedVersion: remote.version, envelope } });
+          const result = await api('/api/snapshot', { method: 'PUT', body: { expectedVersion: remote.version, envelope, ...(combined.schema===3?{minimumAppVersion:'1.5.116'}:{}) } });
           assertSyncSession(session, combined); version = result.version; backupOK = result.backupOK;
         } catch (e) { assertSyncSession(session, combined); if (e.status === 409) continue; throw e; }
       }
@@ -1689,7 +1693,7 @@ async function saveSingleStoreVisit(event) {
     const guard=()=>{if(singleStoreContext!==ctx || payload.bundle!==baseBundle || key!==sessionKey || meta!==sessionMeta || syncEpoch!==sessionEpoch || document.hidden || pendingLock || updateHolding || syncInProgress || ctx.typedPlan && JSON.stringify(payload.bundle)!==ctx.typedPlan.basis || choice.attendance && attendanceTaipeiDate(Date.now())!==choice.attendance.date)throw new Error('來源、工作階段或日期已變，請重新核對；草稿保留。');};guard();
     let bundle;
     if(ctx.typedPlan) bundle=await applyTypedVisit(payload.bundle,ctx.typedPlan,{answers:typedValues,note:text.trim()?data:null,noteId:ctx.id,noteParents:ctx.parents},payload.device,choice.attendance,new Date().toISOString(),blobs);
-    else {bundle=structuredClone(payload.bundle);bundle.schema=2;bundle.ops.push(revision('visit',ctx.id,data,ctx.parents,payload.device,false,choice.attendance));Object.assign(bundle.blobs,blobs);validateBundle(bundle);}
+    else {bundle=structuredClone(payload.bundle);bundle.schema=Math.max(2,bundle.schema);bundle.ops.push(revision('visit',ctx.id,data,ctx.parents,payload.device,false,choice.attendance));Object.assign(bundle.blobs,blobs);validateBundle(bundle);}
     guard();await persist({ ...payload, bundle, dirty: payload.dirty || bundle!==payload.bundle, draft: null },{guard});
     clearTimeout(draftTimer); draftTimer = null; singleStoreContext = null; render(); openVisitBrief(ctx.storeId);
     toast(ctx.typedPlan?`${typedValues.some(answer=>answer.value!==null)||ctx.typedPlan.state.history.length?'現場回報':'人工筆記'}已加密保存；${choice.attendance?'已確認今天實際拜訪。':'未勾選實際拜訪，不新增到店確認。'}等待 Mac 確認收到。`:'拜訪已完成並保存於手機；你仍停留在這間門市，等待 Mac 確認收到。');
@@ -2221,7 +2225,7 @@ function openVisitBrief(storeId, { capture = false, restoreDraft = null, preserv
   const recentCount = brief.recent.reduce((sum, item) => sum + item.count, 0);
   const recent = brief.recent.length ? brief.recent.map(item => `<article class="brief-item">${item.source || item.count > 1 ? `<div>${item.source ? `<span class="pill">${esc(item.source)}</span>` : ''}${item.count > 1 ? `<span class="pill brief-duplicate">相同內容 ${item.count} 筆</span>` : ''}</div>` : ''}<pre>${esc(item.text || '原文未提供')}</pre>${item.topics.length || item.people.length ? `<div class="chips">${item.topics.map(id => chip('topic', id)).join('')}${item.people.map(id => chip('person', id)).join('')}</div>` : ''}${item.count > 1 ? briefTraceHTML(item.occurrences) : ''}</article>`).join('') : '<p class="empty">目前沒有可顯示的拜訪原文。</p>';
   const history = all('visit').filter(item => item.store === storeId && !item.deleted && !item.conflict).sort((a, b) => (b.date || '').localeCompare(a.date || '') || b.id.localeCompare(a.id));
-  const historyHTML = history.map((item,index) => `<article class="brief-item" data-brief-visit="${esc(item.id)}"><h3>S${index+1}｜完整原文</h3>${readingReminderOverlap(item.text,brief.store.nextRemember)?`<details class="reading-overlap"><summary>與置頂提醒內容重疊 · 原文保留</summary>${inlineVisitTextHTML(item)}</details>`:inlineVisitTextHTML(item)}${item.next ? `<p class="next"><strong>下次跟進</strong>${esc(item.next)}</p>` : ''}<details><summary>來源、精確版本與歷史</summary><p>${esc(item.source||'來源未提供')} · ${esc(item.heads?.[0]?.id||'版本待核對')}</p><button type="button" class="text-button" data-history="visit:${esc(item.id)}">查看歷史版本</button></details></article>`).join('') || `<p class="empty">${storeOriginalTextFields(brief.store).length ? '尚未另建拜訪紀錄；門市原有文字顯示於上方。' : '目前沒有拜訪紀錄。'}</p>`;
+  const historyHTML = history.map((item,index) => `<article class="brief-item" data-brief-visit="${esc(item.id)}"><h3>S${index+1}｜完整原文</h3>${readingReminderOverlap(item.text,brief.store.nextRemember)?`<details class="reading-overlap"><summary>與置頂提醒內容重疊 · 原文保留</summary>${inlineVisitTextHTML(item)}</details>`:inlineVisitTextHTML(item)}${item.next ? `<p class="next"><strong>下次跟進</strong>${esc(item.next)}</p>` : ''}<details><summary>更多操作／來源與歷史</summary><button type="button" class="text-button danger" data-delete="visit:${esc(item.id)}">移除這筆筆記（30天內可復原）</button><p>${esc(item.source||'來源未提供')} · ${esc(item.heads?.[0]?.id||'版本待核對')}</p><button type="button" class="text-button" data-history="visit:${esc(item.id)}">查看歷史版本</button></details></article>`).join('') || `<p class="empty">${storeOriginalTextFields(brief.store).length ? '尚未另建拜訪紀錄；門市原有文字顯示於上方。' : '目前沒有拜訪紀錄。'}</p>`;
   const explicitItems = brief.explicitLinks.map(item => {
     const linked = chip(item.type, item.id); if (!linked) return '';
     return `<article class="brief-linked-item"><div>${linked}<span class="muted">${item.visitCount} 筆明確連結</span></div>${briefTraceHTML(item.occurrences)}</article>`;
@@ -2280,7 +2284,7 @@ function noteHTML(v, query = '', { showStoreText = true, showStoreReminders = tr
   const storeNotes = showStoreReminders && store && !store.conflict ? `<div class="store-memory ${hasStoreNotes ? '' : 'empty'}">${reminderTasksHTML(store, true, false)}${store.nextRemember ? `<p><strong>下次記得（尚未轉成任務）：</strong>${esc(store.nextRemember)}</p>` : ''}${store.everyTimeMust ? `<p><strong>每次必做、必給：</strong>${esc(store.everyTimeMust)}</p>` : ''}<button type="button" class="text-button store-reminder-edit" data-store-reminder="${esc(store.id)}">${hasStoreNotes ? '修改門市提醒' : '＋ 填寫門市提醒'}</button></div>` : '';
   const textBlock = inlineVisitTextHTML(v, query);
   const storeButton = store && !store.conflict && !storeIdentityPending(store) ? `data-visit-brief="${esc(v.store)}"` : `data-node-type="store" data-node-id="${esc(v.store)}"`;
-  const advanced = `${sourceButton(v)}<button class="text-button" data-edit="visit:${esc(v.id)}">完整編輯</button><button class="text-button" data-history="visit:${esc(v.id)}">歷史 ${v.versions.length}</button><button class="text-button danger" data-delete="visit:${esc(v.id)}">移到回收桶</button>`;
+  const advanced = `${sourceButton(v)}<button class="text-button" data-edit="visit:${esc(v.id)}">完整編輯</button><button class="text-button" data-history="visit:${esc(v.id)}">歷史 ${v.versions.length}</button><button class="text-button danger" data-delete="visit:${esc(v.id)}">移除這筆筆記（30天內可復原）</button>`;
   return `<article class="note">${v.source ? `<div class="note-head"><span class="pill">${esc(v.source)}</span></div>` : ''}<button class="text-button store-link" ${storeButton}>${visitStoreNameHTML(name('store', v.store), query)}${monthlyAlertBadgeHTML(v.store)}</button>${visitStoreAliasMatchHTML(store, query)}${storeAttendanceHTML(v.store)}${storeNotes}${showStoreText ? storeOriginalTextHTML(store, query) : ''}${v.conflict ? `<div class="conflict-card">這筆有 ${v.heads.length} 個版本。以下僅顯示其中一個，請先核對。 <button class="text-button" data-review="visit:${esc(v.id)}">處理衝突</button></div>` : ''}${sourceState}${hint}${textBlock}<div class="chips">${v.topics.map(id => chip('topic', id, query)).join('')}${v.people.map(id => chip('person', id, query)).join('')}</div>${v.next ? `<p class="next"><strong>下次跟進</strong>${highlightLiteral(v.next, query)}</p>` : ''}<div class="attachments">${(v.attachments || []).map((a, i) => `<button data-attachment="${esc(v.id)}" data-index="${i}">↧ ${esc(a.name)}</button>`).join('')}</div><div class="note-actions">${!v.conflict && store && !store.deleted && !store.conflict ? `<button class="primary" data-new-visit-store="${esc(v.store)}">＋ 記錄這次拜訪</button>` : ''}<details class="more-actions"><summary>更多操作</summary><div>${advanced}</div></details></div></article>`;
 }
 function render() {
@@ -2299,7 +2303,7 @@ function render() {
   if (activeView === 'entities') $('entity-list').innerHTML = [...all('person'), ...all('topic')].map(entityCard).join('') || '<p class="empty">新增人物與主題，讓拜訪紀錄產生連結。</p>';
   if (activeView === 'csv') csvImport.refresh();
   $('conflict-list').innerHTML = records.filter(r => r.conflict).map(r => `<div class="conflict-card"><strong>${esc(r.name || name('store', r.store) + ' · ' + r.date)}</strong><p>${r.heads.length} 個版本待確認</p><button data-review="${r.type}:${esc(r.id)}">比較並處理</button></div>`).join('') || '<p class="muted">目前沒有衝突。</p>';
-  if (activeView === 'trash') $('trash-list').innerHTML = records.filter(r => r.deleted && !r.conflict).map(r => `<article class="panel"><span class="pill">${kinds[r.type]}${r.mergedInto ? ' · 已整併' : ''}</span><h3>${esc(r.name || name('store', r.store) + ' · ' + r.date)}</h3><p>${r.mergedInto ? '已依裁定整併至：' + esc(name('store', r.mergedInto)) + '。原版本與歷史仍保留。' : esc(r.text || r.desc || r.contact || '')}</p>${r.mergedInto && r.mergeDecision ? '<p class="muted">安全合併來源留存；若需撤銷，須另行核對完整影響。</p>' : `<button data-restore="${r.type}:${esc(r.id)}">還原</button>`} <button data-history="${r.type}:${esc(r.id)}">查看歷史</button></article>`).join('') || '<p class="empty">回收桶是空的。</p>';
+  if (activeView === 'trash') renderTrash();
 }
 function entityCard(r) { const advanced = `${sourceButton(r)}<button class="text-button" data-edit="${r.type}:${esc(r.id)}">完整編輯</button><button class="text-button" data-history="${r.type}:${esc(r.id)}">歷史</button><button class="text-button danger" data-delete="${r.type}:${esc(r.id)}">刪除</button>`; return `<article class="panel"><span class="pill ${r.conflict ? 'warn' : ''}">${kinds[r.type]}${r.conflict ? ' · 有衝突' : ''}${storeIdentityPending(r) ? ' · 需要後續的確認' : ''}</span><h3>${esc(r.name)}</h3>${r.type === 'store' ? storeAttendanceHTML(r.id) : ''}${r.type === 'store' ? '<span class="pill retail-label">' + esc(retailChannel(r).label) + '</span>' : ''}${r.csvAliases?.length ? '<p class="muted">來源名稱：' + r.csvAliases.map(esc).join('／') + '</p>' : ''}<p>${esc(r.type === 'store' ? `${r.attr}\n${r.contact}` : r.type === 'person' ? `${r.confirmed ? '身分已核對' : '身分待確認'} · ${r.role}${r.sameAs ? '\n連到：' + name('person', r.sameAs) : ''}` : r.desc)}</p><div class="note-actions">${r.type === 'store' && !r.conflict ? `${!storeIdentityPending(r) ? `<button class="primary" data-visit-brief="${esc(r.id)}">單店拜訪</button>` : ''}<button class="secondary" data-new-visit-store="${esc(r.id)}">＋ 新增拜訪</button>` : ''}<details class="more-actions"><summary>更多操作</summary><div>${advanced}</div></details></div></article>`; }
 function qualityReport() {
@@ -3415,7 +3419,7 @@ async function saveStoreReminder(event) {
     if (reminderContext !== ctx) throw new Error('提醒畫面已變更，本次沒有寫入。');
     assertSaveParents('store', store.id, ctx.parents);
     const bundle = structuredClone(payload.bundle);
-    if (changed || choice.attendance) { bundle.schema = 2; bundle.ops.push(revision('store', store.id, changed ? data : before, ctx.parents, payload.device, false, choice.attendance)); validateBundle(bundle); }
+    if (changed || choice.attendance) { bundle.schema = Math.max(2,bundle.schema); bundle.ops.push(revision('store', store.id, changed ? data : before, ctx.parents, payload.device, false, choice.attendance)); validateBundle(bundle); }
     // Formal content and draft removal succeed (or fail) in one encrypted write.
     await persist({ ...payload, bundle, dirty: payload.dirty || changed || !!choice.attendance, reminderDrafts: storedReminderDrafts().filter(d => d.storeId !== ctx.id) });
     reminderContext = null; $('store-reminder-dialog').close(); render();
@@ -3547,7 +3551,7 @@ async function saveQuickTextEdit(event) {
     const choice = await confirmStoreSave(data.store, name('store', data.store), ctx.after !== ctx.before); if (!choice) return;
     if (quickTextContext !== ctx) throw new Error('修改畫面已變更，本次沒有寫入。');
     assertSaveParents('visit', ctx.id, ctx.parents);
-    const bundle = structuredClone(payload.bundle); bundle.schema = 2;
+    const bundle = structuredClone(payload.bundle); bundle.schema = Math.max(2,bundle.schema);
     if (ctx.after !== ctx.before || choice.attendance) bundle.ops.push(revision('visit', ctx.id, data, ctx.parents, payload.device, false, choice.attendance));
     validateBundle(bundle);
     await persist({ ...payload, bundle, dirty: payload.dirty || ctx.after !== ctx.before || !!choice.attendance, inlineTextDraft: null });
@@ -3558,7 +3562,7 @@ async function saveQuickTextEdit(event) {
   }, 'quick-text-error');
 }
 async function commitRevision(type, id, data, parents, deleted = false, blobs = {}, attendance) {
-  const bundle = structuredClone(payload.bundle); bundle.schema = 2; bundle.ops.push(revision(type, id, data, parents, payload.device, deleted, attendance)); Object.assign(bundle.blobs, blobs); validateBundle(bundle);
+  const bundle = structuredClone(payload.bundle); bundle.schema = Math.max(2,bundle.schema); bundle.ops.push(revision(type, id, data, parents, payload.device, deleted, attendance)); Object.assign(bundle.blobs, blobs); validateBundle(bundle);
   await persist({ ...payload, bundle, dirty: true }); render();
 }
 async function saveEditor(event) {
@@ -3632,14 +3636,14 @@ async function saveEditor(event) {
       assertSaveParents(ctx.type, ctx.id, ctx.parents);
     }
     if (ctx.type === 'visit') {
-      const bundle = structuredClone(payload.bundle); bundle.schema = 2;
+      const bundle = structuredClone(payload.bundle); bundle.schema = Math.max(2,bundle.schema);
       if (quickStore) bundle.ops.push(revision('store', quickStore.id, quickStore.data, [], payload.device));
       bundle.ops.push(revision('visit', ctx.id, d, ctx.parents, payload.device, false, choice.attendance)); Object.assign(bundle.blobs, blobs); validateBundle(bundle);
       await persist({ ...payload, bundle, dirty: true, draft: null }); render(); clearTimeout(draftTimer); draftTimer = null;
       $('editor').close(); editorContext = null; toast(quickStore ? '新門市與拜訪已完成並保存於手機；等待 Mac 確認收到。' : '拜訪已完成並保存於手機；等待 Mac 確認收到。'); return;
     }
     if (ctx.type === 'store' && ctx.reminderDraftContext) {
-      const bundle = structuredClone(payload.bundle); bundle.schema = 2;
+      const bundle = structuredClone(payload.bundle); bundle.schema = Math.max(2,bundle.schema);
       bundle.ops.push(revision('store', ctx.id, d, ctx.parents, payload.device, false, choice.attendance)); Object.assign(bundle.blobs, blobs); validateBundle(bundle);
       await persist({ ...payload, bundle, dirty: true, reminderDrafts: storedReminderDrafts().filter(draft => draft.storeId !== ctx.id) });
       editorContext = null; render();
@@ -3748,7 +3752,13 @@ function reviewVersionLabel(o, index) {
   return `版本 ${index + 1} · ${o.device === payload.device ? '本裝置' : '其他裝置 ' + o.device.slice(0, 8)} · ${dateText(o.at)}${o.deleted ? ' · 已刪除' : ' · 保留紀錄'}${o.visitAttendance ? ' · 已確認拜訪 ' + o.visitAttendance.date : ''}`;
 }
 function openReview(type, id, conflict) {
-  const r = by(type, id); if (!r) return;
+  const r = by(type, id);
+  if (!r && type==='visit') {
+    const receipt=(payload.bundle.purgedNotes||[]).find(r=>r.id===id);
+    if(receipt){versionReview=null;resolutionPreview=null;$('review-title').textContent='已永久移除筆記 · 分析引用留存';$('review-body').innerHTML='<p>原筆記已滿30天永久移除，不能還原；以下只保留既有分析引用所需的來源版本，不建立新筆記或拜訪確認。</p>'+receipt.retained.map(op=>`<details><summary>${esc(dateText(op.at))} · ${esc(op.id)}</summary><pre>${esc(describeData('visit',op.data))}</pre></details>`).join('');openDialog($('review'));}
+    return;
+  }
+  if (!r) return;
   versionReview = { type, id, parents: reviewHeads(r), conflict, baseline: r.heads[0].id };
   resolutionPreview = null;
   if (conflict) renderConflictReview();
@@ -3796,7 +3806,7 @@ async function confirmResolution() {
   const current = checkedReview(ctx);
   assertStoreMergeResolution(current, ctx.data, ctx.deleted);
   if (!ctx.fromEditor && payload.draft?.id === ctx.id) throw new Error('這筆拜訪有未完成草稿，請先處理草稿。');
-  const bundle = structuredClone(payload.bundle); bundle.schema = 2;
+  const bundle = structuredClone(payload.bundle); bundle.schema = Math.max(2,bundle.schema);
   bundle.ops.push(revision(ctx.type, ctx.id, ctx.data, ctx.parents, payload.device, ctx.deleted));
   Object.assign(bundle.blobs, ctx.blobs); validateBundle(bundle);
   await persist({ ...payload, bundle, dirty: true, ...(ctx.fromEditor && ctx.type === 'visit' ? { draft: null } : {}), ...(ctx.fromEditor && ctx.type === 'store' ? { reminderDrafts: storedReminderDrafts().filter(draft => draft.storeId !== ctx.id) } : {}) });
@@ -3819,7 +3829,64 @@ function editMerge(id) {
   }
   finally { records[i] = original; }
 }
+async function notePurgeTick() {
+  // Never interrupt input or start a network wait from an old offline session.
+  // A recent normal sync must succeed before the expiry job can acquire the UI.
+  const now = Date.now();
+  if (notePurgeRunning || now < notePurgeRetryAt || !canAutoSync() || payload.dirty || payload.draft ||
+      !expiredVisitTrash(payload.bundle, now).length || macProgram?.version !== APP_VERSION ||
+      !payload.lastSync || !Number.isFinite(Date.parse(payload.lastSync)) || now - Date.parse(payload.lastSync) > 60000 ||
+      !Number.isFinite(Date.parse(macProgram.at)) || now - Date.parse(macProgram.at) > 60000) return;
+  notePurgeRetryAt = now + 15 * 60000;
+  notePurgeRunning = true;
+  try {
+    await run(async () => {
+      await synchronize();
+      const ctx = {payload, key, meta, revision: localRevision, epoch: syncEpoch};
+      const guard = () => {
+        if (payload !== ctx.payload || key !== ctx.key || meta !== ctx.meta || localRevision !== ctx.revision ||
+            syncEpoch !== ctx.epoch || document.hidden || pendingLock || updateHolding || syncInProgress) {
+          throw new Error('永久移除前資料已變更，延後核對；本次未清除。');
+        }
+      };
+      guard();
+      const bundle = purgeExpiredVisitNotes(payload.bundle);
+      if (bundle === payload.bundle) return;
+      await persist({...payload, bundle, dirty: true}, {guard});
+      render();
+      toast('已永久移除到期筆記；既有人物分析引用、人工判斷與舊備份保留。');
+    });
+  } finally {
+    notePurgeRunning = false;
+    syncScheduler.wake();
+  }
+}
+
+function visitTrashTimingHTML(record) {
+  const state = visitTrashState(record); if (!state) return '';
+  if(record.heads[0].trashRetentionDays!==30)return '<p class="muted">舊回收桶紀錄，未啟用自動永久刪除；仍可還原。</p>';
+  if (!state.removedAt) return '<p class="muted">刪除時間待核對；原文仍保留，可還原。</p>';
+  return `<p class="muted">移入時間：${esc(dateText(state.removedAt))}<br>30天保護期至：${esc(dateText(state.protectedUntil))}<br>${state.daysRemaining ? `保護期剩餘 ${state.daysRemaining} 天；期間隨時可還原。` : '已到30天期限；等待完成同步及安全閒置後自動永久移除。'}</p>`;
+}
+function renderTrash() {
+  $('trash-list').innerHTML = records.filter(r => r.deleted && !r.conflict).map(r => `<article class="panel"><span class="pill">${kinds[r.type]}${r.mergedInto ? ' · 已整併' : ''}</span><h3>${esc(r.name || name('store', r.store) + ' · ' + (r.date || '筆記日期未填'))}</h3><p>${r.mergedInto ? '已依裁定整併至：' + esc(name('store', r.mergedInto)) + '。原版本與歷史仍保留。' : esc(r.text || r.desc || r.contact || '')}</p>${visitTrashTimingHTML(r)}${r.mergedInto && r.mergeDecision ? '<p class="muted">安全合併來源留存；若需撤銷，須另行核對完整影響。</p>' : `<button data-restore="${r.type}:${esc(r.id)}">${r.type === 'visit' ? '還原這筆筆記' : '還原'}</button>`} <button data-history="${r.type}:${esc(r.id)}">查看歷史</button></article>`).join('') || '<p class="empty">回收桶是空的。</p>';
+}
+async function changeVisitTrash(action, id) {
+  releaseIdleInlineEdit();
+  if (!payload || pendingLock || updateHolding || syncInProgress || editorContext || inlineTextContext || reminderContext || singleStoreContext || monthlyFeedbackContext || dayPlanContext || monthlyVisitContext || payload.draft || payload.inlineTextDraft || payload.monthlyFeedbackDraft || csvImport.hasPending()) throw new Error('請先保存或取消正在編輯的內容，再處理這筆筆記；草稿與原文均保留。');
+  const visit = by('visit', id); if (!visit || visit.conflict) throw new Error('筆記不存在或有版本衝突，請先核對。');
+  const ctx = { payload, key, meta, revision: localRevision, epoch: syncEpoch };
+  const guard = () => { if (payload !== ctx.payload || key !== ctx.key || meta !== ctx.meta || localRevision !== ctx.revision || syncEpoch !== ctx.epoch || document.hidden || pendingLock || updateHolding || syncInProgress) throw new Error('資料或工作階段已變更，本次沒有覆蓋；請重新開啟核對。'); };
+  const label = name('store', visit.store), excerpt = (visit.text || '（原文空白）').slice(0, 180);
+  if (action === 'trash' && !confirm(`只將這一筆筆記移到回收桶？\n門市：${label}\n筆記日期：${visit.date || '未填'}\n原文預覽：${excerpt}${(visit.text || '').length > 180 ? '…' : ''}\n\n移入後30天內可還原，滿30天將自動永久移除這筆筆記及其還原歷史。人物分析已引用的內容、必要來源副本與舊備份保留；其他筆記、提醒、待辦及人工關係裁定不刪改。`)) return;
+  guard();
+  const bundle = applyVisitTrashAction(payload.bundle, { visitId: id, action, expectedHeads: visit.heads.map(h => h.id) }, payload.device);
+  await persist({ ...payload, bundle, dirty: true }, { guard }); render();
+  if ($('review').open && $('review').dataset.singleStoreId === visit.store) openVisitBrief(visit.store, { preservePosition: true });
+  toast(action === 'trash' ? '這一筆筆記已移到回收桶，30天內可還原；其他資料保留。' : '筆記已還原，原文、附件與歷史保留；未新增拜訪確認。');
+}
 async function removeEntity(type, id) {
+  if (type === 'visit') return changeVisitTrash('trash', id);
   const r = by(type, id); if (r.conflict) return openReview(type, id, true);
   if (!confirm(`將此${kinds[type]}移到回收桶？既有拜訪原文與歷史會保留。`)) return;
   await commitRevision(type, id, r.heads[0].data, r.heads.map(h => h.id), true); toast('已移到回收桶。');
@@ -4005,14 +4072,16 @@ function backupSummaryHTML(summary) {
   const labels = { store: '門市', visit: '拜訪', person: '人物', topic: '主題', source: 'Source Snapshot' };
   const attendance = summary.visitAttendance;
   const attendanceSummary = attendance ? `<section class="backup-attendance-summary"><h4>實際拜訪確認的影響</h4><p>確認來源 ${esc(attendance.beforeMarks)} → ${esc(attendance.afterMarks)} 份；加入備份中既有的 ${esc(attendance.addedMarks)} 份確認。</p><p>門市拜訪日 ${esc(attendance.beforeDays)} → ${esc(attendance.afterDays)} 組（新增 ${esc(attendance.addedDays)} 組門市／日期）。同一門市同一天只算一個拜訪日；不同門市分開計算。</p><p class="muted">保留原確認時間與來源，不把還原或合併當成今天的新拜訪；加入歷史確認可能改變最近實際拜訪與距今天數。</p></section>` : '';
-  return `<div class="backup-counts">${Object.entries(labels).map(([type, label]) => `<p><strong>${label}</strong>：${summary.before.entities[type]} → ${summary.after.entities[type]} 筆（新增 ${summary.newEntities[type]} 筆）<br><small>有效 ${summary.before.active[type]} → ${summary.after.active[type]}；回收桶 ${summary.before.deleted[type]} → ${summary.after.deleted[type]}</small></p>`).join('')}</div><p>增加 ${summary.addedRevisions} 個既有版本；${summary.identicalRevisions} 個版本已存在。新增 ${summary.newBlobs} 份附件／原始來源檔案。</p>${attendanceSummary}<p>既有紀錄目前版本改變 ${summary.changedExistingEntities} 筆；只補歷史 ${summary.historyOnlyEntities} 筆。衝突 ${summary.conflictsBefore} → ${summary.conflictsAfter} 筆（新增衝突 ${summary.newConflicts} 筆；備份已含解決版本 ${summary.resolvedConflicts} 筆）。</p><p class="${summary.movedToTrash || summary.revived ? 'error' : 'muted'}">有效紀錄移入回收桶 ${summary.movedToTrash} 筆；回收桶改為含有效版本 ${summary.revived} 筆（有衝突者仍待核對）。</p><p class="muted">筆數包含回收桶與衝突紀錄；衝突保留全部版本，尚未裁定內容或門市身分。合併不代表把目前資料倒退到備份日期。</p>`;
+  const purgeSummary = summary.permanentlyRemovedNotes ? `<p class="error"><strong>將套用 ${esc(summary.permanentlyRemovedNotes)} 筆已永久移除筆記的收據。</strong>原筆記不會恢復，現有相同筆記版本也將移除且不能從回收桶還原；人物分析引用、人工判斷與原拜訪確認保留。請逐筆核對下方影響後再確認。</p>` : '';
+  return `${purgeSummary}<div class="backup-counts">${Object.entries(labels).map(([type, label]) => `<p><strong>${label}</strong>：${summary.before.entities[type]} → ${summary.after.entities[type]} 筆（新增 ${summary.newEntities[type]} 筆）<br><small>有效 ${summary.before.active[type]} → ${summary.after.active[type]}；回收桶 ${summary.before.deleted[type]} → ${summary.after.deleted[type]}</small></p>`).join('')}</div><p>增加 ${summary.addedRevisions} 個既有版本；${summary.identicalRevisions} 個版本已存在。新增 ${summary.newBlobs} 份附件／原始來源檔案。</p>${attendanceSummary}<p>既有紀錄目前版本改變 ${summary.changedExistingEntities} 筆；只補歷史 ${summary.historyOnlyEntities} 筆。衝突 ${summary.conflictsBefore} → ${summary.conflictsAfter} 筆（新增衝突 ${summary.newConflicts} 筆；備份已含解決版本 ${summary.resolvedConflicts} 筆）。</p><p class="${summary.movedToTrash || summary.revived ? 'error' : 'muted'}">有效紀錄移入回收桶 ${summary.movedToTrash} 筆；回收桶改為含有效版本 ${summary.revived} 筆（有衝突者仍待核對）。</p><p class="muted">筆數包含回收桶與衝突紀錄；衝突保留全部版本，尚未裁定內容或門市身分。合併不代表把目前資料倒退到備份日期。</p>`;
 }
 function backupChangeTitle(change) {
   const labels = { store: '門市', visit: '拜訪', person: '人物', topic: '主題', source: 'Source Snapshot' };
-  const candidate = change.afterHeads.find(head => !head.deleted) || change.afterHeads[0];
-  const store = change.type === 'visit' ? backupPreview?.storeNames?.get(candidate?.data.store) : '';
-  const title = candidate?.data.name || candidate?.data.file || (change.type === 'visit' ? `${store || candidate?.data.store || '門市未提供'} · ${candidate?.data.date || '日期未提供'}` : change.entity);
-  const action = change.afterConflict ? '保留多版本，需另行核對' : change.afterDeleted ? '回收桶狀態' : change.beforeDeleted ? '恢復有效紀錄' : change.kind === 'added' ? '新增紀錄' : change.kind === 'history-only' ? '只補歷史，目前內容不變' : '目前版本將改變';
+  const candidate = change.afterHeads.find(head => !head.deleted) || change.afterHeads[0] || change.beforeHeads[0];
+  const storeId = candidate?.data.store || change.purge?.storeId;
+  const store = change.type === 'visit' ? backupPreview?.storeNames?.get(storeId) : '';
+  const title = candidate?.data.name || candidate?.data.file || (change.type === 'visit' ? `${store || storeId || '門市未提供'} · ${candidate?.data.date || '日期未提供'}` : change.entity);
+  const action = change.kind === 'permanent-removal' ? '套用永久移除收據，不能還原' : change.afterConflict ? '保留多版本，需另行核對' : change.afterDeleted ? '回收桶狀態' : change.beforeDeleted ? '恢復有效紀錄' : change.kind === 'added' ? '新增紀錄' : change.kind === 'history-only' ? '只補歷史，目前內容不變' : '目前版本將改變';
   return `${labels[change.type]} · ${title}：${action}${change.addedVisitAttendance?.length ? '；加入 ' + change.addedVisitAttendance.length + ' 份既有拜訪確認' : ''}`;
 }
 function backupVersionHTML(head) {
@@ -4028,7 +4097,8 @@ function backupChangeHTML(change) {
   const contentUnchanged = onePair && [...new Set([...Object.keys(change.beforeHeads[0].data), ...Object.keys(change.afterHeads[0].data)])].every(field => JSON.stringify(change.beforeHeads[0].data[field]) === JSON.stringify(change.afterHeads[0].data[field]));
   const comparison = contentUnchanged && addedAttendance.length ? `<p><strong>內容欄位沒有變更；仍會加入 ${addedAttendance.length} 份既有拜訪確認。</strong>請核對以下原確認日期、來源及刪除狀態。</p>` : onePair && change.kind !== 'history-only' ? reviewFields(change.beforeHeads[0].data, change.afterHeads[0].data) : '';
   const attendance = addedAttendance.length ? `<details><summary>本次加入的拜訪確認來源 · ${addedAttendance.length} 份（含歷史版本）</summary><p>這些確認隨原版本保留；不是這次匯入新建立的拜訪。</p>${addedAttendance.map(op => reviewAttendanceHTML(op, backupPreview?.storeNames?.get(op.visitAttendance.store) || '')).join('')}</details>` : '';
-  return `<p class="muted">識別：${esc(change.entity)}</p>${comparison}${attendance}${heads(change.beforeHeads, '套用前全部目前版本')}${heads(change.afterHeads, '套用後全部目前版本')}`;
+  const purge = change.kind === 'permanent-removal' ? `<p class="error"><strong>筆記已永久移除，不能還原。</strong>移入回收桶：${esc(dateText(change.purge.deletedAt))}；到期清除：${esc(dateText(change.purge.purgedAt))}。既有分析引用與拜訪確認保留。</p>` : '';
+  return `${purge}<p class="muted">識別：${esc(change.entity)}</p>${comparison}${attendance}${heads(change.beforeHeads, '套用前全部目前版本')}${heads(change.afterHeads, '套用後全部目前版本')}`;
 }
 function renderBackupChanges(page = 0) {
   const ctx = backupPreview; if (!ctx) return;
@@ -4048,7 +4118,7 @@ function renderBackupPreview() {
   const ctx = backupPreview, summary = ctx.plan.summary;
   ctx.storeNames = new Map(project(ctx.plan.bundle).filter(record => record.type === 'store').map(store => [store.id, store.name + (store.conflict ? '（門市有衝突）' : '')]));
   $('backup-review-title').textContent = summary.mode === 'restore' ? '在空白裝置還原 · 影響預覽' : '備份合併 · 影響預覽';
-  $('backup-review-body').innerHTML = `<p>已在本機解密並驗證檔案、版本鏈結、附件與原始來源內容。目前尚未寫入資料。</p><p class="muted">檔案：${esc(ctx.filename)}（${ctx.bytes} bytes）。檔名不代表已驗證的備份日期。</p>${summary.mode === 'restore' ? '<p>確認後會在這台空白裝置建立本機加密資料。需要重新配對 Mac；不會自動連接其他資料庫。</p>' : '<p>確認後保留本機全部既有版本，加入備份中的版本。若備份含較新的修改或刪除版本，目前顯示內容可能改變；請展開下方逐筆核對。已配對時，後續會依既有同步機制傳到 Mac 與其他裝置；內容、刪除或恢復狀態也會同步。</p>'}${backupSummaryHTML(summary)}<p class="muted">資料格式：${ctx.currentPayload?.bundle.schema ?? '空白裝置'} → ${ctx.plan.bundle.schema}${ctx.currentPayload && ctx.currentPayload.bundle.schema !== ctx.plan.bundle.schema ? '；格式升級也需確認，原文及歷史保持原樣。' : '。'}</p><p>備份不含尚未完成的草稿、裝置配對憑證或 GPS 位置。原始文字、任務完成歷史、實際拜訪確認、CSV 與 Source Snapshot 依各版本原樣保留。</p>${summary.warnings.length ? `<details><summary>需要注意的歷史連結 · ${summary.warnings.length} 項</summary><p>下列紀錄指向未包含的門市、人物或主題；只列出問題，不猜補或裁定身分。</p><div id="backup-warnings"></div></details>` : ''}<details><summary>逐筆影響 · ${ctx.plan.changes.length} 筆（可展開內容對比）</summary><div id="backup-changes"></div><div id="backup-pages"></div></details>${summary.hasChanges ? '' : '<p class="insight">這份備份沒有可加入的版本或檔案，無需套用；關閉即可，資料不會寫入。</p>'}`;
+  $('backup-review-body').innerHTML = `<p>已在本機解密並驗證檔案、版本鏈結、附件與原始來源內容。目前尚未寫入資料。</p><p class="muted">檔案：${esc(ctx.filename)}（${ctx.bytes} bytes）。檔名不代表已驗證的備份日期。</p>${summary.mode === 'restore' ? '<p>確認後會在這台空白裝置建立本機加密資料。需要重新配對 Mac；不會自動連接其他資料庫。</p>' : '<p>確認後加入備份中的版本；一般既有版本保留，永久移除收據的影響另列於下方。若備份含較新的修改或刪除版本，目前顯示內容可能改變；請展開下方逐筆核對。已配對時，後續會依既有同步機制傳到 Mac 與其他裝置；內容、刪除或恢復狀態也會同步。</p>'}${backupSummaryHTML(summary)}<p class="muted">資料格式：${ctx.currentPayload?.bundle.schema ?? '空白裝置'} → ${ctx.plan.bundle.schema}${ctx.currentPayload && ctx.currentPayload.bundle.schema !== ctx.plan.bundle.schema ? '；格式升級也需確認，永久移除的影響以本次預覽為準。' : '。'}</p><p>備份不含尚未完成的草稿、裝置配對憑證或 GPS 位置。未永久移除的原始文字、任務完成歷史、實際拜訪確認、CSV 與 Source Snapshot 依各版本原樣保留；已永久移除筆記以收據及必要分析來源副本為準。</p>${summary.warnings.length ? `<details><summary>需要注意的歷史連結 · ${summary.warnings.length} 項</summary><p>下列紀錄指向未包含的門市、人物或主題；只列出問題，不猜補或裁定身分。</p><div id="backup-warnings"></div></details>` : ''}<details><summary>逐筆影響 · ${ctx.plan.changes.length} 筆（可展開內容對比）</summary><div id="backup-changes"></div><div id="backup-pages"></div></details>${summary.hasChanges ? '' : '<p class="insight">這份備份沒有可加入的版本或檔案，無需套用；關閉即可，資料不會寫入。</p>'}`;
   renderBackupChanges(); renderBackupWarnings();
   $('backup-ack').checked = false; $('backup-ack').disabled = !summary.hasChanges;
   $('backup-apply').textContent = summary.mode === 'restore' ? '確認影響並在本機還原' : '確認影響並合併備份';
@@ -4277,7 +4347,7 @@ document.addEventListener('click', event => {
   if (b.dataset.csvDownload) { if (confirm('原始 CSV 是明文檔案。請確認下載到自己的本機資料夾，避開 iCloud Drive。')) download(unb64(payload.bundle.blobs[b.dataset.csvDownload]), b.dataset.csvFilename.replace(/[\/\\]/g, '_'), 'application/octet-stream'); return; }
   if (b.dataset.history) return openReview(...b.dataset.history.split(':'), false);
   if (b.dataset.delete) return run(() => removeEntity(...b.dataset.delete.split(':')));
-  if (b.dataset.restore) return run(async () => { const [type, id] = b.dataset.restore.split(':'), r = by(type, id); if (r.mergedInto && r.mergeDecision) throw new Error('這筆門市已經安全合併；一般還原不能撤銷合併。請另行核對完整影響，原資料與歷史仍保留。'); if (r.mergedInto && !confirm('此門市曾依已裁定同店規則整併至「' + name('store', r.mergedInto) + '」。還原會重新成為獨立門市，之後必須重新核對身分。確認還原？')) return; await commitRevision(type, id, r.heads[0].data, r.heads.map(h => h.id)); toast('已還原。'); });
+  if (b.dataset.restore) return run(async () => { const [type, id] = b.dataset.restore.split(':'); if (type === 'visit') return changeVisitTrash('restore', id); const r = by(type, id); if (r.mergedInto && r.mergeDecision) throw new Error('這筆門市已經安全合併；一般還原不能撤銷合併。請另行核對完整影響，原資料與歷史仍保留。'); if (r.mergedInto && !confirm('此門市曾依已裁定同店規則整併至「' + name('store', r.mergedInto) + '」。還原會重新成為獨立門市，之後必須重新核對身分。確認還原？')) return; await commitRevision(type, id, r.heads[0].data, r.heads.map(h => h.id)); toast('已還原。'); });
   if (b.dataset.useVersion) return run(() => useVersion(b.dataset.useVersion));
   if (b.dataset.mergeVersion) return run(() => editMerge(b.dataset.mergeVersion));
   if (b.dataset.safeConflictPreview !== undefined) return run(previewSafeConflictMerge);
@@ -4500,7 +4570,7 @@ new ResizeObserver(drawGraph).observe($('graph-wrap'));
 if (!isSecureContext || !crypto.subtle) { $('gate-error').textContent = '需要受信任的 HTTPS 連線。請完成 Mac 與 iPhone 憑證設定，不要略過憑證警告。'; $('gate-submit').disabled = true; }
 else {
   showGate();
-  const draftBusy = () => !!monthlyFeedbackContext || !!payload?.monthlyFeedbackDraft || !!payload?.supervisorDraft || busy || gateOpening || peopleBatchRunning || !!recoveryExportContext || !!weeklyContext || weeklyRunning || !!backupPreview || !!editorContext || !!inlineTextContext || !!reminderContext || !!dayPlanContext || !!monthlyVisitContext || !!payload?.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('store-reminder-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending() || (!$('gate').hidden && [...$('gate-form').querySelectorAll('input')].some(el => el.value && !['device-name'].includes(el.id)));
+  const draftBusy = () => !!monthlyFeedbackContext || !!payload?.monthlyFeedbackDraft || !!payload?.supervisorDraft || notePurgeRunning || busy || gateOpening || peopleBatchRunning || !!recoveryExportContext || !!weeklyContext || weeklyRunning || !!backupPreview || !!editorContext || !!inlineTextContext || !!reminderContext || !!dayPlanContext || !!monthlyVisitContext || !!payload?.inlineTextDraft || $('review').open || $('quick-text-dialog')?.open || $('store-reminder-dialog')?.open || $('rebuild-dialog')?.open || csvImport.hasPending() || (!$('gate').hidden && [...$('gate-form').querySelectorAll('input')].some(el => el.value && !['device-name'].includes(el.id)));
   for (const name of ['click', 'submit', 'keydown', 'beforeinput']) document.addEventListener(name, event => { if (updateHolding && event.target.closest('button,input,select,textarea,form,a')) { event.preventDefault(); event.stopImmediatePropagation(); } }, true);
   startUpdates({ api, hasToken: () => !!payload?.token, isBusy: draftBusy, setHold: held => { updateHolding = held; if (held) { syncEpoch++; syncScheduler.pause(); } else syncScheduler.wake(); document.body.classList.toggle('update-holding', held); }, notify: toast, onOfflineReady: () => { offlineReady = true; $('secure-state').textContent = '離線介面已備妥。iPhone 請先加入主畫面，再從主畫面進行配對。'; status(); } });
   if (location.hostname === 'localhost') $('secure-state').textContent = '請使用 Mac 顯示的 .local 網址開啟 App，管理頁才使用 localhost。';

@@ -605,7 +605,7 @@ function buildNewStoresOnly(plan, bundle, device) {
   const report = newStoreOnlyReport(plan, bundle);
   if (!report.ready) throw new Error('只新增新門市檢查未通過：' + report.blockers[0].message);
   const proof = newStorePlans.get(plan), next = structuredClone(bundle), at = new Date().toISOString(), batch = uuid(), sourceIds = proof.files.map(() => uuid()), newStores = new Set();
-  next.schema = 2;
+  next.schema = Math.max(2,next.schema);
   const summary = { sourceSnapshots: 0, stores: 0, linked: 0, notes: 0, updatedNotes: 0, missingNotes: 0, restoredNotes: 0, unchangedNotes: 0, duplicateNotes: 0, filledFields: 0, adoptedSupplements: 0, skipped: 0, rows: 0, mergeGroups: 0, mergedStores: 0, movedVisits: 0, excludedPlaces: 0, revokedExclusions: 0, auditSnapshots: 0 };
   const memory = exclusionState(bundle), remembered = new Set(), eventsByFile = new Map();
   for (const [index, canonical] of proof.rows.entries()) {
@@ -733,7 +733,7 @@ export function buildCSVImport(plan, bundle, device) {
   if (plan.vaultId !== bundle.vaultId || plan.baseRevision !== bundleRevision(bundle)) throw new Error('資料已在預覽後變更，請重新產生匯入預覽；尚未寫入這批資料。');
   const sop = sop1Report(plan, bundle);
   if (!sop.ready) throw new Error('SOP1 尚未通過：' + sop.blockers[0].message + '。這批尚未寫入 App 或關聯圖。');
-  const next = structuredClone(bundle), initial = project(bundle), states = new Map(initial.filter(r => r.type === 'store').map(r => [r.id, { data: structuredClone(r.heads[0].data), parents: r.heads.map(h => h.id), invalid: r.deleted || r.conflict }])); next.schema = 2;
+  const next = structuredClone(bundle), initial = project(bundle), states = new Map(initial.filter(r => r.type === 'store').map(r => [r.id, { data: structuredClone(r.heads[0].data), parents: r.heads.map(h => h.id), invalid: r.deleted || r.conflict }])); next.schema = Math.max(2,next.schema);
   const resolution = new Map(), at = new Date().toISOString(), batch = uuid(), changed = new Set(), visitOps = [], sourceOps = [], mergeStoreOps = [], movedVisitRecords = new Map(), sourceSnapshotIds = plan.files.map(() => uuid());
   const summary = { sourceSnapshots: 0, stores: 0, linked: 0, notes: 0, updatedNotes: 0, missingNotes: 0, restoredNotes: 0, unchangedNotes: 0, duplicateNotes: 0, filledFields: 0, adoptedSupplements: 0, skipped: 0, rows: 0, mergeGroups: 0, mergedStores: 0, movedVisits: 0 };
   for (const [index, f] of plan.files.entries()) {
