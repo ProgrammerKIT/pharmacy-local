@@ -1,22 +1,77 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import https from 'node:https';
-import { fork } from 'node:child_process';
+import { fork, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { ROOT, defaultDataDir } from './server.mjs';
 import { UpdateEngine } from './update/engine.mjs';
 
+const lockBusy = '服務已啟動，請勿重複開啟。';
+
+function legacySupervisorIsRunning(pid) {
+  try { process.kill(pid, 0); }
+  catch (error) {
+    if (error.code === 'ESRCH') return false;
+    throw error;
+  }
+  const owner = spawnSync('/bin/ps', ['-ww', '-p', String(pid), '-o', 'command='], { encoding: 'utf8' });
+  if (owner.status === 0 && owner.stdout.trim()) {
+    return /(?:^|[\s/])supervisor\.mjs(?:\s|$)/.test(owner.stdout);
+  }
+  // If the process exited during inspection, there is no legacy owner.
+  try { process.kill(pid, 0); }
+  catch (error) {
+    if (error.code === 'ESRCH') return false;
+    throw error;
+  }
+  throw new Error('無法核對舊服務鎖持有者，請檢查 Mac 服務。');
+}
+
+export function acquireServiceLock(dataDir) {
+  const lockFile = path.join(dataDir, 'service.lock');
+  // Keep the same inode across starts. The kernel drops the lock even after
+  // SIGKILL. Perl locks the inherited descriptor, which Node keeps open.
+  const guardFile = path.join(dataDir, 'service.lock.guard');
+  const { O_CREAT, O_RDWR, O_NOFOLLOW } = fs.constants;
+  const guard = fs.openSync(guardFile, O_CREAT | O_RDWR | O_NOFOLLOW, 0o600);
+  try {
+    const helper = [
+      'open(my $lock, "<&=3") or die $!;',
+      'exit 0 if flock($lock, LOCK_EX | LOCK_NB);',
+      'exit 75 if $!{EWOULDBLOCK};',
+      'die $!;',
+    ].join(' ');
+    const attempt = spawnSync('/usr/bin/perl', ['-MFcntl=:flock', '-e', helper], {
+      stdio: ['ignore', 'ignore', 'pipe', guard],
+      timeout: 3000,
+    });
+    if (attempt.status === 75) throw new Error(lockBusy);
+    if (attempt.status !== 0) throw new Error('無法取得系統服務鎖，請檢查 Mac 服務。');
+
+    // A legacy bootstrap only understands the PID file. Keep that fence
+    // while running and preserve stale copies when taking over.
+    if (fs.existsSync(lockFile)) {
+      const old = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
+      if (!Number.isSafeInteger(old.pid) || old.pid < 1) throw new Error('服務鎖定檔需要人工檢查。');
+      if (old.advisory !== true && legacySupervisorIsRunning(old.pid)) throw new Error(lockBusy);
+      fs.renameSync(lockFile, lockFile + '.stale-' + randomUUID());
+    }
+    fs.writeFileSync(lockFile, JSON.stringify({ pid: process.pid, advisory: true }), { flag: 'wx', mode: 0o600 });
+    return () => {
+      try { fs.unlinkSync(lockFile); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+      finally { fs.closeSync(guard); }
+    };
+  } catch (error) {
+    fs.closeSync(guard);
+    throw error;
+  }
+}
+
 export async function runSupervisor({ root = ROOT, dataDir = defaultDataDir(), fetchPackage, automatic = true } = {}) {
   const cfg = JSON.parse(fs.readFileSync(path.join(dataDir, 'config.json')));
-  const lockFile = path.join(dataDir, 'service.lock');
-  if (fs.existsSync(lockFile)) {
-    const old = JSON.parse(fs.readFileSync(lockFile));
-    if (!Number.isSafeInteger(old.pid) || old.pid < 1) throw new Error('服務鎖定檔需要人工檢查。');
-    try { process.kill(old.pid, 0); throw new Error('服務已啟動，請勿重複開啟。'); }
-    catch (e) { if (e.code !== 'ESRCH') throw e; fs.unlinkSync(lockFile); }
-  }
-  const lock = fs.openSync(lockFile, 'wx', 0o600); fs.writeFileSync(lock, JSON.stringify({ pid: process.pid })); fs.closeSync(lock);
+  const releaseServiceLock = acquireServiceLock(dataDir);
   let child, stopping = false, expectedExit = false, engine, timer, checkTimer;
   const pending = new Map();
   const rpc = (action, body = {}) => new Promise((resolve, reject) => {
@@ -69,7 +124,7 @@ export async function runSupervisor({ root = ROOT, dataDir = defaultDataDir(), f
     if (stopping) return; stopping = true; clearInterval(timer); clearInterval(checkTimer);
     await stop();
     for (const p of pending.values()) { clearTimeout(p.timeout); p.reject(new Error('服務正在停止。')); } pending.clear();
-    if (fs.existsSync(lockFile) && JSON.parse(fs.readFileSync(lockFile)).pid === process.pid) fs.unlinkSync(lockFile);
+    releaseServiceLock();
     process.exitCode = code;
   }
   try {

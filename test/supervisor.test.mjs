@@ -10,11 +10,60 @@ import net from 'node:net';
 import https from 'node:https';
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import { ROOT, atomic } from '../server.mjs';
-import { runSupervisor } from '../supervisor.mjs';
+import { acquireServiceLock, runSupervisor } from '../supervisor.mjs';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { makeCertificates } from '../scripts/setup.mjs';
 import { exportCode } from '../scripts/release.mjs';
 import { buildPackage } from '../update/package.mjs';
 import { newMeta, derive, seal, emptyBundle, unseal } from '../public/core.js';
+
+test('service lock recovers a reused legacy PID and releases after abrupt exit', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pharmacy-lock-test-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const legacyFile = path.join(dir, 'service.lock');
+  fs.writeFileSync(legacyFile, JSON.stringify({ pid: process.pid }));
+  const release = acquireServiceLock(dir);
+  try {
+    assert.throws(() => acquireServiceLock(dir), /服務已啟動/);
+    assert.equal(fs.readdirSync(dir).filter(name => name.startsWith('service.lock.stale-')).length, 1);
+  } finally {
+    release();
+  }
+  const modulePath = new URL('../supervisor.mjs', import.meta.url).href;
+  const child = spawn(process.execPath, ['--input-type=module', '-e',
+    `import { acquireServiceLock } from ${JSON.stringify(modulePath)};
+      acquireServiceLock(process.argv[1]);
+      console.log('locked');
+      setInterval(() => {}, 1000);`, dir], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const closed = once(child, 'exit');
+  t.after(() => child.kill('SIGKILL'));
+  await Promise.race([once(child.stdout, 'data'), closed]);
+  assert.throws(() => acquireServiceLock(dir), /服務已啟動/);
+  child.kill('SIGKILL');
+  await closed;
+  const restarted = acquireServiceLock(dir);
+  restarted();
+  assert.equal(fs.existsSync(legacyFile), false);
+});
+
+test('service lock refuses a live legacy supervisor without modifying the lock', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pharmacy-legacy-lock-test-'));
+  const legacy = path.join(dir, 'supervisor.mjs');
+  fs.writeFileSync(legacy, "console.log('legacy'); setInterval(() => {}, 1000);");
+  const child = spawn(process.execPath, [legacy], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const closed = once(child, 'exit');
+  t.after(async () => {
+    child.kill('SIGKILL');
+    await closed;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  await Promise.race([once(child.stdout, 'data'), closed]);
+  const file = path.join(dir, 'service.lock'), record = JSON.stringify({ pid: child.pid });
+  fs.writeFileSync(file, record);
+  assert.throws(() => acquireServiceLock(dir), /服務已啟動/);
+  assert.equal(fs.readFileSync(file, 'utf8'), record);
+});
 
 test('real supervisor switches HTTPS child processes, waits for tabs and recovers a crashing release without changing ciphertext', { timeout: 60000 }, async t => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'pharmacy-supervisor-test-'));
