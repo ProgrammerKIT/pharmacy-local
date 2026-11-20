@@ -198,7 +198,7 @@ export function visitAttendanceEvidence(op) {
 // Bundles are validated at their input boundary; this read never validates or
 // rewrites the full graph, and ignores malformed attendance evidence locally.
 export function visitAttendanceForStore(bundle, storeId, now = Date.now()) {
-  const today = attendanceTaipeiDate(now), dates = new Map(), ops = Array.isArray(bundle?.ops) ? bundle.ops : [];
+  const today = attendanceTaipeiDate(now), dates = new Map(), ops = noteAttendanceOps(bundle);
   for (const op of ops) {
     const attendance = visitAttendanceEvidence(op);
     if (attendance?.store !== storeId || !str(op.id, 100) || !op.id || !validData(op.type, op.data)) continue;
@@ -939,8 +939,99 @@ export function validData(type, d) {
   if (type === 'person') return str(d.role, 500) && str(d.desc) && typeof d.confirmed === 'boolean' && str(d.sameAs ?? '', 100);
   return str(d.desc);
 }
+// Schema 3 stores irreversible note-removal receipts separately from the active
+// graph. Exact versions already referenced by analysis survive as evidence only.
+export function notePurgeReceipts(bundle) { return Array.isArray(bundle?.purgedNotes) ? bundle.purgedNotes : []; }
+export function noteAttendanceOps(bundle) { return [...(bundle?.ops || []), ...notePurgeReceipts(bundle).flatMap(r => r.attendance)]; }
+export function noteEvidenceOps(bundle) { return [...bundle.ops, ...notePurgeReceipts(bundle).flatMap(r => r.retained)]; }
+function validateNotePurges(bundle) {
+  const receipts = bundle.purgedNotes;
+  if (receipts === undefined) return;
+  if (bundle.schema !== 3 || !Array.isArray(receipts) || receipts.length > 30000) throw new Error('筆記永久移除紀錄格式不符，請更新程式。');
+  const ids = new Set(), retainedIds = new Set(), stores = new Set(bundle.ops.filter(op => op.type === 'store').map(op => op.entity));
+  for (const r of receipts) {
+    if (!plain(r) || Object.keys(r).sort().join(',') !== 'attendance,deletedAt,deletedHead,id,purgedAt,retained,revisionIds,storeId' || !str(r.id,100) || !r.id || ids.has(r.id) || !str(r.storeId,100) || !r.storeId || !stores.has(r.storeId) || !idsArray(r.revisionIds) || !r.revisionIds.includes(r.deletedHead) || !attendanceInstant(r.deletedAt) || !attendanceInstant(r.purgedAt) || Date.parse(r.purgedAt) < Date.parse(r.deletedAt) + 30*86400000 || !Array.isArray(r.retained) || r.retained.length > r.revisionIds.length || !Array.isArray(r.attendance) || r.attendance.length > r.revisionIds.length) throw new Error('筆記永久移除依據不完整。');
+    ids.add(r.id);
+    for (const op of r.retained) {
+      if (op?.type !== 'visit' || op.entity !== r.id || !stores.has(op.data?.store) || !r.revisionIds.includes(op.id) || retainedIds.has(op.id)) throw new Error('分析保留版本與永久移除筆記不符。');
+      retainedIds.add(op.id);
+    }
+    if (r.retained.length) {
+      const head = r.retained.find(op => op.id === r.deletedHead);
+      if (r.retained.length !== r.revisionIds.length || !head?.deleted || head.at !== r.deletedAt || head.data.store !== r.storeId || head.trashRetentionDays !== 30) throw new Error('分析留存缺少完整的刪除版本依據。');
+    }
+    const marks = new Set();
+    for (const op of r.attendance) {
+      if (op?.type !== 'visit' || op.entity !== r.id || !stores.has(op.data?.store) || !r.revisionIds.includes(op.id) || !validVisitAttendance(op) || !validData('visit',op.data) || op.data.text || op.data.next || op.data.source || op.data.attachments.length || op.data.people.length || op.data.topics.length || marks.has(op.id)) throw new Error('永久移除後的拜訪確認不符。');
+      marks.add(op.id);
+    }
+    if (bundle.ops.some(op => op.type === 'visit' && op.entity === r.id)) throw new Error('永久移除的筆記不能重新加入有效或回收桶版本。');
+  }
+}
+function idsArray(value) { return Array.isArray(value) && value.length > 0 && value.length <= 30000 && value.every(id=>str(id,100)&&!!id) && new Set(value).size===value.length; }
+function combineNotePurges(a,b) {
+  const map=new Map();
+  for(const r of [...notePurgeReceipts(a),...notePurgeReceipts(b)]) {
+    const old=map.get(r.id);
+    if(old && JSON.stringify({...old,purgedAt:''})!==JSON.stringify({...r,purgedAt:''}))throw new Error('同筆永久移除依據不同，保留兩端資料，請人工核對。');
+    if(!old || r.purgedAt<old.purgedAt)map.set(r.id,r);
+  }
+  return [...map.values()].sort((x,y)=>x.id.localeCompare(y.id));
+}
+function excludePurgedNoteOps(ops,receipts) {
+  const byId=new Map(receipts.map(r=>[r.id,r]));
+  return ops.filter(op=>{
+    const r=op.type==='visit'&&byId.get(op.entity);if(!r)return true;
+    if(!r.revisionIds.includes(op.id))throw new Error('已永久移除的筆記在另一端有不同版本；本機內容保留，不自動覆蓋或恢復。');
+    const retained=r.retained.find(v=>v.id===op.id);if(retained&&JSON.stringify(retained)!==JSON.stringify(op))throw new Error('分析保留原句的版本內容不同，停止合併。');
+    return false;
+  });
+}
+function referencedNoteIds(bundle) {
+  const visitIds=new Set(bundle.ops.filter(o=>o.type==='visit').map(o=>o.entity)),revisionToVisit=new Map(bundle.ops.filter(o=>o.type==='visit').map(o=>[o.id,o.entity])),found=new Set();
+  const walk=(value,depth=0)=>{
+    if(depth>30)return;
+    if(typeof value==='string') {
+      if(visitIds.has(value))found.add(value);if(revisionToVisit.has(value))found.add(revisionToVisit.get(value));
+      if(value.startsWith('[')||value.startsWith('{')){try{walk(JSON.parse(value),depth+1);}catch{}}
+    } else if(Array.isArray(value))for(const child of value)walk(child,depth+1);
+    else if(value&&typeof value==='object')for(const child of Object.values(value))walk(child,depth+1);
+  };
+  for(const op of bundle.ops)if(op.type!=='visit')walk(op.data);
+  return found;
+}
+function referencedBlobs(ops) {
+  const blobs=new Set();
+  const walk=value=>{if(typeof value==='string'&&/^[a-f0-9]{64}$/.test(value))blobs.add(value);else if(Array.isArray(value))value.forEach(walk);else if(value&&typeof value==='object')Object.values(value).forEach(walk);};
+  ops.forEach(op=>walk(op.data));return blobs;
+}
+export function expiredVisitTrash(bundle,now=Date.now()) {
+  const time=typeof now==='number'?now:Date.parse(now);if(!Number.isFinite(time))throw new Error('清除時間無法核對。');
+  return project(bundle).filter(v=>v.type==='visit'&&v.deleted&&!v.conflict&&v.heads.length===1&&v.heads[0].trashRetentionDays===30&&attendanceInstant(v.heads[0].at)&&time>=Date.parse(v.heads[0].at)+30*86400000);
+}
+export function purgeExpiredVisitNotes(bundle,now=Date.now()) {
+  validateBundle(bundle);const due=expiredVisitTrash(bundle,now);if(!due.length)return bundle;
+  const next=structuredClone(bundle),referenced=referencedNoteIds(bundle),at=new Date(typeof now==='number'?now:Date.parse(now)).toISOString(),receipts=[...notePurgeReceipts(bundle)],removed=new Set(due.map(v=>v.id));
+  const dropped=bundle.ops.filter(o=>o.type==='visit'&&removed.has(o.entity));
+  for(const visit of due){
+    const versions=visit.versions.slice().sort((a,b)=>a.id.localeCompare(b.id));
+    const attendance=versions.filter(op=>validVisitAttendance(op)).map(op=>({...structuredClone(op),parents:[],data:{store:op.data.store,date:'',text:'',next:'',source:'',people:[],topics:[],attachments:[]}}));
+    receipts.push({id:visit.id,storeId:visit.store,deletedAt:visit.heads[0].at,deletedHead:visit.heads[0].id,purgedAt:at,revisionIds:versions.map(o=>o.id),retained:referenced.has(visit.id)?structuredClone(versions):[],attendance});
+  }
+  next.schema=3;next.purgedNotes=receipts.sort((a,b)=>a.id.localeCompare(b.id));next.ops=next.ops.filter(o=>o.type!=='visit'||!removed.has(o.entity));
+  const needed=referencedBlobs(noteEvidenceOps(next));
+  for(const id of referencedBlobs(dropped))if(!needed.has(id))delete next.blobs[id];
+  return validateBundle(next);
+}
 export function validateBundle(b) {
-  if (!plain(b) || ![1, 2].includes(b.schema) || !str(b.vaultId, 100) || !Array.isArray(b.ops) || b.ops.length > 30000 || !plain(b.blobs)) throw new Error('資料庫格式不符，或需要更新至支援此資料的程式版本。');
+  if (!plain(b) || ![1,2,3].includes(b.schema) || !Array.isArray(b.ops)) throw new Error('資料庫格式不符，或需要更新程式。');
+  validateNotePurges(b);
+  const {purgedNotes,...validation}=b;
+  validateBundleContents({...validation,ops:noteEvidenceOps(b)});
+  return b;
+}
+function validateBundleContents(b) {
+  if (!plain(b) || ![1, 2, 3].includes(b.schema) || !str(b.vaultId, 100) || !Array.isArray(b.ops) || b.ops.length > 30000 || !plain(b.blobs)) throw new Error('資料庫格式不符，或需要更新至支援此資料的程式版本。');
   const seen = new Map(), sourceEntities = new Map(), storeEntities = new Set(), reviewEvents = new Map(), relationDefinitions = new Map();
   for (const o of b.ops) {
     if (!plain(o) || !str(o.id, 100) || !o.id || seen.has(o.id) || !types.includes(o.type) || !str(o.entity, 100) || !ids(o.parents) || new Set(o.parents).size !== o.parents.length || !str(o.device, 100) || !str(o.at, 40) || typeof o.deleted !== 'boolean' || !validData(o.type, o.data)) throw new Error('紀錄或版本資訊不完整。');
@@ -958,6 +1049,7 @@ export function validateBundle(b) {
       reviewEvents.set(event.id, fingerprint);
     }
     if (Object.hasOwn(o, 'visitAttendance') && !validVisitAttendance(o)) throw new Error('拜訪確認資料不完整或與紀錄不符。');
+    if (o.trashRetentionDays !== undefined && (o.type !== 'visit' || !o.deleted || o.trashRetentionDays !== 30 || !attendanceInstant(o.at))) throw new Error('筆記回收桶保護期限不符。');
     seen.set(o.id, o);
   }
   const readingDocs=[...sourceEntities.values()].filter(o=>o.data.peopleReading),readingByEntity=new Map(readingDocs.map(o=>[o.entity,o]));
@@ -1037,13 +1129,18 @@ export function merge(a, b) {
   if (a.vaultId !== b.vaultId) throw new Error('這是不同的資料庫，不能直接合併。');
   const all = new Map(a.ops.map(o => [o.id, o]));
   for (const o of b.ops) { if (all.has(o.id) && JSON.stringify(all.get(o.id)) !== JSON.stringify(o)) throw new Error('相同版本編號的內容不同，停止同步。'); all.set(o.id, o); }
+  const purgedNotes = combineNotePurges(a,b);
+  const ops = excludePurgedNoteOps([...all.values()],purgedNotes);
   const blobs = { ...a.blobs };
   for (const [id, data] of Object.entries(b.blobs)) { if (Object.hasOwn(blobs, id) && blobs[id] !== data) throw new Error('附件識別衝突。'); blobs[id] = data; }
-  return validateBundle({ schema: Math.max(a.schema, b.schema), vaultId: a.vaultId, ops: [...all.values()].sort((x, y) => x.id.localeCompare(y.id)), blobs });
+  const needed=referencedBlobs([...ops,...purgedNotes.flatMap(r=>r.retained)]);
+  for(const id of referencedBlobs([...all.values()].filter(op=>op.type==='visit'&&purgedNotes.some(r=>r.id===op.entity))))if(!needed.has(id))delete blobs[id];
+  return validateBundle({ schema: Math.max(a.schema, b.schema), vaultId: a.vaultId, ops: ops.sort((x, y) => x.id.localeCompare(y.id)), blobs, ...(purgedNotes.length?{purgedNotes}:{}) });
 }
 export function project(b) {
   const groups = new Map(), superseded = new Set(b.ops.flatMap(o => o.parents));
-  for (const o of b.ops) { const k = `${o.type}:${o.entity}`; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(o); }
+  const purgedIds=new Set(notePurgeReceipts(b).map(r=>r.id));
+  for (const o of b.ops) { if(o.type==='visit'&&purgedIds.has(o.entity))continue; const k = `${o.type}:${o.entity}`; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(o); }
   return [...groups.values()].map(versions => {
     const heads = versions.filter(o => !superseded.has(o.id)).sort((a, b) => a.id.localeCompare(b.id));
     const current = heads.find(o => !o.deleted) || heads[0];
@@ -1078,6 +1175,28 @@ export function revision(type, entity, data, parents, device, deleted = false, a
     if (!validVisitAttendance(op)) throw new Error('拜訪確認資料不完整或與紀錄不符。');
   }
   return op;
+}
+// Trash and restore append revisions. Only explicit 30-day trash markers
+// authorize expiry; analysis evidence survives separately from recoverable notes.
+export function visitTrashState(visit, now = Date.now()) {
+  if (visit?.type !== 'visit' || !visit.deleted || visit.conflict || visit.heads?.length !== 1 || !visit.heads[0].deleted) return null;
+  const removed = Date.parse(visit.heads[0].at), time = typeof now === 'number' ? now : Date.parse(now);
+  if (!Number.isFinite(removed) || !Number.isFinite(time)) return { removedAt: null, protectedUntil: null, daysRemaining: null };
+  const until = removed + 30 * 86400000;
+  return { removedAt: new Date(removed).toISOString(), protectedUntil: new Date(until).toISOString(), daysRemaining: Math.max(0, Math.ceil((until - time) / 86400000)) };
+}
+export function applyVisitTrashAction(bundle, { visitId, action, expectedHeads }, device) {
+  validateBundle(bundle);
+  if (!['trash', 'restore'].includes(action)) throw new Error('不支援的筆記回收桶操作。');
+  const visit = project(bundle).find(row => row.type === 'visit' && row.id === visitId);
+  if (!visit || visit.conflict || visit.heads.length !== 1) throw new Error('筆記不存在或有版本衝突，請先核對；本次沒有變更。');
+  if (!Array.isArray(expectedHeads) || expectedHeads.length !== 1 || expectedHeads[0] !== visit.heads[0].id) throw new Error('筆記已有新版本，請重新開啟核對；本次沒有變更。');
+  if ((action === 'trash' && visit.deleted) || (action === 'restore' && !visit.deleted)) throw new Error('筆記狀態已變更，請重新開啟核對。');
+  const next = structuredClone(bundle); next.schema = Math.max(2,bundle.schema);
+  const op=revision('visit', visitId, visit.heads[0].data, expectedHeads, device, action === 'trash');
+  if(action==='trash')op.trashRetentionDays=30;
+  next.ops.push(op);
+  return validateBundle(next);
 }
 // Display-only device safety summary. No timestamps, writes, or inferred Mac receipts.
 // drafts includes reminderDrafts; all drafts are device-only, outside the shared bundle.
@@ -1165,7 +1284,7 @@ function backupCounts(bundle, records) {
   return { entities, active, deleted, conflicts: records.filter(record => record.conflict).length, revisions: bundle?.ops.length || 0, blobs: Object.keys(bundle?.blobs || {}).length };
 }
 function backupReferenceWarnings(bundle) {
-  const known = new Set(bundle.ops.map(op => JSON.stringify([op.type, op.entity]))), revisions = new Map(bundle.ops.map(op => [op.id, op])), missing = new Map();
+  const known = new Set(noteEvidenceOps(bundle).map(op => JSON.stringify([op.type, op.entity]))), revisions = new Map(noteEvidenceOps(bundle).map(op => [op.id, op])), missing = new Map();
   for (const op of bundle.ops) {
     const references = op.type === 'visit' ? [['store', op.data.store], ...op.data.people.map(id => ['person', id]), ...op.data.topics.map(id => ['topic', id])]
       : op.type === 'person' && op.data.sameAs ? [['person', op.data.sameAs]]
@@ -1219,9 +1338,9 @@ export async function planBackupImport(currentBundle, incomingBundle) {
   const recordKey = record => JSON.stringify([record.type, record.id]);
   const beforeByKey = new Map(beforeRecords.map(record => [recordKey(record), record]));
   const existingOps = new Set((current?.ops || []).map(op => op.id));
-  const addedOps = incoming.ops.filter(op => !existingOps.has(op.id));
+  const addedOps = bundle.ops.filter(op => !existingOps.has(op.id));
   const attendanceOps = ops => ops.flatMap(op => { const attendance = visitAttendanceEvidence(op); return attendance ? [{ ...op, visitAttendance: attendance }] : []; });
-  const beforeAttendance = attendanceOps(current?.ops || []), afterAttendance = attendanceOps(bundle.ops);
+  const beforeAttendance = attendanceOps(noteAttendanceOps(current)), afterAttendance = attendanceOps(noteAttendanceOps(bundle));
   const attendanceDay = op => JSON.stringify([op.visitAttendance.store, op.visitAttendance.date]);
   const beforeAttendanceDays = new Set(beforeAttendance.map(attendanceDay)), afterAttendanceDays = new Set(afterAttendance.map(attendanceDay));
   const addedAttendanceByEntity = new Map();
@@ -1248,13 +1367,19 @@ export async function planBackupImport(currentBundle, incomingBundle) {
     if (kind === 'history-only') historyOnlyEntities++;
     changes.push({ type: after.type, entity: after.id, kind, beforeHeads, afterHeads, beforeDeleted: before?.deleted || false, afterDeleted: after.deleted, beforeConflict: before?.conflict || false, afterConflict: after.conflict, addedVisitAttendance: addedAttendanceByEntity.get(key) || [] });
   }
+  const previousPurges = new Set(notePurgeReceipts(current).map(receipt => receipt.id));
+  const addedPurges = notePurgeReceipts(bundle).filter(receipt => !previousPurges.has(receipt.id));
+  for (const receipt of addedPurges) {
+    const before = beforeByKey.get(JSON.stringify(['visit', receipt.id]));
+    changes.push({type:'visit', entity:receipt.id, kind:'permanent-removal', beforeHeads:before?.heads || [], afterHeads:[], beforeDeleted:before?.deleted || false, afterDeleted:true, beforeConflict:before?.conflict || false, afterConflict:false, addedVisitAttendance:[], purge:{deletedAt:receipt.deletedAt,purgedAt:receipt.purgedAt,storeId:receipt.storeId}});
+  }
   changes.sort((a, b) => JSON.stringify([a.type, a.entity]).localeCompare(JSON.stringify([b.type, b.entity])));
   const before = backupCounts(current, beforeRecords), after = backupCounts(bundle, afterRecords);
-  const newBlobs = Object.keys(incoming.blobs).filter(id => !Object.hasOwn(current?.blobs || {}, id)).length;
+  const newBlobs = Object.keys(bundle.blobs).filter(id => !Object.hasOwn(current?.blobs || {}, id)).length;
   const summary = {
-    mode: current ? 'merge' : 'restore', hasChanges: !current || addedOps.length > 0 || newBlobs > 0 || bundle.schema !== current.schema,
+    mode: current ? 'merge' : 'restore', hasChanges: !current || addedOps.length > 0 || newBlobs > 0 || bundle.schema !== current.schema || JSON.stringify(notePurgeReceipts(bundle)) !== JSON.stringify(notePurgeReceipts(current)),
     before, incoming: backupCounts(incoming, incomingRecords), after,
-    addedRevisions: addedOps.length, identicalRevisions: incoming.ops.length - addedOps.length, newBlobs, newEntities,
+    addedRevisions: addedOps.length, identicalRevisions: incoming.ops.filter(op=>existingOps.has(op.id)).length, permanentlyRemovedNotes: addedPurges.length, totalPermanentlyRemovedNotes: notePurgeReceipts(bundle).length, newBlobs, newEntities,
     changedExistingEntities, historyOnlyEntities, conflictsBefore: before.conflicts, conflictsAfter: after.conflicts,
     visitAttendance: { beforeMarks: beforeAttendance.length, afterMarks: afterAttendance.length, addedMarks: afterAttendance.length - beforeAttendance.length, beforeDays: beforeAttendanceDays.size, afterDays: afterAttendanceDays.size, addedDays: [...afterAttendanceDays].filter(day => !beforeAttendanceDays.has(day)).length },
     newConflicts, resolvedConflicts, movedToTrash, revived, warnings: backupReferenceWarnings(bundle)
@@ -3029,7 +3154,7 @@ export function exportTypedFeedback(bundle,channel,visitMonth,{appVersion,exclud
   if(analysisChannel(channel)!=='佑全' || !analysisMonth(visitMonth) || !attendanceInstant(at) || !/^\d+\.\d+\.\d+$/.test(appVersion||'') || !ids(excludedNotes))throw new Error('請核對佑全、拜訪月份與程式版本。');
   const sources=monthlyAnalysisSources(bundle).filter(s=>s.channel==='佑全' && s.visitMonth===visitMonth),replaced=new Set(sources.flatMap(s=>s.supersedes)),current=sources.filter(s=>!replaced.has(s.id));
   if(current.length!==1 || current[0].format!=='yq-alert-2')throw new Error('本期需有唯一有效的 v2 來源；v1 請使用既有格式，來源分歧請先核對。');
-  const primary=current[0],sourceMap=new Map(sources.map(s=>[s.id,s])),records=project(bundle),stores=new Map(records.filter(r=>r.type==='store').map(r=>[r.id,r])),revisions=new Map(bundle.ops.map(op=>[op.id,op]));
+  const primary=current[0],sourceMap=new Map(sources.map(s=>[s.id,s])),records=project(bundle),stores=new Map(records.filter(r=>r.type==='store').map(r=>[r.id,r])),revisions=new Map(noteEvidenceOps(bundle).map(op=>[op.id,op]));
   const groups=new Map(),cited=new Set([primary.id]),excluded=new Set(excludedNotes);
   const addRow=(source,rowIndex)=>{
     const row=source.rows[rowIndex],match=source.assignments[rowIndex],existing=groups.get(row.storeCode);
@@ -3043,7 +3168,7 @@ export function exportTypedFeedback(bundle,channel,visitMonth,{appVersion,exclud
     const entry=addRow(primary,i);
     if(match.storeId){
       const hasNote=records.some(record=>record.type==='visit' && !record.deleted && !record.conflict && record.store===match.storeId && record.date?.startsWith(visitMonth+'-'));
-      const hasAttendance=bundle.ops.some(op=>{const a=visitAttendanceEvidence(op);return a?.store===match.storeId && a.date.startsWith(visitMonth+'-');});
+      const hasAttendance=noteAttendanceOps(bundle).some(op=>{const a=visitAttendanceEvidence(op);return a?.store===match.storeId && a.date.startsWith(visitMonth+'-');});
       if(hasNote || hasAttendance)entry.status='visited_no_report';
     }
   });

@@ -384,6 +384,13 @@ export function createService({ dataDir = defaultDataDir(), host = '0.0.0.0', po
           if (generation || ['activating', 'checking'].includes(updateStatus.phase)) return send(503, { error: '程式正在更新，稍後會再準備備份。' });
           return send(200, url.pathname.endsWith('/config') ? scheduledRecovery.configure(body) : scheduledRecovery.stage(body));
         }
+        const notePurgeCompatible = () => {
+          const value = String(req.headers['x-pharmacy-app'] || '');
+          if (!/^\d+\.\d+\.\d+$/.test(value)) return false;
+          const [major, minor, patch] = value.split('.').map(Number);
+          return major > 1 || major === 1 && (minor > 5 || minor === 5 && patch >= 116);
+        };
+        if (url.pathname === '/api/snapshot' && snapshot.minimumAppVersion === '1.5.116' && !notePurgeCompatible()) return send(409, {error:'資料已啟用筆記永久移除保護，請更新至v1.5.116或更新版本；舊裝置本機輸入保留，不清除或重新配對。'});
         if (url.pathname === '/api/version' && req.method === 'GET') return send(200, { version: snapshot.version });
         if (url.pathname === '/api/snapshot' && req.method === 'GET') return send(200, snapshot);
         if (url.pathname === '/api/snapshot' && req.method === 'PUT') {
@@ -393,7 +400,9 @@ export function createService({ dataDir = defaultDataDir(), host = '0.0.0.0', po
           if (body.expectedVersion !== snapshot.version) return send(409, { error: '另一台裝置先更新，請重新合併。' });
           checkEnvelope(body.envelope);
           if (snapshot.envelope && ['vaultId', 'salt', 'iterations'].some(k => body.envelope[k] !== snapshot.envelope[k])) return send(409, { error: '資料庫身分不同，拒絕覆蓋。' });
-          const next = { ...snapshot, version: snapshot.version + 1, envelope: body.envelope };
+          if (body.minimumAppVersion === '1.5.116' && !notePurgeCompatible()) return send(409, {error:'請先更新App，再啟用筆記永久移除保護。'});
+          if(body.minimumAppVersion!==undefined && body.minimumAppVersion!=='1.5.116' || snapshot.minimumAppVersion==='1.5.116' && body.minimumAppVersion!=='1.5.116')return send(409,{error:'不能移除筆記永久刪除保護，請使用相容版本同步。'});
+          const next = { ...snapshot, version: snapshot.version + 1, envelope: body.envelope, ...(body.minimumAppVersion?{minimumAppVersion:body.minimumAppVersion}:{}) };
           // No awaits from version comparison to atomic replacement: compare-and-swap is serialized.
           atomic(snapshotFile, next); snapshot = next;
           let backupOK = true;
