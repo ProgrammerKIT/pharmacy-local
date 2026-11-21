@@ -44,7 +44,7 @@ test('phone UI fits the available width and prevents page scaling or horizontal 
   listeners.get('touchstart').handler({ touches: [{ clientX: 100, clientY: 100 }], target: { closest: () => null } });
   listeners.get('touchmove').handler({ touches: [{ clientX: 135, clientY: 102 }], preventDefault: () => prevented++ });
   listeners.get('touchmove').handler({ touches: [{ clientX: 102, clientY: 135 }], preventDefault: () => prevented++ });
-  listeners.get('touchstart').handler({ touches: [{ clientX: 100, clientY: 100 }], target: { closest: () => ({}) } });
+  listeners.get('touchstart').handler({ touches: [{ clientX: 100, clientY: 100 }], target: { closest: selector => selector.includes('.rail nav') ? {} : null } });
   listeners.get('touchmove').handler({ touches: [{ clientX: 135, clientY: 102 }], preventDefault: () => prevented++ });
   assert.equal(prevented, 3, 'scale and whole-page horizontal drag are blocked; vertical and explicit horizontal scrollers remain available');
 
@@ -52,6 +52,23 @@ test('phone UI fits the available width and prevents page scaling or horizontal 
   listeners.get('scroll').handler();
   assert.equal(scrollingElement.scrollLeft, 0); assert.equal(documentElement.scrollLeft, 0); assert.equal(body.scrollLeft, 0);
   assert.deepEqual(windowScroll, [0, 222]);
+
+  const editor = { tagName: 'DIV', isContentEditable: true, closest: selector => selector.includes('[contenteditable="true"]') ? editor : null };
+  const outside = { closest: () => null };
+  const textStart = target => listeners.get('touchstart').handler({ touches: [{ clientX: 20, clientY: 30 }], target });
+  const textDrag = () => listeners.get('touchmove').handler({ touches: [{ clientX: 100, clientY: 32 }], preventDefault: () => prevented++ });
+  textStart(editor); textDrag();
+  document.activeElement = editor;
+  textStart(outside); textDrag();
+  assert.equal(prevented, 3, 'text gestures must reach WebKit even if a native handle is outside the editor DOM');
+
+  scrollingElement.scrollLeft = 10;
+  listeners.get('scroll').handler();
+  assert.equal(scrollingElement.scrollLeft, 10, 'do not force repositioning while the text surface owns the gesture');
+  listeners.get('touchend').handler();
+  document.activeElement = null;
+  listeners.get('focusout').handler();
+  assert.equal(scrollingElement.scrollLeft, 0, 'resume horizontal page correction after leaving the editor');
 });
 
 function editingViewportFixture({ mobile = true, withViewport = true, inDialog = false } = {}) {

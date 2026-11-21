@@ -13,11 +13,11 @@ const source = app.slice(start, end);
 // viewport pan is deliberately independent of typing or changing the caret.
 function fixture({ kind = 'DIV' } = {}) {
   const listeners = new Map(), viewportListeners = new Map(), windowListeners = new Map();
-  const frames = [], scrolls = [], properties = new Map(), classes = new Set();
+  const frames = [], scrolls = [], propertyWrites = [], properties = new Map(), classes = new Set();
   const geometry = { caretDocumentTop: 500, caretHeight: 24, dockHeight: 96, time: 1000 };
   const body = { parentElement: null, computed: { overflowY: 'visible' }, children: [],
     append(node) { this.children.push(node); node.parentElement = this; } };
-  const root = { style: { setProperty: (name, value) => properties.set(name, value) },
+  const root = { style: { setProperty(name, value) { propertyWrites.push(name); properties.set(name, value); } },
     classList: { toggle(name, enabled) { enabled ? classes.add(name) : classes.delete(name); }, contains: name => classes.has(name) } };
   const rect = () => ({ top: geometry.caretDocumentTop - window.scrollY,
     bottom: geometry.caretDocumentTop - window.scrollY + geometry.caretHeight,
@@ -71,7 +71,7 @@ function fixture({ kind = 'DIV' } = {}) {
   const openKeyboard = height => { viewport.height = height; viewportListeners.get('resize')(); flush(); };
   const nativePan = offset => { viewport.offsetTop = offset; viewportListeners.get('scroll')(); flush(); };
   flush();
-  return { geometry, window, viewport, editor, text, selection, scrolls, properties, emit, openKeyboard, nativePan, flush, rect };
+  return { geometry, window, viewport, editor, text, selection, scrolls, propertyWrites, properties, emit, openKeyboard, nativePan, flush, rect };
 }
 
 test('native viewport pans update dock geometry without creating a reverse-scroll feedback loop', () => {
@@ -175,3 +175,37 @@ test('noncollapsed text selection is never pulled by viewport pan or selection n
   f.emit('selectionchange'); f.nativePan(30); f.emit('input');
   assert.equal(f.scrolls.length, count);
 });
+
+
+for (const kind of ['DIV', 'TEXTAREA']) {
+  test(`native selection handle movement in ${kind} does not repaint the dock or force scroll`, () => {
+    const f = fixture({ kind });
+    f.emit('focusin'); f.openKeyboard(400);
+    const initialWrites = f.propertyWrites.length, initialScrolls = f.scrolls.length;
+    f.selection.isCollapsed = false;
+    for (let step = 1; step <= 60; step++) {
+      f.selection.focusOffset = f.editor.selectionEnd = 8 + step;
+      f.emit('selectionchange');
+      f.nativePan(step);
+    }
+    assert.equal(f.propertyWrites.length, initialWrites, 'same-height viewport pans during selection must not write layout');
+    assert.equal(f.scrolls.length, initialScrolls);
+    assert.equal(f.selection.focusOffset, 68, 'the original selection must remain under browser control');
+    assert.equal(f.editor.selectionEnd, 68);
+
+    f.openKeyboard(360);
+    assert.equal(f.properties.get('--phone-visible-height'), '360px', 'actual keyboard height still adjusts layout');
+    assert.equal(f.scrolls.length, initialScrolls);
+
+    f.viewport.offsetTop = 80;
+    f.selection.isCollapsed = true;
+    f.selection.anchorOffset = f.selection.focusOffset;
+    f.editor.selectionStart = f.editor.selectionEnd;
+    f.emit('selectionchange');
+    assert.equal(f.properties.get('--phone-visible-bottom'), '440px', 'dock catches up when the selection ends');
+    assert.equal(f.scrolls.length, initialScrolls);
+    f.geometry.caretDocumentTop += 350;
+    f.emit('input');
+    assert.ok(f.scrolls.length > initialScrolls, 'typing restores caret visibility assistance');
+  });
+}
