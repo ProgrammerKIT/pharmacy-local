@@ -12,12 +12,12 @@ const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), '
 const style = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
 const sop = fs.readFileSync(new URL('../SOP1.md', import.meta.url), 'utf8');
 
-test('phone UI uses one fixed iPhone Pro canvas and prevents page scaling or horizontal drift', () => {
-  assert.match(html, /name="viewport" content="width=393, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content"/);
-  assert.match(style, /--iphone-pro-canvas-width:393px;--iphone-pro-canvas-height:852px/);
-  assert.match(style, /html\{[^}]*width:var\(--iphone-pro-canvas-width\)[^}]*overflow-x:clip[^}]*overscroll-behavior-x:none/);
-  assert.match(style, /body\{[^}]*inset-inline-start:0[^}]*overflow-x:clip[^}]*overscroll-behavior-x:none/);
-  assert.match(style, /#gate,#workspace,#workspace>main\{[^}]*min-height:var\(--iphone-pro-canvas-height\)/);
+test('phone UI fits the available width and prevents page scaling or horizontal drift', () => {
+  assert.match(html, /name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content"/);
+  assert.match(style, /html,body\{[^}]*width:100%[^}]*overflow-x:clip[^}]*overscroll-behavior-x:none/);
+  assert.match(style, /#gate,#workspace,#workspace>main\{[^}]*width:100%/);
+  assert.match(style, /\.monthly-month-controls\s*\{[^}]*grid-template-columns:44px minmax\(0,1fr\) 44px/);
+  assert.match(app, /class="monthly-actions"/);
 
   const source = app.slice(app.indexOf('function lockPhoneViewportScale('), app.indexOf('function installPhoneEditingViewport('));
   const listeners = new Map();
@@ -220,9 +220,9 @@ test('mobile-first runtime files are valid JavaScript and expose the daily captu
   assert.match(html, /data-reminder-option value="陳列盒（小）"/);
   assert.match(html, /data-reminder-custom-input/);
   assert.match(app, /setReminderOption\(before, input\.value, input\.checked\)/);
-  assert.match(html, /▤ 拜訪/);
-  assert.match(html, /▦ 門市/);
-  assert.match(html, /⚙ 資料與安全/);
+  assert.match(html, /data-view="visits"[^>]*>.*?<span>拜訪<\/span>/);
+  assert.match(html, /data-view="stores"[^>]*>.*?<span>門市<\/span>/);
+  assert.match(html, /data-view="sync"[^>]*>.*?<span>資料與安全<\/span>/);
   assert.match(html, /class="panel management-hub"/);
   assert.match(html, /id="export-store-enrichment"/);
   assert.match(html, /id="import-store-enrichment"/);
@@ -634,7 +634,7 @@ test('SOP1 explicitly separates App daily notes from Google CSV imports and keep
   assert.equal(SOP1_VERSION, '1.2.19');
   assert.match(sop, /流程版本：1\.2\.85/);
   assert.match(sop, /393 × 852 CSS 像素/);
-  assert.match(sop, /固定手機畫布不等於鍵盤開啟時的可見高度/);
+  assert.match(sop, /手機版面仍須依鍵盤開啟時的可見高度定位/);
   assert.match(sop, /長原文末行游標也須可見/);
   assert.match(sop, /不得冒充 iPhone 原生或第三方鍵盤驗收/);
   assert.match(sop, /水平位移必須固定為 0/);
