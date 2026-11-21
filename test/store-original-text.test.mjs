@@ -55,7 +55,7 @@ function harness(items, { bundle = bundleFor(items), payloadFields = {} } = {}) 
   vm.runInContext(
     source('const esc =', 'const titles =') +
     source('const all =', 'const dateText =') +
-    source('function reminderTasksHTML(', 'function legacyReminderDraftHTML(') +
+    source('function recurringReminderIncludes(', 'function legacyReminderDraftHTML(') +
     source('function storeAttendanceHTML(', 'function assertSaveParents(') +
     source('function visitStoreSearchText(', 'function orderedVisitStores(') +
     source('function storeVisitSearchRank(', 'function sourceButton(') +

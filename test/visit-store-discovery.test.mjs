@@ -56,7 +56,7 @@ function fixture(records, payloadFields = {}) {
   vm.runInContext(
     sourceBetween('const esc =', 'const titles =') +
     sourceBetween('const all =', 'const dateText =') +
-    sourceBetween('function reminderTasksHTML(', 'function legacyReminderDraftHTML(') +
+    sourceBetween('function recurringReminderIncludes(', 'function legacyReminderDraftHTML(') +
     sourceBetween('function storeAttendanceHTML(', 'function assertSaveParents(') +
     sourceBetween('function visitStoreSearchText(', 'function orderedVisitStores(') +
     sourceBetween('function openVisitForStore(', 'function captureVisitDraft(') +

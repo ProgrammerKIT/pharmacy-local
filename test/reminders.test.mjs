@@ -112,7 +112,7 @@ function taskHarness({ confirm = true, fail = false } = {}) {
   c.name=(type,id)=>c.by(type,id)?.name || '';
   vm.runInContext(app.slice(app.indexOf('function storedReminderDrafts('),app.indexOf('function reminderDraftFor(')) + app.slice(app.indexOf('function reminderDraftProblem('),app.indexOf('function captureReminderDraft(')),c);
   vm.runInContext(app.slice(app.indexOf('function assertSaveParents('),app.indexOf('function finishAttendancePrompt(')),c);
-  vm.runInContext(app.slice(app.indexOf('function reminderTasksHTML('),app.indexOf('function lockPhoneViewportScale(')), c);
+  vm.runInContext(app.slice(app.indexOf('function recurringReminderIncludes('),app.indexOf('function lockPhoneViewportScale(')), c);
   vm.runInContext(app.slice(app.indexOf('async function commitRevision('),app.indexOf('async function saveEditor(')), c);
   vm.runInContext(app.slice(app.indexOf('async function saveStoreReminder('),app.indexOf('function beginInlineTextEdit(')), c);
   return {c,$,base,task:data.nextRememberTasks[0]};
@@ -176,4 +176,38 @@ test('full store editor preserves completed tasks, rejects stale writes, and ret
   const record=h.c.by('store','s');h.c.editorContext={type:'store',id:'s',parents:record.heads.map(o=>o.id),oldData:structuredClone(record.heads[0].data)};
   h.c.previewResolution=(ctx,data)=>{h.c.preview={ctx,data};};
   await h.c.saveEditor({preventDefault(){}});assert.equal(h.c.saves,1);assert.ok(h.c.preview);assert.equal(h.c.preview.ctx.parents.length,2);
+});
+
+
+test('recurring reminder and one-time tasks have separate sections even when an old task has the same text', () => {
+  const h = taskHarness(), record = h.c.by('store', 's');
+  record.everyTimeMust = '固定提醒\r\n HAUD ';
+  record.nextRemember = 'HAUD\n獨立自由文字';
+  const before = JSON.stringify(record);
+  const [recurring, next] = h.c.storeRemindersHTML(record, true).split('<div class="brief-reminders">');
+  assert.match(recurring, /每次拜訪必做[\s\S]*HAUD/);
+  assert.doesNotMatch(recurring, /checkbox|下次記得/);
+  assert.match(next, /待辦 1 項[\s\S]*Complete[\s\S]*獨立自由文字/);
+  assert.doesNotMatch(next, /HAUD/);
+  assert.equal(JSON.stringify(record), before);
+  assert.equal(h.c.recurringReminderIncludes('prefix HAUD suffix', 'HAUD'), false);
+});
+
+test('setting an existing task as recurring preserves exact source, completion history and attendance', async () => {
+  const h = taskHarness({ confirm: false });
+  const before = JSON.stringify(h.c.payload);
+  await h.c.makeReminderRecurring('s', h.task.id, h.base.id);
+  assert.equal(JSON.stringify(h.c.payload), before);
+  h.c.allow = true;
+  await h.c.makeReminderRecurring('s', h.task.id, h.base.id);
+  assert.equal(h.c.saves, 1);
+  const record = h.c.by('store', 's');
+  assert.equal(record.everyTimeMust, '虛構固定事項\nHAUD');
+  assert.deepEqual(record.nextRememberTasks, h.base.data.nextRememberTasks);
+  assert.equal(Object.hasOwn(record.heads[0], 'visitAttendance'), false);
+  assert.equal(record.versions.find(version => version.id === h.base.id).data.everyTimeMust, '虛構固定事項');
+  assert.doesNotMatch(h.c.reminderTasksHTML(record), /HAUD/);
+  await h.c.makeReminderRecurring('s', h.task.id, record.heads[0].id);
+  assert.equal(h.c.saves, 1);
+  await assert.rejects(() => h.c.makeReminderRecurring('s', h.task.id, h.base.id), /新版本/);
 });

@@ -203,7 +203,7 @@ test('mobile-first runtime files are valid JavaScript and expose the daily captu
   assert.match(style, /inline-edit-actions:not\(\[hidden\]\)\{position:fixed/);
   assert.match(style, /inline-edit-shell\.locked \.inline-edit-text/);
   assert.match(app, /下次記得：/);
-  assert.match(app, /每次必做、必給：/);
+  assert.match(app, /class="store-recurring-reminders" aria-label="每次拜訪必做"/);
   assert.match(app, /id="f-next-remember"/);
   assert.match(app, /id="f-every-time-must"/);
   assert.match(app, /data-store-reminder=/);
@@ -276,8 +276,7 @@ test('mobile-first runtime files are valid JavaScript and expose the daily captu
   assert.doesNotMatch(visitBriefSource, /fetch\(|api\(/);
   assert.match(app, /class="advanced-fields"/);
   assert.match(app, /地址與系統資料/);
-  const storeNotesStart = app.indexOf('const storeNotes ='), storeNotesSource = app.slice(storeNotesStart, app.indexOf('const textBlock', storeNotesStart));
-  assert.ok(storeNotesSource.indexOf("store.nextRemember ?") < storeNotesSource.indexOf("store.everyTimeMust ?"), 'store reminders render in the requested order');
+  assert.match(app, /return recurring \+ nextSection;/, 'recurring reminders render before the separate one-time section');
   assert.match(app, /快速修改不能把整段文字存成空白/);
   assert.match(app, /這次只會修改這一筆拜訪的文字欄/);
   assert.match(app, /diffTextSegments\(ctx\.before, ctx\.after\)/);
