@@ -4,7 +4,7 @@ import { peopleBriefSourcePlan, peopleReadingRefreshDecision, validatePeopleBrie
 import { peopleRelationshipReviewState, peopleAliasGroups, peopleAliasReviewState } from './core.js';
 import { exportTypedFeedback, YQ_CORE_CHECKS, typedFeedbackState, prepareTypedFeedback, typedFeedbackAnswers, applyTypedVisit, parseMonthlyAnalysisDocument, analysisStoreCodeChoices, revokeAnalysisStoreCode, monthlyAlertSalesMonths, monthlyAnalysisSources, monthlyAnalysisForStore, prepareMonthlyAnalysis, applyMonthlyAnalysis, monthlyFeedbackState, prepareMonthlyFeedback, applyMonthlyFeedback, applyMonthlyFeedbackWithAttendance, rememberedMonthlyAnalysisChoice, exportMonthlyFeedback, monthlyAnalysisChangeSummary } from './core.js';
 import { supervisorRelationships, supervisorReviewHistory, reviewSupervisorRelationship, planStoreSupervision, applyStoreSupervision, supervisedStores } from './core.js';
-import { setupWeeklyRecovery, prepareWeeklyRecovery, createRecoveryBackup, newMeta, checkEnvelope, derive, seal, unseal, planBackupImport, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, nearbyCoordinateEvidence, planNearbyCoordinates, applyNearbyCoordinates, buildStoreEnrichmentRequest, planStoreEnrichment, applyStoreEnrichment, readonlyHealthAudit, dataSafetySummary, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, editReminderTasks, addReminderTasks, convertReminderTasks, completeReminderTask, reminderTaskHistory, searchStoreVisitText, scanInsightChanges, storeInsightDisplayForStore, storeInsightEvidenceForEntry, insightReviewForEntry, insightSharedReviewForEntry, storeInsightReviewHistory, planInsightReview, applyInsightReview, planStoreInsights, applyStoreInsights, planStoreInsightRelations, applyStoreInsightRelations, buildStoreInsightsSource, planStoreMerge, applyStoreMerge } from './core.js';
+import { setupWeeklyRecovery, prepareWeeklyRecovery, createRecoveryBackup, newMeta, checkEnvelope, derive, seal, unseal, planBackupImport, uuid, emptyBundle, revision, project, merge, validateBundle, hashBytes, b64, unb64, MAX_BYTES, MAX_BACKUP_FILE_BYTES, openRebuiltSnapshot, diffTextSegments, mobileLocationDevice, validCoordinates, nearestStores, storeCoordinates, nearbyCoordinateEvidence, planNearbyCoordinates, applyNearbyCoordinates, buildStoreEnrichmentRequest, planStoreEnrichment, applyStoreEnrichment, readonlyHealthAudit, dataSafetySummary, NEXT_REMINDER_OPTIONS, reminderHasOption, setReminderOption, reminderTaskLines, editReminderTasks, addReminderTasks, convertReminderTasks, completeReminderTask, reminderTaskHistory, searchStoreVisitText, scanInsightChanges, storeInsightDisplayForStore, storeInsightEvidenceForEntry, insightReviewForEntry, insightSharedReviewForEntry, storeInsightReviewHistory, planInsightReview, applyInsightReview, planStoreInsights, applyStoreInsights, planStoreInsightRelations, applyStoreInsightRelations, buildStoreInsightsSource, planStoreMerge, applyStoreMerge } from './core.js';
 import { readWeeklyRecovery, writeWeeklyRecovery, readLocal, writeLocal, archiveAndReplaceLocal, listLocalArchives, readLocalArchive } from './db.js';
 import { dayPlanDate, shiftDayPlanDate, dayPlanForStore, dayPlanOverview, dayItineraryBasis, applyDayItineraryAction } from './core.js';
 import { monthlyVisitMonth, shiftMonthlyVisitMonth, monthlyVisitForStore, monthlyVisitOverview, monthlyVisitBasis, applyMonthlyVisitAction } from './core.js';
@@ -1380,7 +1380,9 @@ function status() {
   $('pending-sync-detail').textContent = pendingSyncText(pending);
   $('sync-conflict-count').textContent = conflicts + ' 筆';
   renderHealthAudit(); renderDataSafetyEntry();
-  $('storage-detail').textContent = `離線介面：${offlineReady ? '已備妥' : '尚待確認，請先保持連線'}。持久儲存：${storagePersistent ? '已獲允許' : '瀏覽器尚未允許，請定期同步及備份'}。資料 ${bundleSizeMB(payload.bundle)} / 24 MB（包含歷史與附件）。`;
+  const usedMiB = bundleSizeMB(payload.bundle), maxMiB = MAX_BYTES / 1048576;
+  const capacityNotice = Number(usedMiB) >= maxMiB * 0.9 ? ' 接近資料容量上限。' : '';
+  $('storage-detail').textContent = `離線介面：${offlineReady ? '已備妥' : '尚待確認，請先保持連線'}。持久儲存：${storagePersistent ? '已獲允許' : '瀏覽器尚未允許，請定期同步及備份'}。資料 ${usedMiB} / ${maxMiB} MiB（包含歷史與附件）。${capacityNotice}`;
 }
 function switchView(view) {
   if(view!=='explore') document.body.classList.remove('supervisor-simple-page');
@@ -2427,7 +2429,7 @@ async function exportStoreMergeBackup() {
 async function verifyStoreMergeBackup(file) {
   const ctx = storeMergePreview; assertStoreMergeCurrent(ctx); ctx.verifiedBackup = null; updateStoreMergeControls();
   $('store-merge-backup-status').textContent = '尚未完成此次備份驗證；正式套用目前鎖定。';
-  if (!file || file.size > 36 * 1024 * 1024) throw new Error('請選擇支援大小的加密備份。');
+  if (!file || file.size > MAX_BACKUP_FILE_BYTES) throw new Error('請選擇支援大小的加密備份。');
   const input = JSON.parse(await file.text()); assertStoreMergeCurrent(ctx);
   if (input.format !== 'pharmacy-backup-1') throw new Error('不是此 App 的加密備份。');
   const envelope = checkEnvelope(input.envelope);
@@ -3949,7 +3951,7 @@ async function saveWeeklySetup() {
   let password = $('weekly-password').value; $('weekly-password').value = '';
   try {
     if (!ctx || !$('weekly-dialog').open || !$('weekly-ack').checked) throw new Error('請閱讀並勾選自動備份設定。');
-    if (!proofFile || proofFile.size > 36 * 1024 * 1024) throw new Error('請選取已驗證的新密碼備份（上限36MB）。');
+    if (!proofFile || proofFile.size > MAX_BACKUP_FILE_BYTES) throw new Error('請選取已驗證的新密碼備份（需符合此版支援的檔案大小）。');
     await assertWeeklyCurrent(ctx);
     const proof = await proofFile.text();
     const pending = setupWeeklyRecovery(proof,password,ctx.meta); password = '';
@@ -4137,7 +4139,7 @@ function renderBackupResult() {
 }
 async function importBackup(file) {
   if (backupPreview) throw new Error('請先關閉目前的備份預覽。');
-  if (file.size > 36 * 1024 * 1024) throw new Error('備份檔案太大。');
+  if (file.size > MAX_BACKUP_FILE_BYTES) throw new Error('備份檔案太大。');
   const data = JSON.parse(await file.text()); if (data?.format !== 'pharmacy-backup-1') throw new Error('不是此版本的加密備份。');
   const envelope = checkEnvelope(data.envelope);
   if (payload && (envelope.vaultId !== meta.vaultId || envelope.salt !== meta.salt)) throw new Error('這份備份屬於另一個資料庫，已停止合併。');

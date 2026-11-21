@@ -654,7 +654,7 @@ function buildNewStoresOnly(plan, bundle, device) {
   if (JSON.stringify(next.ops.slice(0, bundle.ops.length)) !== JSON.stringify(bundle.ops) || Object.entries(bundle.blobs).some(([key, value]) => next.blobs[key] !== value) ||
     new Set(additions.map(op => op.entity)).size !== additions.length || additions.some(op => priorEntities.has(op.entity) || !['store', 'visit', 'source'].includes(op.type) || op.parents.length || op.deleted || op.type === 'visit' && !newStores.has(op.data.store))) throw new Error('只新增模式不能變更任何既有實體或來源');
   validateBundle(next);
-  if (utf8.encode(JSON.stringify(next)).length > MAX_BYTES - 65536) throw new Error('匯入後超過資料庫24MB上限；尚未寫入');
+  if (utf8.encode(JSON.stringify(next)).length > MAX_BYTES - 65536) throw new Error('匯入後超過資料庫容量上限；尚未寫入');
   return { bundle: next, summary, batch };
 }
 export async function planCSV(files, bundle, options = {}) {
@@ -856,7 +856,7 @@ export function buildCSVImport(plan, bundle, device) {
   }
   for (const id of changed) { const s = states.get(id); next.ops.push(revision('store', id, s.data, s.parents, device)); }
   next.ops.push(...mergeStoreOps, ...sourceOps, ...visitOps); validateBundle(next);
-  if (utf8.encode(JSON.stringify(next)).length > MAX_BYTES - 65536) throw new Error('匯入後超過資料庫 24 MB 上限。這批尚未寫入，請減少檔案或分庫。');
+  if (utf8.encode(JSON.stringify(next)).length > MAX_BYTES - 65536) throw new Error('匯入後超過資料庫容量上限。這批尚未寫入。');
   return { bundle: next, summary, batch };
 }
 
@@ -1117,7 +1117,7 @@ export async function buildExternalCSVImport(plan,bundle,device) {
     next.ops.push(revision('source',uuid(),{file:file.file,list:sourceListKey(file.list),batch,blob:file.blob,rows:file.rows.length,headers:[...file.headers],encoding:file.encoding||'auto',delimiter:file.delimiter||'auto',externalCSV:{format:EXTERNAL_CSV_FORMAT,mappings,supersedes}},[],device));
   }
   assertExternalCSVAppendOnly(bundle,next);
-  if(utf8.encode(JSON.stringify(next)).length>MAX_BYTES-65536)throw Error('保存後超過24 MB安全上限；本次未寫入，全部原資料保留。');
+  if(utf8.encode(JSON.stringify(next)).length>MAX_BYTES-65536)throw Error('保存後超過容量安全上限；本次未寫入，全部原資料保留。');
   return {bundle:next,summary,batch};
 }
 export function externalCSVSourcesForStore(bundle,storeId) {

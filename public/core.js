@@ -1,6 +1,12 @@
 export const FORMAT = 'pharmacy-vault-1';
 export const ITERATIONS = 600000;
-export const MAX_BYTES = 24 * 1024 * 1024;
+const MIB = 1024 * 1024;
+const LEGACY_MAX_BYTES = 24 * MIB;
+export const MAX_BYTES = 48 * MIB;
+const MAX_DEVICE_BYTES = MAX_BYTES + 8 * MIB;
+const AUTH_TAG_BYTES = 16;
+const base64Size = bytes => 4 * Math.ceil(bytes / 3);
+export const MAX_BACKUP_FILE_BYTES = base64Size(MAX_BYTES + AUTH_TAG_BYTES) + 64 * 1024;
 export const NEXT_REMINDER_OPTIONS = Object.freeze(['HAUD', 'Complete', '陳列盒（中）', '陳列盒（小）']);
 function reminderItem(value) { return String(value ?? '').replace(/[\r\n]+/g, ' ').trim(); }
 export function reminderHasOption(value, option) {
@@ -28,7 +34,12 @@ export function b64(bytes) {
   for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
   return btoa(binary);
 }
-export function unb64(str) { return Uint8Array.from(atob(str), c => c.charCodeAt(0)); }
+export function unb64(str) {
+  if (typeof Uint8Array.fromBase64 === 'function') return Uint8Array.fromBase64(str);
+  const binary = atob(str), bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < bytes.length; index++) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
 
 const mergeDiffSegments = segments => {
   const out = [];
@@ -112,10 +123,30 @@ export function diffTextSegments(before, after) {
   return { before: mergeDiffSegments(beforeSegments), after: mergeDiffSegments(afterSegments) };
 }
 export function newMeta() { return { format: FORMAT, vaultId: uuid(), salt: b64(crypto.getRandomValues(new Uint8Array(16))), iterations: ITERATIONS }; }
-export function checkEnvelope(e) {
-  if (!e || e.format !== FORMAT || typeof e.vaultId !== 'string' || e.vaultId.length > 100 || e.iterations !== ITERATIONS || typeof e.salt !== 'string' || unb64(e.salt).length !== 16 || typeof e.iv !== 'string' || unb64(e.iv).length !== 12 || typeof e.ciphertext !== 'string' || e.ciphertext.length > 40 * 1024 * 1024 || unb64(e.ciphertext).length < 16) throw new Error('加密檔案格式不符或版本不支援。');
+// Encoded size is sufficient for capacity checks without allocating a
+// decoded copy on the ciphertext-only Mac service.
+function envelopeCipherBytes(envelope) {
+  const cipher = envelope.ciphertext;
+  const padding = cipher.endsWith('==') ? 2 : cipher.endsWith('=') ? 1 : 0;
+  return cipher.length / 4 * 3 - padding;
+}
+export function checkEnvelope(e, purpose = 'shared') {
+  const limit = purpose === 'device' ? MAX_DEVICE_BYTES : MAX_BYTES;
+  const cipher = e?.ciphertext;
+  const invalid = () => new Error('加密檔案格式不符或超過支援大小。');
+  if (!e || e.format !== FORMAT || typeof e.vaultId !== 'string' || e.vaultId.length > 100
+    || e.iterations !== ITERATIONS || typeof e.salt !== 'string' || e.salt.length !== 24
+    || typeof e.iv !== 'string' || e.iv.length !== 16
+    || typeof cipher !== 'string' || cipher.length % 4 !== 0
+    || cipher.length > base64Size(limit + AUTH_TAG_BYTES)) throw invalid();
+  const bytes = envelopeCipherBytes(e), padding = cipher.length / 4 * 3 - bytes;
+  if (unb64(e.salt).length !== 16 || unb64(e.iv).length !== 12
+    || bytes < AUTH_TAG_BYTES || bytes > limit + AUTH_TAG_BYTES
+    || /[^A-Za-z0-9+/=]/.test(cipher)
+    || cipher.indexOf('=') !== (padding ? cipher.length - padding : -1)) throw invalid();
   return e;
 }
+export const exceedsLegacyCapacity = envelope => !!envelope && envelopeCipherBytes(envelope) > LEGACY_MAX_BYTES + AUTH_TAG_BYTES;
 export async function derive(password, meta) {
   if (meta.iterations !== ITERATIONS || unb64(meta.salt).length !== 16) throw new Error('金鑰設定不符。');
   const material = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']);
@@ -124,13 +155,16 @@ export async function derive(password, meta) {
 const aad = (m, purpose) => enc.encode(JSON.stringify([FORMAT, m.vaultId, m.salt, m.iterations, purpose]));
 export async function seal(value, key, meta, purpose = 'shared') {
   const raw = enc.encode(JSON.stringify(value));
-  if (raw.length > MAX_BYTES) throw new Error('資料已達此版 24 MB 上限，請先備份。這次變更未儲存。');
+  const device = purpose === 'device';
+  if (raw.length > (device ? MAX_DEVICE_BYTES : MAX_BYTES)
+    || device && value.bundle && raw.length > MAX_BYTES && enc.encode(JSON.stringify(value.bundle)).length > MAX_BYTES)
+    throw new Error('資料已達此版容量上限。這次變更未儲存。');
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const data = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: aad(meta, purpose) }, key, raw);
   return { format: FORMAT, vaultId: meta.vaultId, salt: meta.salt, iterations: ITERATIONS, iv: b64(iv), ciphertext: b64(new Uint8Array(data)) };
 }
 export async function unseal(e, key, purpose = 'shared') {
-  checkEnvelope(e);
+  checkEnvelope(e, purpose);
   try { return JSON.parse(dec.decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(e.iv), additionalData: aad(e, purpose) }, key, unb64(e.ciphertext)))); }
   catch { throw new Error('密碼不正確，或檔案已損毀；原資料未被覆蓋。'); }
 }
@@ -379,7 +413,7 @@ export function applyMonthlyVisitAction(bundle, request, device, at = new Date()
   if (!validMonthlyVisits(data.monthlyVisits)) throw new Error('每月名單超過安全上限，全部歷史保留，本次尚未寫入。');
   const next = structuredClone(bundle), op = revision('store', storeId, data, store.heads.map(head => head.id), device);
   op.at = at; next.ops.push(op); validateBundle(next);
-  if (enc.encode(JSON.stringify(next)).length > MAX_BYTES) throw new Error('每月名單儲存後資料超過 24 MB 上限；全部原資料保留，本次尚未寫入。');
+  if (enc.encode(JSON.stringify(next)).length > MAX_BYTES) throw new Error('每月名單儲存後資料超過容量上限；全部原資料保留，本次尚未寫入。');
   return next;
 }
 function validReminderTasks(d) {
@@ -637,7 +671,7 @@ export function applyDayItineraryAction(bundle, request, device, at = new Date()
     const op = revision('store', id, data, index.get(id).heads.map(head => head.id), device); op.at = at; next.ops.push(op);
   }
   validateBundle(next);
-  if (enc.encode(JSON.stringify(next)).length > MAX_BYTES) throw new Error('行程儲存後資料超過 24 MB 上限；全部原資料保留，本次尚未寫入。');
+  if (enc.encode(JSON.stringify(next)).length > MAX_BYTES) throw new Error('行程儲存後資料超過容量上限；全部原資料保留，本次尚未寫入。');
   return next;
 }
 const planItemSpec = item => JSON.stringify([item.name, item.quantity, item.unit, item.source]);
@@ -678,7 +712,7 @@ export function applyDayPlanChanges(bundle, changes, device, at = new Date().toI
   const next = structuredClone(bundle);
   for (const [storeId, data] of drafts) { const op = revision('store', storeId, data, index.get(storeId).heads.map(head => head.id), device); op.at = at; next.ops.push(op); }
   validateBundle(next);
-  if (enc.encode(JSON.stringify(next)).length > MAX_BYTES) throw new Error('行程儲存後資料超過 24 MB 上限；全部原資料保留，本次尚未寫入。');
+  if (enc.encode(JSON.stringify(next)).length > MAX_BYTES) throw new Error('行程儲存後資料超過容量上限；全部原資料保留，本次尚未寫入。');
   return next;
 }
 // Exclusion memory is an explicit decision about one exact Google place
@@ -1329,7 +1363,7 @@ export async function planBackupImport(currentBundle, incomingBundle) {
   const incoming = structuredClone(incomingBundle), current = currentBundle == null ? null : structuredClone(currentBundle);
   validateBundle(incoming); if (current) validateBundle(current);
   const bundle = current ? merge(current, incoming) : incoming;
-  if (enc.encode(JSON.stringify(bundle)).length > MAX_BYTES) throw new Error('合併後資料超過 24 MB 上限；尚未寫入任何資料。');
+  if (enc.encode(JSON.stringify(bundle)).length > MAX_BYTES) throw new Error('合併後資料超過容量上限；尚未寫入任何資料。');
   for (const [id, encoded] of Object.entries(bundle.blobs)) {
     let bytes; try { bytes = unb64(encoded); } catch { throw new Error('備份附件或原始 CSV 的編碼損毀；尚未寫入任何資料。'); }
     if (await hashBytes(bytes) !== id) throw new Error('備份附件或原始 CSV 的內容與識別不符；尚未寫入任何資料。');
@@ -1425,7 +1459,7 @@ function separateWeeklyRecoveryMeta(source, backup) {
 export async function setupWeeklyRecovery(proofText, password, sourceMeta) {
   let key;
   try {
-    if (typeof proofText !== 'string' || proofText.length > 36 * 1024 * 1024 || enc.encode(proofText).length > 36 * 1024 * 1024) throw new Error('請選取大小不超過 36 MB 的復原備份。');
+    if (typeof proofText !== 'string' || proofText.length > MAX_BACKUP_FILE_BYTES || enc.encode(proofText).length > MAX_BACKUP_FILE_BYTES) throw new Error('復原備份超過此版可讀取的大小。');
     if (typeof password !== 'string' || !password.length || password.length > 1024) throw new Error('請自行輸入這份復原備份的密碼。');
     const source = weeklyRecoveryMeta(sourceMeta);
     let proof;
@@ -1953,7 +1987,7 @@ export function applyStoreInsightRelations(bundle, input, plan, device) {
   for (const item of current.ready) next.ops.push(revision('store', item.storeId, { ...index.get('store:' + item.storeId).heads[0].data,
     preVisitInsightRelations: structuredClone(item.after) }, [item.expectedHead], device));
   next.schema = Math.max(2, next.schema);
-  if (enc.encode(JSON.stringify(next)).length > MAX_BYTES) throw new Error('資料已達 24 MB 上限；尚未寫入。');
+  if (enc.encode(JSON.stringify(next)).length > MAX_BYTES) throw new Error('資料已達容量上限；尚未寫入。');
   return validateBundle(next);
 }
 export function planInsightReview(bundle, storeId, entryId, status, expectedHead) {
@@ -2001,7 +2035,7 @@ export function applyInsightReview(bundle, plan, device) {
   if (!validInsightReviews(events)) throw new Error('分析審核歷史已達上限，既有歷史完整保留；本次尚未寫入。');
   const next = structuredClone(bundle), op = revision('store', store.id, { ...store.heads[0].data, preVisitInsightReviews: events }, [current.expectedHead], device);
   op.at = reviewedAt; next.schema = Math.max(2, next.schema); next.ops.push(op);
-  if (enc.encode(JSON.stringify(next)).length > MAX_BYTES) throw new Error('資料已達此版 24 MB 上限，既有歷史完整保留；本次尚未寫入。');
+  if (enc.encode(JSON.stringify(next)).length > MAX_BYTES) throw new Error('資料已達此版容量上限，既有歷史完整保留；本次尚未寫入。');
   return validateBundle(next);
 }
 export function validateStoreInsightsImport(input) {
@@ -2547,7 +2581,7 @@ export async function planStoreMerge(bundle, request) {
   const check = structuredClone(bundle);
   for (const change of changes) check.ops.push({ id: change.newRevisionId, type: change.type, entity: change.id, data: structuredClone(change.after), parents: [change.beforeHead], device: 'merge-preview', deleted: change.deleted, at: '2000-01-01T00:00:00.000Z' });
   check.schema = Math.max(2, check.schema); validateBundle(check);
-  if (enc.encode(JSON.stringify(check)).length > MAX_BYTES) throw new Error('整併後超過資料庫 24 MB 上限，原資料未改動。');
+  if (enc.encode(JSON.stringify(check)).length > MAX_BYTES) throw new Error('整併後超過資料庫容量上限，原資料未改動。');
   return plan;
 }
 export async function applyStoreMerge(bundle, plan, device) {
@@ -2559,7 +2593,7 @@ export async function applyStoreMerge(bundle, plan, device) {
   next.schema = Math.max(2, next.schema);
   for (const change of verified.changes) next.ops.push({ id: change.newRevisionId, type: change.type, entity: change.id, data: structuredClone(change.after), parents: [change.beforeHead], device, deleted: change.deleted, at });
   validateBundle(next);
-  if (enc.encode(JSON.stringify(next)).length > MAX_BYTES) throw new Error('整併後資料超過 24 MB 上限，尚未寫入。');
+  if (enc.encode(JSON.stringify(next)).length > MAX_BYTES) throw new Error('整併後資料超過容量上限，尚未寫入。');
   return { bundle: next, summary: structuredClone(verified.summary) };
 }
 
@@ -2612,7 +2646,7 @@ export async function applyStoreSupervision(bundle, packet, plan, selectedStoreI
     next.ops.push(revision('store',store.id,{...store.heads[0].data,supervision:{...row.after,personId,recordedAt:new Date().toISOString()}},store.heads.map(h=>h.id),device));
   }
   validateBundle(next);
-  if (enc.encode(JSON.stringify(next)).length>MAX_BYTES) throw new Error('資料超過24 MB上限；尚未寫入。');
+  if (enc.encode(JSON.stringify(next)).length>MAX_BYTES) throw new Error('資料超過容量上限；尚未寫入。');
   return {bundle:next,summary:{stores:selected.length,people:people.size}};
 }
 export function supervisedStores(records, personId) {
