@@ -299,22 +299,35 @@ async function makeReminderRecurring(storeId, taskId, expectedHead) {
 function lockPhoneViewportScale() {
   if (!window.matchMedia?.('(max-width: 760px)').matches) return;
   const horizontalScrollSelector = '.rail nav,#store-list,.csv-table-wrap,.quality-table-wrap';
+  const nativeTextSelector = 'textarea,input,[contenteditable="true"],[contenteditable="plaintext-only"]';
+  const nativeTextTarget = element => !!element?.closest?.(nativeTextSelector);
+  const editFocused = () => {
+    const active = document.activeElement;
+    return nativeTextTarget(active) && (active.isContentEditable || active.tagName === 'TEXTAREA'
+      || (active.tagName === 'INPUT' && !active.disabled && !active.readOnly && active.selectionStart != null));
+  };
   const preventScale = event => event.preventDefault();
   for (const type of ['gesturestart', 'gesturechange', 'gestureend']) document.addEventListener(type, preventScale, { passive: false });
   let touchOrigin = null;
   document.addEventListener('touchstart', event => {
     const touch = event.touches?.length === 1 ? event.touches[0] : null;
-    touchOrigin = touch ? { x: touch.clientX, y: touch.clientY, horizontalScroller: !!event.target?.closest?.(horizontalScrollSelector) } : null;
+    // Selection handles can start outside the editor DOM on iPhone.
+    touchOrigin = touch ? {
+      x: touch.clientX, y: touch.clientY,
+      nativeText: editFocused() || nativeTextTarget(event.target),
+      horizontalScroller: !!event.target?.closest?.(horizontalScrollSelector)
+    } : null;
   }, { passive: true });
   document.addEventListener('touchmove', event => {
     if (event.touches?.length > 1) return event.preventDefault();
     const touch = event.touches?.[0];
-    if (!touch || !touchOrigin || touchOrigin.horizontalScroller) return;
+    if (!touch || !touchOrigin || touchOrigin.nativeText || touchOrigin.horizontalScroller) return;
     const dx = Math.abs(touch.clientX - touchOrigin.x), dy = Math.abs(touch.clientY - touchOrigin.y);
     if (dx > dy + 4) event.preventDefault();
   }, { passive: false });
   for (const type of ['touchend', 'touchcancel']) document.addEventListener(type, () => { touchOrigin = null; }, { passive: true });
   const resetHorizontalOffset = () => {
+    if (touchOrigin?.nativeText || editFocused()) return;
     const root = document.scrollingElement;
     if (root?.scrollLeft) root.scrollLeft = 0;
     if (document.documentElement?.scrollLeft) document.documentElement.scrollLeft = 0;
@@ -325,6 +338,7 @@ function lockPhoneViewportScale() {
   window.visualViewport?.addEventListener('scroll', resetHorizontalOffset, { passive: true });
   window.visualViewport?.addEventListener('resize', resetHorizontalOffset, { passive: true });
   window.addEventListener('pageshow', resetHorizontalOffset, { passive: true });
+  document.addEventListener('focusout', () => requestAnimationFrame(resetHorizontalOffset));
   requestAnimationFrame(resetHorizontalOffset);
 }
 lockPhoneViewportScale();
@@ -335,7 +349,12 @@ function installPhoneEditingViewport() {
   let previousHeight = viewport?.height || window.innerHeight, fallbackHeight = window.innerHeight;
   let allowViewportReveal = true, lastSelection = null;
   let pointer = null, suppressSelectionUntil = 0;
-  const observed = new Set();
+  const observed = new Set(), geometry = new Map();
+  function setGeometry(name, value) {
+    if (geometry.get(name) === value) return;
+    geometry.set(name, value);
+    root.style.setProperty(name, `${value}px`);
+  }
   const resizeObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(() => schedule(false)) : null;
   function schedule(reveal = false, resized = false) {
     revealCaret ||= reveal; viewportChanged ||= resized;
@@ -347,13 +366,15 @@ function installPhoneEditingViewport() {
   function selectionState() {
     const active = document.activeElement;
     // Compare positions only; never read input values, change a Range, or focus a field.
-    if (textControl(active)) return [active, active.selectionStart, active.selectionEnd, active.selectionDirection];
+    if (textControl(active)) return [active.selectionStart !== active.selectionEnd, active, active.selectionStart, active.selectionEnd, active.selectionDirection];
     const editor = active?.closest?.('[data-inline-edit-text]'), selection = window.getSelection();
     if (!editor || !selection?.rangeCount || !editor.contains(selection.focusNode)) return null;
-    return [editor, selection.anchorNode, selection.anchorOffset, selection.focusNode, selection.focusOffset, selection.isCollapsed];
+    return [!selection.isCollapsed, editor, selection.anchorNode, selection.anchorOffset, selection.focusNode, selection.focusOffset];
   }
   function requestCaretReveal() {
-    lastSelection = selectionState(); allowViewportReveal = true; schedule(true);
+    lastSelection = selectionState();
+    if (lastSelection?.[0]) return;
+    allowViewportReveal = true; schedule(true);
   }
   function controlCaret(control) {
     const rect = control.getBoundingClientRect();
@@ -402,13 +423,20 @@ function installPhoneEditingViewport() {
     if (!Number.isFinite(height) || height <= 0) return;
     const expanding = height > previousHeight + 1;
     const shrinking = height < previousHeight - 1;
+    const selecting = selectionState()?.[0];
+    if (selecting) {
+      revealCaret = false;
+      // Let WebKit pan while a selection handle moves. True keyboard size
+      // changes still need to update the editor and its save controls.
+      if (!expanding && !shrinking) { viewportChanged = false; return; }
+    }
     previousHeight = height;
-    root.style.setProperty('--phone-visible-top', `${top}px`);
-    root.style.setProperty('--phone-visible-height', `${height}px`);
-    root.style.setProperty('--phone-visible-bottom', `${top + height}px`);
+    setGeometry('--phone-visible-top', top);
+    setGeometry('--phone-visible-height', height);
+    setGeometry('--phone-visible-bottom', top + height);
     if (!viewport) fallbackHeight = Math.max(fallbackHeight, window.innerHeight);
     const keyboardInset = Math.max(0, (viewport ? window.innerHeight : fallbackHeight) - height);
-    root.style.setProperty('--phone-keyboard-inset', `${keyboardInset}px`);
+    setGeometry('--phone-keyboard-inset', keyboardInset);
     const keyboard = keyboardInset > 120;
     root.classList.toggle('phone-keyboard-open', keyboard);
     const active = document.activeElement;
@@ -419,13 +447,13 @@ function installPhoneEditingViewport() {
     for (const action of observed) if (!actions.includes(action)) { resizeObserver?.unobserve(action); observed.delete(action); }
     for (const action of actions) if (!observed.has(action)) { resizeObserver?.observe(action); observed.add(action); }
     const dockHeight = dock?.getBoundingClientRect().height || 0;
-    root.style.setProperty('--phone-edit-dock-height', `${dockHeight}px`);
+    setGeometry('--phone-edit-dock-height', dockHeight);
     // A visual-viewport pan can be Safari's response to our previous scroll.
     // Only an actual keyboard contraction may request another visibility correction.
     const reveal = revealCaret || (viewportChanged && shrinking && allowViewportReveal && !expanding && performance.now() >= suppressSelectionUntil);
     viewportChanged = false;
     // Geometry still follows a closing keyboard, but it must not pull reading back to the caret.
-    if (!keyboard || expanding) { revealCaret = false; return; }
+    if (!keyboard || expanding || selecting) { revealCaret = false; return; }
     if (pointer) { if (pointer.moved) revealCaret = false; else revealCaret ||= reveal || shrinking; return; }
     revealCaret = false;
     if (!reveal) return;
@@ -480,7 +508,7 @@ function installPhoneEditingViewport() {
     }
   }
   viewport?.addEventListener('resize', () => schedule(false, true), { passive: true });
-  viewport?.addEventListener('scroll', () => schedule(false), { passive: true });
+  viewport?.addEventListener('scroll', () => { if (!selectionState()?.[0]) schedule(false); }, { passive: true });
   window.addEventListener('resize', () => schedule(false, true), { passive: true });
   window.addEventListener('pageshow', () => schedule(false), { passive: true });
   document.addEventListener('focusin', requestCaretReveal);
@@ -488,9 +516,17 @@ function installPhoneEditingViewport() {
   document.addEventListener('input', requestCaretReveal);
   document.addEventListener('selectionchange', () => {
     const next = selectionState(); if (!next) return;
+    const wasSelecting = lastSelection?.[0];
     const changed = !lastSelection || next.some((value, index) => value !== lastSelection[index]);
     lastSelection = next;
-    // Native caret/layout notifications with the same logical selection are not new input.
+    if (next[0]) {
+      revealCaret = false;
+      allowViewportReveal = false;
+      return;
+    }
+    // A collapsed selection after a drag can be a native handle notification.
+    // Catch up with the viewport once; taps or typing can request caret reveal.
+    if (wasSelecting) { schedule(false); return; }
     if (changed && !pointer && performance.now() >= suppressSelectionUntil) { allowViewportReveal = true; schedule(true); }
   });
   document.addEventListener('pointerdown', event => { pointer = { id: event.pointerId, x: event.clientX, y: event.clientY, moved: false, target: event.target }; }, { passive: true });
