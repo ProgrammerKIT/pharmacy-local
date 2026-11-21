@@ -613,7 +613,7 @@ export async function applyPeopleRelationshipReview(bundle, expected, device, re
   next.schema=Math.max(2,next.schema);next.blobs[blob]=b64(bytes);
   const op=revision('source',uuid(),{file:'人物關係審核.json',list:'逐筆人物關係審核',blob,batch:uuid(),rows:1,headers:[],encoding:'UTF-8',delimiter:'',peopleRelationshipReview:event},[],device);
   op.at=reviewedAt;next.ops.push(op);
-  if(new TextEncoder().encode(JSON.stringify(next)).length>MAX_BYTES)throw new Error('資料已達24 MB上限；舊歷史完整保留，本次尚未保存。');
+  if(new TextEncoder().encode(JSON.stringify(next)).length>MAX_BYTES)throw new Error('資料已達容量上限；舊歷史完整保留，本次尚未保存。');
   return validateBundle(next);
 }
 
@@ -641,6 +641,6 @@ export async function applyPeopleAliasReview(bundle,expected,device,reviewedAt=n
   next.schema=Math.max(2,next.schema);next.blobs[blob]=b64(bytes);
   const op=revision('source',uuid(),{file:'人物同人審核.json',list:'人物別名審核',blob,batch:uuid(),rows:1,headers:[],encoding:'UTF-8',delimiter:'',peopleAliasReview:event},[],device);
   op.at=reviewedAt;next.ops.push(op);
-  if(new TextEncoder().encode(JSON.stringify(next)).length>MAX_BYTES)throw new Error('資料已達24 MB上限；原歷史完整保留，本次尚未保存。');
+  if(new TextEncoder().encode(JSON.stringify(next)).length>MAX_BYTES)throw new Error('資料已達容量上限；原歷史完整保留，本次尚未保存。');
   return validateBundle(next);
 }

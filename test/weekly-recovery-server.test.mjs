@@ -7,7 +7,7 @@ import https from 'node:https';
 import { randomUUID, createHash } from 'node:crypto';
 import { createScheduledRecoveryStore, recoverySchedule, durableRecoveryAtomic, createService, atomic } from '../server.mjs';
 import { makeCertificates } from '../scripts/setup.mjs';
-import { newMeta } from '../public/core.js';
+import { b64, derive, emptyBundle, hashBytes, MAX_BACKUP_FILE_BYTES, newMeta, planBackupImport, prepareWeeklyRecovery, revision, seal, unseal } from '../public/core.js';
 
 const hash = value => createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(value)).digest('hex');
 const envelope = (meta = newMeta()) => ({ ...meta, iv: Buffer.alloc(12, 1).toString('base64'), ciphertext: Buffer.alloc(32, 2).toString('base64') });
@@ -201,4 +201,64 @@ test('authenticated HTTPS routes reject stale source, config races, revocation a
   race = await delayed(staged(config.configId, snapshot, backup));
   await request('/api/admin/revoke', 'POST', { id: 'synthetic-device' }, admin); race.finish(); assert.equal((await race.result).status, 401);
   assert.equal((await request('/api/recovery-backup/status')).status, 401);
+});
+
+
+test('expanded encrypted recovery survives HTTPS, readback and an isolated restore with exact source bytes', { timeout: 60000 }, async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pharmacy-expanded-recovery-'));
+  makeCertificates(dir, 'fictional-capacity.local');
+  const token = 'fictional-capacity-device';
+  atomic(path.join(dir, 'config.json'), { hostname: 'fictional-capacity.local', port: 8443, adminToken: 'synthetic-admin', devices: [{ id: 'synthetic', hash: hash(token) }] });
+  const meta = newMeta(), sourceKey = await derive('synthetic-capacity-source-key', meta);
+  const bundle = emptyBundle(meta.vaultId);
+  const store = { name: '虛構容量驗收', channel: '獨立', city: '', district: '', attr: '', contact: '' };
+  bundle.ops.push(revision('store', 'capacity-store', store, [], 'synthetic'));
+  for (let index = 0; index < 10; index++) {
+    const bytes = Buffer.alloc(3 * 1024 * 1024, index);
+    const blob = await hashBytes(bytes);
+    bundle.blobs[blob] = b64(bytes);
+    const note = { store: 'capacity-store', date: '2026-01-02', source: '合成資料',
+      text: '完整原文　\r\n逐字保留。', next: '', people: [], topics: [],
+      attachments: [{ blob, name: 'fictional.bin', mime: 'application/octet-stream' }] };
+    const first = revision('visit','visit-'+index,note,[],'synthetic');
+    bundle.ops.push(first, revision('visit',first.entity,{...note,text:note.text+'\n新版本'},[first.id],'synthetic'));
+  }
+  const current = { version:1, envelope:await seal(bundle,sourceKey,meta) };
+  atomic(path.join(dir, 'snapshot.json'), current);
+  const service = createService({ dataDir:dir, host:'127.0.0.1', port:0 });
+  t.after(async () => {
+    service.server.closeAllConnections();
+    await new Promise(resolve => service.server.close(resolve));
+    fs.rmSync(dir, { recursive:true, force:true });
+  });
+  const address = await service.listen(), ca = fs.readFileSync(path.join(dir, 'tls', 'ca.crt'));
+  async function request(route, body) {
+    return new Promise((resolve, reject) => {
+      const req = https.request({ host:'127.0.0.1', servername:'localhost', port:address.port, path:route, ca,
+        method:body?'POST':'GET', headers:{Host:`localhost:${address.port}`, 'Content-Type':'application/json',
+          'X-Pharmacy-Client':'1', 'X-Pharmacy-App':'1.5.118', Authorization:`Bearer ${token}`} }, res=>{
+        const bytes=[];
+        res.on('data',chunk=>bytes.push(chunk));
+        res.on('end',()=>resolve({status:res.statusCode,body:JSON.parse(Buffer.concat(bytes))}));
+      });
+      req.on('error',reject);
+      req.end(body?JSON.stringify(body):undefined);
+    });
+  }
+  const config = options(meta.vaultId), backupMeta = {...meta,...config.recoveryMeta};
+  const backupKey = await derive('synthetic-capacity-backup-key',backupMeta);
+  const prepared = await prepareWeeklyRecovery(current.envelope,sourceKey,{key:backupKey,meta:backupMeta});
+  const stage = staged(config.configId,current,prepared.envelope);
+  const wireBytes = Buffer.byteLength(JSON.stringify(stage));
+  assert.ok(wireBytes > 36 * 1024 * 1024);
+  assert.ok(wireBytes < MAX_BACKUP_FILE_BYTES);
+  assert.equal(stage.sha256,prepared.sha256);
+  assert.equal((await request('/api/recovery-backup/config',config)).status,200);
+  const accepted = await request('/api/recovery-backup/stage',stage);
+  assert.equal(accepted.status,200);
+  const fetched = await request('/api/recovery-backup/file?name='+encodeURIComponent(accepted.body.lastSuccess.name));
+  assert.equal(fetched.status,200);
+  const restored = await planBackupImport(null,await unseal(fetched.body.envelope,backupKey));
+  assert.deepEqual(restored.bundle,bundle);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir,'snapshot.json'))),current);
 });

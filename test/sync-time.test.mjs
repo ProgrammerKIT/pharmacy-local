@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import { newMeta, derive, seal, unseal, emptyBundle, revision, merge, validateBundle, project, dataSafetySummary } from '../public/core.js';
+import { newMeta, derive, seal, unseal, emptyBundle, revision, merge, validateBundle, project, dataSafetySummary, MAX_BYTES } from '../public/core.js';
 
 // Run the actual application functions, with a local in-memory transport and real encryption.
 const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
@@ -24,7 +24,7 @@ async function fixture() {
 async function client(f, device = 'phone') {
   const elements = new Map(), calls = [], local = { envelope: null };
   const $ = id => { if (!elements.has(id)) elements.set(id, { textContent: '', hidden: false, open: false, dataset: {} }); return elements.get(id); };
-  const c = vm.createContext({ monthlyFeedbackContext:null,  queueInsightScan() {}, recoveryExportContext: null, clearRecoveryExport() {}, weeklyContext: null, weeklyRunning: false, peopleBatchRunning: false, weeklyState: null, clearWeeklySetup() {},
+  const c = vm.createContext({ MAX_BYTES, monthlyFeedbackContext:null,  queueInsightScan() {}, recoveryExportContext: null, clearRecoveryExport() {}, weeklyContext: null, weeklyRunning: false, peopleBatchRunning: false, weeklyState: null, clearWeeklySetup() {},
     localSaveState: 'saved', syncInProgress: false, syncEpoch: 0, pendingLock: false, gateOpening: false,
     singleStoreContext: null, dayPlanContext: null, monthlyVisitContext: null, attendancePrompt: null, navigator: { onLine: true }, dataSafetySummary,
     currentHealthAudit: () => ({ checks: [] }),

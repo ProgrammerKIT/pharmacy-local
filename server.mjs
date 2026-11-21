@@ -6,7 +6,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID, createCipheriv, createDecipheriv, createHash, timingSafeEqual } from 'node:crypto';
 import { execFile, execFileSync } from 'node:child_process';
-import { checkEnvelope } from './public/core.js';
+import { checkEnvelope, exceedsLegacyCapacity, MAX_BACKUP_FILE_BYTES } from './public/core.js';
 import { APP_VERSION } from './public/version.js';
 
 export const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -183,11 +183,18 @@ export function isPrivate(address = '') {
   return parts.length === 4 && parts.every(x => Number.isInteger(x) && x >= 0 && x <= 255) && (parts[0] === 10 || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) || (parts[0] === 192 && parts[1] === 168) || (parts[0] === 169 && parts[1] === 254));
 }
 const CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; connect-src 'self'; worker-src 'self'; manifest-src 'self'; font-src 'self'; object-src 'none'; frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+const capacityUpdateMessage = '這份資料需要 v1.5.118 或更新版本。請更新 App 後再同步；本機資料保留。';
+function capacityCompatible(req) {
+  const version = String(req.headers['x-pharmacy-app'] || '');
+  if (!/^\d{1,4}\.\d{1,4}\.\d{1,4}$/.test(version)) return false;
+  const [major, minor, patch] = version.split('.').map(Number);
+  return major > 1 || major === 1 && (minor > 5 || minor === 5 && patch >= 118);
+}
 const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json' };
-async function json(req) {
+async function json(req, limit = 36 * 1024 * 1024) {
   if (!String(req.headers['content-type'] || '').startsWith('application/json')) throw Object.assign(new Error('需要 JSON 請求。'), { status: 415 });
   const chunks = []; let size = 0;
-  for await (const part of req) { size += part.length; if (size > 36 * 1024 * 1024) throw Object.assign(new Error('資料超過同步上限。'), { status: 413 }); chunks.push(part); }
+  for await (const part of req) { size += part.length; if (size > limit) throw Object.assign(new Error('資料超過同步上限。'), { status: 413 }); chunks.push(part); }
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw Object.assign(new Error('請求格式不正確。'), { status: 400 }); }
 }
 
@@ -319,11 +326,12 @@ export function createService({ dataDir = defaultDataDir(), host = '0.0.0.0', po
             if (!updateCommand) return send(503, { error: '請用 02-Start 啟動新版更新管理服務。' });
             if (!['check', 'pause', 'resume', 'rollback'].includes(body.action)) return send(400, { error: '更新操作不正確。' });
             if (['activating', 'checking'].includes(updateStatus.phase)) return send(409, { error: '目前更新操作尚未完成，請稍候。' });
+            if (body.action === 'rollback' && exceedsLegacyCapacity(snapshot.envelope)) return send(409, { error: '資料已超過舊版容量，請安裝相容的修正版。正式資料保留。' });
             updateCommand(body.action); return send(202, { ok: true });
           }
           if (generation && req.method !== 'GET') return send(503, { error: '程式即將更新，請稍候再配對或管理裝置。' });
           if (url.pathname === '/api/admin/rebuild' && req.method === 'POST') {
-            const body = await json(req);
+            const body = await json(req, MAX_BACKUP_FILE_BYTES);
             if (generation || ['activating', 'checking'].includes(updateStatus.phase)) return send(503, { error: '程式正在更新，請完成後再重建。' });
             snapshot = rebuildSnapshot(dataDir, snapshot, body); pairing = null; activity.clear();
             return send(200, { version: snapshot.version, rebuild: snapshot.rebuild });
@@ -337,6 +345,7 @@ export function createService({ dataDir = defaultDataDir(), host = '0.0.0.0', po
           return send(404, { error: '找不到管理操作。' });
         }
         if (url.pathname === '/api/pair' && req.method === 'POST') {
+          if (exceedsLegacyCapacity(snapshot.envelope) && !capacityCompatible(req)) return send(409, { error: capacityUpdateMessage });
           const ip = req.socket.remoteAddress, now = Date.now(), recent = failures.get(ip);
           if (recent && now - recent.start < 60000 && recent.n >= 5) return send(429, { error: '配對嘗試過多，請等一分鐘後重試。' });
           const body = await json(req);
@@ -379,11 +388,12 @@ export function createService({ dataDir = defaultDataDir(), host = '0.0.0.0', po
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Disposition': `attachment; filename="${name}"` }); return res.end(bytes);
         }
         if (['/api/recovery-backup/config', '/api/recovery-backup/stage'].includes(url.pathname) && req.method === 'POST') {
-          const body = await json(req);
+          const body = await json(req, url.pathname.endsWith('/stage') ? MAX_BACKUP_FILE_BYTES : undefined);
           if (!deviceActive(device) || !config.devices.some(d => d.id === device.id && equal(d.hash, digest(token)))) return send(401, { error: '資料庫已重建或配對已撤銷，請重新連接。' });
           if (generation || ['activating', 'checking'].includes(updateStatus.phase)) return send(503, { error: '程式正在更新，稍後會再準備備份。' });
           return send(200, url.pathname.endsWith('/config') ? scheduledRecovery.configure(body) : scheduledRecovery.stage(body));
         }
+        if (url.pathname === '/api/snapshot' && exceedsLegacyCapacity(snapshot.envelope) && !capacityCompatible(req)) return send(409, { error: capacityUpdateMessage });
         const notePurgeCompatible = () => {
           const value = String(req.headers['x-pharmacy-app'] || '');
           if (!/^\d+\.\d+\.\d+$/.test(value)) return false;
@@ -394,11 +404,12 @@ export function createService({ dataDir = defaultDataDir(), host = '0.0.0.0', po
         if (url.pathname === '/api/version' && req.method === 'GET') return send(200, { version: snapshot.version });
         if (url.pathname === '/api/snapshot' && req.method === 'GET') return send(200, snapshot);
         if (url.pathname === '/api/snapshot' && req.method === 'PUT') {
-          const body = await json(req);
+          const body = await json(req, capacityCompatible(req) ? MAX_BACKUP_FILE_BYTES : undefined);
           if (!deviceActive(device) || !config.devices.some(d => d.id === device.id)) return send(401, { error: '資料庫已重建或配對已撤銷，舊資料不會寫入新庫。' });
           if (generation) return send(503, { error: '程式正在更新，變更已保存在裝置，稍後會再同步。' });
           if (body.expectedVersion !== snapshot.version) return send(409, { error: '另一台裝置先更新，請重新合併。' });
           checkEnvelope(body.envelope);
+          if (exceedsLegacyCapacity(body.envelope) && !capacityCompatible(req)) return send(409, { error: capacityUpdateMessage });
           if (snapshot.envelope && ['vaultId', 'salt', 'iterations'].some(k => body.envelope[k] !== snapshot.envelope[k])) return send(409, { error: '資料庫身分不同，拒絕覆蓋。' });
           if (body.minimumAppVersion === '1.5.116' && !notePurgeCompatible()) return send(409, {error:'請先更新App，再啟用筆記永久移除保護。'});
           if(body.minimumAppVersion!==undefined && body.minimumAppVersion!=='1.5.116' || snapshot.minimumAppVersion==='1.5.116' && body.minimumAppVersion!=='1.5.116')return send(409,{error:'不能移除筆記永久刪除保護，請使用相容版本同步。'});

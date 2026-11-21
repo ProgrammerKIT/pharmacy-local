@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import { newMeta, derive, seal, unseal, checkEnvelope, emptyBundle, revision, validateBundle, project, planBackupImport, addReminderTasks, completeReminderTask, reminderHasOption, hashBytes, b64, uuid } from '../public/core.js';
+import { newMeta, derive, seal, unseal, checkEnvelope, emptyBundle, revision, validateBundle, project, planBackupImport, addReminderTasks, completeReminderTask, reminderHasOption, hashBytes, b64, uuid, MAX_BACKUP_FILE_BYTES } from '../public/core.js';
 
 // Real application handlers and cryptography with synthetic fixtures only.
 // The modeled disk is isolated memory: never open a real browser vault or network.
@@ -39,7 +39,7 @@ async function harness({restore = false} = {}) {
   const state = {disk:restore ? null : {revision:7},writes:[],reads:0,decrypts:0,opens:0,renders:0,notices:[],failWrite:false,pendingCSV:false,readHook:null,sealHook:null,writeHook:null};
   const c = vm.createContext({ monthlyFeedbackContext:null,  resetInsightScan() {}, recoveryExportContext: null, clearRecoveryExport() {}, weeklyContext: null, weeklyRunning: false, weeklyState: null, clearWeeklySetup() {}, syncInProgress: false, autoFetching: false, syncEpoch: 0, localSaveState: 'saved', renderDataSafetyEntry() {},
     syncScheduler: { request() {}, wake() {}, pause() {}, reset() {}, confirmed() {}, failed() {} },
-    $,structuredClone,JSON,Set,Date,uuid,derive,checkEnvelope,validateBundle,planBackupImport,project,
+    $,structuredClone,JSON,Set,Date,uuid,derive,MAX_BACKUP_FILE_BYTES,checkEnvelope,validateBundle,planBackupImport,project,
     key:restore ? null : fixture.key,meta:restore ? null : meta,payload,localRevision:restore ? 0 : 7,slot:restore ? null : state.disk,
     storeMergePreview:null,storeMergeSetup:null,backupPreview:null,insightsPreview:null,editorContext:null,singleStoreContext:null,inlineTextContext:null,reminderContext:null,dayPlanContext:null,monthlyVisitContext:null,pendingLock:false,busy:false,updateHolding:false,
     document:{hidden:false,querySelectorAll:()=>[...nodes.values()]},csvImport:{hasPending:()=>state.pendingCSV},
@@ -174,7 +174,7 @@ test('encrypted reminder drafts block backup inspection and accepted application
 });
 
 test('malformed files and foreign envelopes fail before decryption or any session mutation',async()=>{
-  const invalid=[{size:36*1024*1024+1,text:async()=>{throw new Error('must not read');}},{size:2,text:async()=>'{x'}, {size:2,text:async()=>'{}'},backupFile({format:'broken'})];
+  const invalid=[{size:MAX_BACKUP_FILE_BYTES+1,text:async()=>{throw new Error('must not read');}},{size:2,text:async()=>'{x'}, {size:2,text:async()=>'{}'},backupFile({format:'broken'})];
   for(const file of invalid) {
     const h=await harness(),before=JSON.stringify(h.c.payload);await assert.rejects(h.c.importBackup(file));assert.equal(h.state.writes.length,0);assert.equal(h.state.decrypts,0);assert.equal(JSON.stringify(h.c.payload),before);assert.equal(h.c.backupPreview,null);
   }
