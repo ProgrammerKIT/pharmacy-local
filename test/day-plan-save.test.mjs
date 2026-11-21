@@ -14,6 +14,7 @@ function section(first, next) {
 }
 const implementation = section('function storeSelectionIdentity(', 'function monthlyVisitRowsHTML(')
   + section('async function run(', 'function programDetail(')
+  + section('function recurringReminderIncludes(', 'function reminderTasksHTML(')
   + section('function dayPlanLabel(', 'function renderVisits(');
 
 // Only synthetic data. Real projection, revision, action and validation helpers

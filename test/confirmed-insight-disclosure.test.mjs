@@ -77,6 +77,7 @@ function harness() {
     persist: () => { state.writes++; throw new Error('Disclosure rendering must not persist'); }
   });
   vm.runInContext(source('const esc = ', 'const titles =')
+    + source('function recurringReminderIncludes(', 'function reminderTaskEditsFromForm(')
     + source('function storeOriginalTextFields(', 'function visitStoreNameText(')
     + source('const INSIGHT_REVIEW_LABELS = ', 'function assertInsightReviewReady(')
     + source('function readingReminderOverlap(', 'function openVisitBrief(') + source('function openVisitBrief(', 'function canonicalPerson(')
