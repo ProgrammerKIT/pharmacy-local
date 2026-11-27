@@ -2936,6 +2936,37 @@ export function monthlyAlertSalesMonths(bundle, month = monthlyVisitMonth()) {
 export function monthlyAlertStoreIds(bundle, month = monthlyVisitMonth()) {
   return new Set(monthlyAlertSalesMonths(bundle, month).keys());
 }
+// Read-only planning view of independently imported analyses. Membership never
+// enters the recurring roster and only explicit attendance marks a visit done.
+export function monthlyAlertVisitOverview(bundle, month = monthlyVisitMonth(), now = Date.now()) {
+  month = monthlyVisitMonth(month);
+  const today = attendanceTaipeiDate(now), all = monthlyAnalysisSources(bundle);
+  const replaced = new Set(all.flatMap(source => source.supersedes));
+  const sources = all.filter(source => source.visitMonth === month && !replaced.has(source.id));
+  const records = project(bundle), stores = new Map(records.filter(row => row.type === 'store').map(row => [row.id, row]));
+  const rows = new Map(), issues = [], unassigned = [];
+  for (const channel of new Set(sources.map(source => source.channel))) {
+    const tips = sources.filter(source => source.channel === channel);
+    if (tips.length !== 1) { issues.push({ channel, name: channel, reason: '同通路分析來源有分歧，保留各版，待核對後才列入拜訪清單' }); continue; }
+    const source = tips[0];
+    source.assignments.forEach((match, rowIndex) => {
+      const original = source.rows[rowIndex], store = stores.get(match.storeId);
+      if (!match.storeId) { unassigned.push({ channel, name: original.name, sourceId: source.id, rowIndex }); return; }
+      let reason = monthlyAnalysisIdentityChanged(store, match, channel) ? '原門市對應已變更或不可用，須重新核對；不依名稱猜配' : '';
+      if (!reason && source.format === 'yq-alert-2' && analysisStoreCodeState(bundle, channel, original.storeCode).storeId !== match.storeId) reason = '人工店碼對照已撤銷或變更，須重新核對';
+      if (reason) { issues.push({ channel, name: match.name || original.name, sourceId: source.id, rowIndex, reason }); return; }
+      if (rows.has(store.id)) return;
+      const dates = visitAttendanceForStore(bundle, store.id, now).history.map(item => item.date).filter(date => date.slice(0, 7) === month && date <= today);
+      rows.set(store.id, { storeId: store.id, name: store.name, city: store.city || '', district: store.district || '', channel,
+        available: true, unavailableReason: '', dates, completed: dates.length > 0, salesMonth: source.salesMonth, sourceId: source.id });
+    });
+  }
+  const list = [...rows.values()].sort((a, b) => a.city.localeCompare(b.city, 'zh-Hant') || a.district.localeCompare(b.district, 'zh-Hant') || a.name.localeCompare(b.name, 'zh-Hant') || a.storeId.localeCompare(b.storeId));
+  const completed = list.filter(row => row.completed), pending = list.filter(row => !row.completed);
+  return { month, today, sources: sources.map(source => ({ id: source.id, channel: source.channel, salesMonth: source.salesMonth })),
+    stores: list, pending, completed, total: list.length, completedCount: completed.length, issues, unassigned,
+    missingRegionCount: list.filter(row => !row.city || !row.district).length };
+}
 export function monthlyAnalysisForStore(bundle, storeId, month = monthlyVisitMonth()) {
   const all = monthlyAnalysisSources(bundle), currentStore = project(bundle).find(s => s.type === 'store' && s.id === storeId);
   const replaced = new Set(all.flatMap(source => source.supersedes));

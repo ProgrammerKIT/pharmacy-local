@@ -535,3 +535,11 @@ img { max-inline-size:100%; height:auto; }
 .store-recurring-reminders p{margin:4px 0 0;white-space:pre-wrap;overflow-wrap:anywhere}
 .reminder-task-actions{display:flex;flex:none;flex-direction:column;align-items:flex-end}
 .reminder-task-actions .reminder-task-edit{margin-top:0;min-height:44px}
+
+/* Monthly planning stays geographic: channel is a store label, not a partition. */
+.monthly-section-tabs{display:flex;gap:8px;margin:0 0 18px;flex-wrap:wrap}
+.monthly-section-tabs button{flex:1 1 8rem;min-height:44px}
+.monthly-section-tabs [aria-selected="true"]{background:var(--teal);color:#fff;border-color:var(--teal)}
+.monthly-store-copy .monthly-alert-badge{margin:5px 0 3px;max-width:100%}
+.monthly-alert-exceptions{margin:14px 0;overflow-wrap:anywhere}
+.monthly-alert-exceptions p{margin:10px 0}

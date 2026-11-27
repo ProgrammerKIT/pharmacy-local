@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import { uiNodeFixture } from './helpers/ui-node-fixture.mjs';
-import { emptyBundle, monthlyVisitMonth, shiftMonthlyVisitMonth, monthlyVisitOverview, monthlyVisitBasis,
+import { emptyBundle, monthlyVisitMonth, shiftMonthlyVisitMonth, monthlyVisitOverview, monthlyAlertVisitOverview, monthlyVisitBasis,
   dayPlanDate, shiftDayPlanDate, dayPlanOverview, dayItineraryBasis } from '../public/core.js';
 const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 function section(first, next) {
@@ -14,10 +14,10 @@ function fixture() {
   const { node, document } = uiNodeFixture(), handlers = new Map(), bundle = emptyBundle('fictional-calendar-lifecycle');
   document.addEventListener = (type, handler) => handlers.set('monthly-' + type, handler);
   node('day-plan-content').addEventListener = (type, handler) => handlers.set('daily-' + type, handler);
-  const sandbox = vm.createContext({ monthlyFocusHTML:()=>'', monthlyChannelFilter:'all', monthlyAnalysisStoreHTML:()=>'', analysisOverviewHTML:()=>'',
+  const sandbox = vm.createContext({ monthlyFocusHTML:()=>'', monthlyVisitSection:'required', monthlyAnalysisStoreHTML:()=>'', analysisOverviewHTML:()=>'',
     $: node, document, payload: { bundle }, records: [], monthlyVisitSelectedMonth: monthlyVisitMonth(), monthlyVisitNotice: '', monthlyVisitViewBasis: '',
     monthlyVisitContext: null, dayPlanContext: null, dayPlanSelectedDate: dayPlanDate(), dayPlanViewBasis: '', dayPlanSorting: false, dayPlanNotice: '', dayPlanUndo: null, busy: false,
-    monthlyVisitMonth, shiftMonthlyVisitMonth, monthlyVisitOverview, monthlyVisitBasis, dayPlanDate, shiftDayPlanDate, dayPlanOverview, dayItineraryBasis,
+    monthlyVisitMonth, shiftMonthlyVisitMonth, monthlyVisitOverview, monthlyAlertVisitOverview, monthlyVisitBasis, dayPlanDate, shiftDayPlanDate, dayPlanOverview, dayItineraryBasis,
     esc: value => String(value), by: () => undefined, retailChannel: () => ({ id: 'independent' }),
     dismissals: 0, dismissKeyboard() { sandbox.dismissals++; document.activeElement?.blur(); },
     toast(message) { sandbox.lastToast = message; }
