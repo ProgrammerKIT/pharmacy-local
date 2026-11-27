@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import { uiNodeFixture } from './helpers/ui-node-fixture.mjs';
 import { emptyBundle, revision, project, validateBundle, makeVisitAttendance, visitAttendanceForStore, attendanceTaipeiDate,
-  monthlyPlanningState, monthlyPlanningBasis, applyMonthlyPlanning, monthlyVisitMonth, shiftMonthlyVisitMonth, monthlyVisitForStore, monthlyVisitOverview, monthlyVisitBasis, applyMonthlyVisitAction } from '../public/core.js';
+  monthlyPlanningState, monthlyPlanningBasis, applyMonthlyPlanning, monthlyVisitMonth, shiftMonthlyVisitMonth, monthlyVisitForStore, monthlyVisitOverview, monthlyAlertVisitOverview, monthlyVisitBasis, applyMonthlyVisitAction } from '../public/core.js';
 
 const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
@@ -29,12 +29,12 @@ function fixture() {
   const original = structuredClone(bundle), elements = new Map(), writes = [];
   const { node } = uiNodeFixture();
   const sandbox = vm.createContext({ monthlyFeedbackContext:null,  monthlyAnalysisStoreHTML:()=>'', analysisOverviewHTML:()=>'',
-    renderDayPlanEntry() {}, monthlyChannelFilter:'all', monthlyPlanningState, monthlyPlanningBasis, applyMonthlyPlanning, monthlyVisitContext: null, monthlyVisitSelectedMonth: month, monthlyVisitViewBasis: '', monthlyVisitNotice: '',
+    renderDayPlanEntry() {}, monthlyVisitSection:'required', monthlyPlanningState, monthlyPlanningBasis, applyMonthlyPlanning, monthlyVisitContext: null, monthlyVisitSelectedMonth: month, monthlyVisitViewBasis: '', monthlyVisitNotice: '',
     dayPlanContext: null, editorContext: null, reminderContext: null, singleStoreContext: null, inlineTextContext: null,
     key: {}, meta: {}, localRevision: 5, syncEpoch: 9, payload: { bundle, device: 'fictional-device', dirty: false }, records: project(bundle),
     document: { hidden: false, querySelector() { return node('monthly-visit-dialog').open ? node('monthly-visit-dialog') : null; } },
     releaseIdleInlineEdit() {}, pendingLock: false, updateHolding: false, autoFetching: false, syncInProgress: false, busy: false,
-    $: node, structuredClone, project, monthlyVisitMonth, shiftMonthlyVisitMonth, monthlyVisitForStore, monthlyVisitOverview, monthlyVisitBasis, applyMonthlyVisitAction, attendanceTaipeiDate,
+    $: node, structuredClone, project, monthlyVisitMonth, shiftMonthlyVisitMonth, monthlyVisitForStore, monthlyVisitOverview, monthlyAlertVisitOverview, monthlyVisitBasis, applyMonthlyVisitAction, attendanceTaipeiDate,
     by: (type, id) => project(sandbox.payload.bundle).find(row => row.type === type && row.id === id),
     retailChannel: store => ({ id: store?.id === 'a' ? 'great-tree' : store?.id === 'b' ? 'you-chuan' : 'independent' }),
     storeIdentityPending: store => store.csvIdentityPending === true,
