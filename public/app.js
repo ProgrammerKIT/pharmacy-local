@@ -737,16 +737,18 @@ async function checkConnection() {
   const result = await diagnoseConnection({ api, hasToken: () => !!payload?.token });
   output.textContent = '檢查時間：' + dateText(result.checkedAt) + '\nMac 服務：' + result.service + '\nHTTPS：' + result.tls + '\n裝置配對：' + result.pairing + (result.version !== null ? '\nMac 目前資料版本：' + result.version : '') + '\n' + result.message;
 }
-async function persist(next, { guard = null } = {}) {
+async function persist(next, { guard = null, onProgress = null } = {}) {
   if (guard) guard();
   const previous = payload, sessionKey = key, sessionMeta = meta, expected = localRevision;
   const formalChange = hasNewFormalChanges(previous, next) && !syncInProgress;
   next = withPendingSync(previous, next);
   localSaveState = 'saving'; renderDataSafetyEntry();
   try {
+    onProgress?.('encrypting');
     const envelope = await seal(next, sessionKey, sessionMeta, 'device');
     if (key !== sessionKey || meta !== sessionMeta || payload !== previous || localRevision !== expected) throw new Error('儲存期間資料或工作階段已變更，本次沒有覆蓋較新的內容；請重試。');
     if (guard) guard();
+    onProgress?.('writing');
     const rev = await writeLocal(envelope, expected, sessionKey);
     if (key !== sessionKey || meta !== sessionMeta || payload !== previous || localRevision !== expected) throw new Error('本機寫入已完成，但工作階段已變更；請重新開啟核對。');
     localRevision = rev; slot = { envelope, revision: rev, unlockKey: key }; payload = next;
@@ -3533,17 +3535,44 @@ async function persistInlineTextDraft() {
   const visit = by('visit', ctx.id), element = inlineTextElement(ctx.id, ctx.briefStoreId || ''), state = element?.closest('[data-inline-shell]')?.querySelector('[data-inline-state]');
   if (!visit || visit.deleted || visit.conflict || JSON.stringify(quickTextParents(visit)) !== JSON.stringify(ctx.parents)) { if (state) state.textContent = '這筆紀錄已有新版本；目前文字未寫入，請取消後重新開始。'; return; }
   const draft = ctx.after === ctx.before ? null : { format: 'inline-text-draft-1', id: ctx.id, before: ctx.before, after: ctx.after, parents: [...ctx.parents], updatedAt: new Date().toISOString() };
+  const saved = payload.inlineTextDraft;
+  // compositionend/input and explicit review may request the same draft again.
+  // Do not encrypt and rewrite the whole vault when the exact text is saved.
+  if ((!draft && !saved) || (draft && saved?.format===draft.format && saved.id===draft.id && saved.before===draft.before && saved.after===draft.after && JSON.stringify(saved.parents)===JSON.stringify(draft.parents))) {
+    if (state) state.textContent = draft ? '修改草稿已加密保存在這台裝置，尚未寫入正式紀錄。' : '文字沒有變更。';
+    if (!draft) releaseIdleInlineEdit();
+    return;
+  }
   const savedText = ctx.after;
-  await persist({ ...payload, inlineTextDraft: draft });
+  await persist({ ...payload, inlineTextDraft: draft }, { onProgress: phase => {
+    if (state && ctx===inlineTextContext && ctx.after===savedText) state.textContent = phase==='writing' ? '正在寫入本機草稿…' : '正在加密保存修改草稿…';
+  } });
   if (ctx !== inlineTextContext || ctx.after !== savedText) return;
   if (state) state.textContent = draft ? '修改草稿已加密保存在這台裝置，尚未寫入正式紀錄。' : '文字沒有變更。';
   if (!draft) releaseIdleInlineEdit();
 }
 function scheduleInlineTextDraft() {
   clearTimeout(inlineDraftTimer); const ctx = inlineTextContext;
-  inlineDraftTimer = setTimeout(() => { inlineDraftSaveChain = inlineDraftSaveChain.then(() => ctx === inlineTextContext ? persistInlineTextDraft() : undefined).catch(error => { const state = document.querySelector(`[data-inline-state="${CSS.escape(ctx?.id || '')}"]`); if (state) state.textContent = '草稿儲存失敗：' + error.message; }); }, 250);
+  inlineDraftTimer = setTimeout(() => {
+    if (!ctx || ctx!==inlineTextContext || ctx.draftSaveQueued) return;
+    ctx.draftSaveQueued = true;
+    inlineDraftSaveChain = inlineDraftSaveChain.catch(() => {}).then(async () => {
+      ctx.draftSaveQueued = false;
+      if (ctx===inlineTextContext) await persistInlineTextDraft();
+    }).catch(error => { const state = inlineTextElement(ctx.id,ctx.briefStoreId||'')?.closest('[data-inline-shell]')?.querySelector('[data-inline-state]'); if (state) state.textContent = '草稿儲存失敗：' + error.message; });
+  }, 500);
 }
-async function flushInlineTextDraft() { clearTimeout(inlineDraftTimer); inlineDraftTimer = null; inlineDraftSaveChain = inlineDraftSaveChain.catch(() => {}).then(persistInlineTextDraft); await inlineDraftSaveChain; }
+async function flushInlineTextDraft() {
+  clearTimeout(inlineDraftTimer); inlineDraftTimer = null;
+  inlineDraftSaveChain = inlineDraftSaveChain.catch(() => {}).then(persistInlineTextDraft);
+  try { await inlineDraftSaveChain; }
+  catch (error) {
+    const ctx=inlineTextContext;
+    const state=ctx&&inlineTextElement(ctx.id,ctx.briefStoreId||'')?.closest('[data-inline-shell]')?.querySelector('[data-inline-state]');
+    if(state)state.textContent='草稿儲存失敗：'+error.message;
+    throw error;
+  }
+}
 function updateInlineText(id, element, { isComposing = false } = {}) {
   if (!beginInlineTextEdit(id, element)) { const visit = by('visit', id); if (visit) element.textContent = visit.text || ''; return; }
   const next = inlineTextValue(element), shell = element.closest('[data-inline-shell]'), state = shell?.querySelector('[data-inline-state]');

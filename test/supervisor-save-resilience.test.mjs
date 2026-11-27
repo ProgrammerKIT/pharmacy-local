@@ -35,7 +35,7 @@ test('storage failure and stale person head preserve draft; unchanged resave add
  const same=harness();same.node('supervisor-personal-note').value='原筆記';same.node('supervisor-relationship-note').value='原關係資訊';await same.c.saveSupervisorNote(same.form);assert.equal(same.c.payload.bundle.ops.length,2);assert.equal(same.c.payload.supervisorDraft,null);
 });
 test('a failed inline draft chain does not permanently block explicit retry; repeated failure still rejects without false success',async()=>{
- const c=vm.createContext({inlineDraftTimer:1,inlineDraftSaveChain:Promise.resolve(),clearTimeout(){},calls:0,fail:true,async persistInlineTextDraft(){c.calls++;if(c.fail)throw Error('connection failed')}});
+ const c=vm.createContext({inlineTextContext:null,inlineDraftTimer:1,inlineDraftSaveChain:Promise.resolve(),clearTimeout(){},calls:0,fail:true,async persistInlineTextDraft(){c.calls++;if(c.fail)throw Error('connection failed')}});
  vm.runInContext(part('async function flushInlineTextDraft(', 'function updateInlineText('),c);
  await assert.rejects(c.flushInlineTextDraft(),/connection failed/);assert.equal(c.calls,1);c.fail=false;await c.flushInlineTextDraft();assert.equal(c.calls,2);
  c.fail=true;await assert.rejects(c.flushInlineTextDraft(),/connection failed/);await assert.rejects(c.flushInlineTextDraft(),/connection failed/);assert.equal(c.calls,4);
