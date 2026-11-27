@@ -7,10 +7,20 @@ function open() {
   if (connection) return connection;
   let pending;
   pending = new Promise((resolve, reject) => {
-    const request = indexedDB.open('pharmacy-local-v1', 1);
-    request.onupgradeneeded = () => request.result.createObjectStore('vault');
-    request.onerror = () => { if (connection === pending) connection = null; reject(request.error); };
+    let expired = false;
+    const timer = setTimeout(() => {
+      expired = true;
+      if (connection === pending) connection = null;
+      reject(new Error('本機資料庫開啟逾時；目前輸入尚未確認保存，請保留文字後再試，不要清除資料。'));
+    }, 15000);
+    let request;
+    try { request = indexedDB.open('pharmacy-local-v1', 1); }
+    catch (error) { clearTimeout(timer); reject(error); return; }
+    request.onupgradeneeded = () => { if (expired) { request.transaction?.abort(); return; } request.result.createObjectStore('vault'); };
+    request.onerror = () => { clearTimeout(timer); if (connection === pending) connection = null; reject(request.error); };
     request.onsuccess = () => {
+      clearTimeout(timer);
+      if (expired) { request.result.close(); return; }
       const db = request.result; currentDatabase = db;
       db.onversionchange = () => invalidate(db);
       db.onclose = () => invalidate(db);
@@ -35,8 +45,18 @@ async function transact(mode, work) {
       throw new Error('本機資料庫連線暫時無法恢復；目前輸入仍保留，請保持畫面並再試一次。', { cause: error });
     }
     return new Promise((resolve, reject) => {
-      tx.onabort = tx.onerror = () => reject(tx.error || new Error('本機資料操作中斷，尚未確認保存；請保留輸入並重試。'));
-      work(tx, resolve, reject);
+      let settled = false;
+      const finish = (callback, value) => { if (settled) return; settled = true; clearTimeout(timer); callback(value); };
+      const timer = setTimeout(() => {
+        finish(reject, new Error('本機保存逾時，尚未確認寫入成功；目前文字保留，請先複製文字後再試。'));
+        // A timeout is not permission to replay a possibly committed write.
+        // Abort outstanding requests; a future explicit attempt still uses CAS.
+        try { tx.abort(); } catch {}
+        invalidate(db);
+      }, 30000);
+      tx.onabort = tx.onerror = () => finish(reject, tx.error || new Error('本機資料操作中斷，尚未確認保存；請保留輸入並重試。'));
+      try { work(tx, value => finish(resolve, value), error => finish(reject, error)); }
+      catch (error) { finish(reject, error); try { tx.abort(); } catch {} }
     });
   }
 }

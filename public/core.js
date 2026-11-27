@@ -160,7 +160,13 @@ export async function seal(value, key, meta, purpose = 'shared') {
     || device && value.bundle && raw.length > MAX_BYTES && enc.encode(JSON.stringify(value.bundle)).length > MAX_BYTES)
     throw new Error('資料已達此版容量上限。這次變更未儲存。');
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const data = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: aad(meta, purpose) }, key, raw);
+  const data = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('本機加密逾時；目前輸入未確認保存，請保留文字後再試。')), 30000);
+    // Encryption cannot write to storage. A late result is ignored after timeout,
+    // so the caller can release busy controls without a delayed database write.
+    Promise.resolve().then(() => crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: aad(meta, purpose) }, key, raw))
+      .then(resolve, reject).finally(() => clearTimeout(timer));
+  });
   return { format: FORMAT, vaultId: meta.vaultId, salt: meta.salt, iterations: ITERATIONS, iv: b64(iv), ciphertext: b64(new Uint8Array(data)) };
 }
 export async function unseal(e, key, purpose = 'shared') {

@@ -106,7 +106,7 @@ function databaseHarness(initial) {
     } }; return tx;
   } };
   const indexedDB = { open(name, version) { assert.equal(name, 'pharmacy-local-v1'); assert.equal(version, 1); const r = {}; queueMicrotask(() => { r.result = db; r.onsuccess?.(); }); return r; } };
-  const context = vm.createContext({ indexedDB, CryptoKey, atob, btoa, Error, Promise });
+  const context = vm.createContext({ indexedDB, CryptoKey, atob, btoa, Error, Promise, setTimeout, clearTimeout });
   vm.runInContext(fs.readFileSync(new URL('../public/db.js', import.meta.url), 'utf8').replaceAll('export ', ''), context);
   return { context, records: () => records, fail: () => { failCommit = true; } };
 }
