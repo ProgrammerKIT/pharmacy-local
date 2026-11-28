@@ -43,7 +43,7 @@ test('conflicting human decisions stay visible, never chosen automatically',asyn
 const application=fs.readFileSync(new URL('../public/app.js',import.meta.url),'utf8');
 function render(bundle){
  let ctx;const nodes=new Map(),$=id=>{if(!nodes.has(id))nodes.set(id,{open:false,dataset:{},innerHTML:'original-editor',querySelectorAll:()=>[]});return nodes.get(id);};
- ctx=vm.createContext({...c,...r,Map,Set,JSON,Date,TextEncoder,structuredClone,$,payload:{bundle},key:{},document:{hidden:false},pendingLock:false,inlineTextContext:null,editorContext:null,singleStoreContext:null,esc:v=>String(v??'').replace(/[&<>"']/g,x=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[x])),dateText:v=>v,insightChangeBadgeHTML:()=>'',all:type=>c.project(ctx.payload.bundle).filter(o=>o.type===type)});
+ ctx=vm.createContext({...c,...r,Map,Set,JSON,Date,TextEncoder,structuredClone,$,payload:{bundle},key:{},document:{hidden:false},pendingLock:false,inlineTextContext:null,editorContext:null,singleStoreContext:null,esc:v=>String(v??'').replace(/[&<>"']/g,x=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[x])),dateText:v=>v,insightChangeBadgeHTML:()=>'',confirmedVisitHighlightsHTML:()=>'',all:type=>c.project(ctx.payload.bundle).filter(o=>o.type===type)});
  const start=application.indexOf('const peopleReadingViews'),end=application.indexOf('function peopleReadingTick()',start);
  vm.runInContext(application.slice(start,end),ctx);ctx.loadPeopleReadingView('s');return ctx.peopleReadingHTML('s');
 }

@@ -543,3 +543,15 @@ img { max-inline-size:100%; height:auto; }
 .monthly-store-copy .monthly-alert-badge{margin:5px 0 3px;max-width:100%}
 .monthly-alert-exceptions{margin:14px 0;overflow-wrap:anywhere}
 .monthly-alert-exceptions p{margin:10px 0}
+
+/* Confirmed conclusions stay readable; source and review controls remain folded. */
+.confirmed-visit-highlights{margin:10px 0 18px;padding:12px 14px;border:1px solid #a5c7b8;border-left:4px solid #13785e;border-radius:10px;background:#f2f8f4}
+.confirmed-visit-highlights h3{margin:0 0 8px;font-size:1rem}
+.confirmed-visit-highlights article+article{border-top:1px solid #c9ded2;padding-top:10px;margin-top:10px}
+.confirmed-visit-highlights p{margin:4px 0;line-height:1.65;overflow-wrap:anywhere}
+.confirmed-highlight-badge{font-size:.78rem;font-weight:700;color:#17654f}
+.confirmed-highlight-text{font-weight:600}.confirmed-visit-highlights small{display:block;color:#765d2d}
+.confirmed-visit-highlights .text-button{min-height:44px;font-size:.82rem;padding:7px 0}
+.people-reading-person>summary .people-confirmed-memory{color:#175e48;font-weight:600}
+.people-reading-person>summary .people-confirmed-memory strong{font-size:.78rem}
+.people-other-confirmed{padding:10px 12px;border-left:3px solid #8ebca9;margin:12px 0;background:#f5f8f6}.people-other-confirmed .people-confirmed-memory{display:block;line-height:1.65;margin-top:5px;font-size:.9rem}

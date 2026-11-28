@@ -10,7 +10,7 @@ async function harness(){
  const f=await makeAliasFixture(c,r),nodes=new Map(),writes=[],confirmations=[];
  const $=id=>{if(!nodes.has(id))nodes.set(id,{open:true,dataset:{singleStoreId:'s'},querySelectorAll:()=>[]});return nodes.get(id);};
  const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
- const ctx=vm.createContext({...c,...r,JSON,Date,Number,Set,Map,peopleReadingEpoch:0,key:{},meta:{},payload:{device:'synthetic',bundle:f.bundle},pendingLock:false,document:{hidden:false},$,esc,dateText:v=>v,insightChangeBadgeHTML:()=>'',
+ const ctx=vm.createContext({...c,...r,JSON,Date,Number,Set,Map,peopleReadingEpoch:0,key:{},meta:{},payload:{device:'synthetic',bundle:f.bundle},pendingLock:false,document:{hidden:false},$,esc,dateText:v=>v,insightChangeBadgeHTML:()=>'',confirmedVisitHighlightsHTML:()=>'',
   assertInsightReviewReady(){if(ctx.pendingLock||ctx.document.hidden||ctx.draft)throw Error('blocked');},
   confirm:t=>{confirmations.push(t);return ctx.answer;},render(){},openVisitBrief(){},toast:t=>ctx.lastToast=t,
   persist:async(next,{guard})=>{if(ctx.duringSave)ctx.duringSave();guard();writes.push(next);ctx.payload=next;}});
