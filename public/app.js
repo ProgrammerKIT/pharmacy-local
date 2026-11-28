@@ -1577,6 +1577,7 @@ function paintBriefSearch(scroll = false) {
   }
 }
 function refreshBriefSearch({ search = false, jump = false } = {}) {
+  refreshBriefEditActions();
   const ctx = briefSearchContext;
   if (!ctx || !$('review').open || $('review').dataset.singleStoreId !== ctx.storeId) return;
   const blocked = briefSearchBlocked(), editing = briefSearchEditing();
@@ -1691,12 +1692,27 @@ function singleStoreCaptureHTML() {
   return `<form id="single-store-capture-form" class="single-store-capture" hidden><div class="single-store-capture-head"><div><p class="eyebrow">QUICK CAPTURE</p><h3>記錄這次拜訪</h3></div><span class="pill">門市已固定</span></div><div id="single-store-typed"></div><label>原始拜訪內容<textarea id="single-store-text" maxlength="20000" placeholder="直接輸入這次拜訪內容" spellcheck="false"></textarea></label><label>下次跟進（選填）<textarea id="single-store-next" maxlength="20000" placeholder="例如：下次確認庫存"></textarea></label><details class="single-store-more"><summary>更多欄位：日期、來源、人物、主題與附件</summary><div class="field-grid"><label>筆記日期（未知可留空）<input type="date" id="single-store-date" value="${today}"></label><label>資訊來源<select id="single-store-source">${options.map(source => `<option value="${esc(source)}">${esc(source || '未指定')}</option>`).join('')}</select></label></div><label>相關主題</label><div class="check-grid">${pick('topic', 'single-topic')}</div><label>提及人物</label><div class="check-grid">${pick('person', 'single-person')}</div><label>附件（每個上限 3 MB）<input type="file" id="single-store-files" multiple accept="image/jpeg,image/png,image/webp,image/heic,application/pdf"></label><p class="muted">新選的附件無法靠草稿跨 App 關閉保存；完成紀錄前若 App 被系統終止，請重新選擇附件。</p></details><p id="single-store-draft-state" class="draft-state" role="status">尚未變更</p><p class="muted">輸入會先加密保存成本機草稿；只有按「完成紀錄」才建立正式拜訪版本。</p><p id="single-store-error" class="error" role="alert"></p></form>`;
 }
 function singleStoreIdleActions(storeId) {
+  const editingId = pendingInlineTextId();
+  if (editingId && by('visit', editingId)?.store === storeId) return `<button type="button" class="primary" data-inline-review="${esc(editingId)}">完成這筆原文修改</button>`;
   const draft = payload?.draft?.format === 'visit-draft-1' ? payload.draft : null;
   if (draft && (!draft.baseData && draft.fields?.store === storeId)) return '<button type="button" class="primary" data-start-single-store-capture>繼續未完成的拜訪紀錄</button>';
   if (draft) return '<button type="button" class="primary" data-resume-single-draft>先完成目前的未完成草稿</button>';
   return '<button type="button" class="primary" data-start-single-store-capture>＋ 開始記錄這次拜訪</button>';
 }
+function refreshBriefEditActions() {
+  const review = $('review'), actions = $('review-persistent-actions');
+  if (!review?.open || !review.classList.contains('visit-brief-dialog') || !review.dataset.singleStoreId || !actions || singleStoreContext) return;
+  const html = singleStoreIdleActions(review.dataset.singleStoreId);
+  if (actions.innerHTML !== html) actions.innerHTML = html;
+}
 function activateSingleStoreCapture(restoreDraft = null, typedEdit = null) {
+  // Never open a second form over an unfinished inline edit. Its footer must
+  // review that edit, not submit an empty, unrelated new-visit form.
+  if (pendingInlineTextId()) {
+    refreshBriefEditActions();
+    toast('請先完成這筆原文修改；目前文字與草稿保持不變。');
+    return;
+  }
   const storeId = $('review').dataset.singleStoreId, store = by('store', storeId);
   if (!store || store.deleted || store.conflict || storeIdentityPending(store)) return toast('這間門市目前無法使用單店快速記錄，請先核對門市狀態。');
   const draft = restoreDraft || (payload?.draft?.format === 'visit-draft-1' && !payload.draft.baseData && payload.draft.fields?.store === storeId ? payload.draft : null);
@@ -3541,6 +3557,7 @@ async function persistInlineTextDraft() {
   if ((!draft && !saved) || (draft && saved?.format===draft.format && saved.id===draft.id && saved.before===draft.before && saved.after===draft.after && JSON.stringify(saved.parents)===JSON.stringify(draft.parents))) {
     if (state) state.textContent = draft ? '修改草稿已加密保存在這台裝置，尚未寫入正式紀錄。' : '文字沒有變更。';
     if (!draft) releaseIdleInlineEdit();
+    refreshBriefEditActions();
     return;
   }
   const savedText = ctx.after;
@@ -3550,6 +3567,7 @@ async function persistInlineTextDraft() {
   if (ctx !== inlineTextContext || ctx.after !== savedText) return;
   if (state) state.textContent = draft ? '修改草稿已加密保存在這台裝置，尚未寫入正式紀錄。' : '文字沒有變更。';
   if (!draft) releaseIdleInlineEdit();
+  refreshBriefEditActions();
 }
 function scheduleInlineTextDraft() {
   clearTimeout(inlineDraftTimer); const ctx = inlineTextContext;
@@ -3598,6 +3616,11 @@ async function cancelInlineTextEdit(id, originStoreId = '') {
   toast('已取消文字修改，正式紀錄沒有改變。');
 }
 async function reviewInlineTextEdit(id, originStoreId = '') {
+  if (singleStoreContext) {
+    const output = $('single-store-error');
+    if (output) { output.textContent = '請先完成或按「先收起」保留這次拜訪，再保存既有原文修改。'; output.scrollIntoView({ block: 'center' }); }
+    return;
+  }
   const briefStoreId = originStoreId || (inlineTextContext?.id === id ? inlineTextContext.briefStoreId || '' : '');
   const element = inlineTextElement(id, briefStoreId);
   if (!element || !beginInlineTextEdit(id, element)) return;

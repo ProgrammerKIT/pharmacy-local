@@ -33,7 +33,7 @@ test('a hung encrypt releases actual run busy state; late crypto completion neve
 });
 function inline(){const timer=clock(),state={textContent:''},ctx={id:'fictional',before:'original',after:'edit 0',parents:['head']};let first;
  const shell={querySelector:()=>state},element={closest:()=>shell};
- const c=vm.createContext({...timer,inlineTextContext:ctx,inlineDraftTimer:null,inlineDraftSaveChain:Promise.resolve(),payload:{bundle:{ops:[]},inlineTextDraft:null},by:()=>({deleted:false,conflict:false}),inlineTextElement:()=>element,quickTextParents:()=>['head'],releaseIdleInlineEdit(){},writes:[],calls:0,fail:false,async persist(next,options){c.calls++;options?.onProgress?.('writing');if(c.fail)throw Error('fictional storage unavailable');if(c.calls===1)await new Promise(r=>first=r);c.writes.push(next.inlineTextDraft);c.payload=next;}});
+ const c=vm.createContext({...timer,inlineTextContext:ctx,inlineDraftTimer:null,inlineDraftSaveChain:Promise.resolve(),payload:{bundle:{ops:[]},inlineTextDraft:null},by:()=>({deleted:false,conflict:false}),inlineTextElement:()=>element,quickTextParents:()=>['head'],releaseIdleInlineEdit(){},refreshBriefEditActions(){},writes:[],calls:0,fail:false,async persist(next,options){c.calls++;options?.onProgress?.('writing');if(c.fail)throw Error('fictional storage unavailable');if(c.calls===1)await new Promise(r=>first=r);c.writes.push(next.inlineTextDraft);c.payload=next;}});
  vm.runInContext(part(app,'async function persistInlineTextDraft(','function updateInlineText('),c);
  return{c,ctx,state,timer,finish:()=>first()};}
 test('rapid input coalesces to one pending latest draft; reviewing already saved text does not rewrite the vault',async()=>{
