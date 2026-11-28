@@ -103,7 +103,7 @@ test('single-store search scope mentions the profile below only when readable pr
   for (const item of cases) {
     const h = harness([item]), before = h.snapshot();
     assert.match(h.open(item.id), /0 筆正式拜訪紀錄/);
-    Object.assign(h.ctx, { busy: false, updateHolding: false, briefSearchBlocked: () => false, briefSearchEditing: () => false, paintBriefSearch() {} });
+    Object.assign(h.ctx, { busy: false, updateHolding: false, briefSearchBlocked: () => false, briefSearchEditing: () => false, paintBriefSearch() {}, refreshBriefEditActions() {} });
     h.node('brief-search-preview').replaceChildren = () => {};
     vm.runInContext(source('function refreshBriefSearch(', 'function runBriefSearchQuery('), h.ctx);
     for (const query of ['', 'profile-needle']) {
